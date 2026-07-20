@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Completion, hover, go-to-definition, and diagnostics now recognize `format`/`segment`/`section`
+  sub-keywords (e.g. `ELF64`, `executable`, `readable`, `DLL`) and operand-size/addressing
+  qualifiers (e.g. `byte`, `dword`, `ptr`, `near`) as first-class symbols.
+
 ## 0.1.0
 
 Initial release.
