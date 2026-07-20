@@ -109,4 +109,59 @@ describe('GdbDriver (integration, real gdb + a real compiled fasm2 ELF binary)',
       await driver.dispose();
     }
   });
+
+  it('correlates concurrent commands to their own results rather than cross-wiring them', async function () {
+    this.timeout(15000);
+    const driver = new GdbDriver();
+    try {
+      driver.start({ gdbPath: 'gdb', programPath, cwd: dir });
+
+      // Fired concurrently, on purpose, to prove the token-keyed correlation in GdbDriver picks
+      // the right pending promise for each reply rather than resolving them in send order.
+      const [a, b, c] = await Promise.all([
+        driver.sendCommand('-data-evaluate-expression 11+11'),
+        driver.sendCommand('-data-evaluate-expression 22+22'),
+        driver.sendCommand('-data-evaluate-expression 33+33'),
+      ]);
+
+      assert.strictEqual((a.data as Record<string, unknown>).value, '22');
+      assert.strictEqual((b.data as Record<string, unknown>).value, '44');
+      assert.strictEqual((c.data as Record<string, unknown>).value, '66');
+    } finally {
+      await driver.dispose();
+    }
+  });
+});
+
+describe('GdbDriver (unit, against a fake process that dies mid-command)', () => {
+  let dir: string;
+  let fakeGdbPath: string;
+
+  before(async function () {
+    if (os.platform() === 'win32') {
+      // The fake below is a POSIX shell script; the behavior under test (pending commands reject
+      // on an unexpected exit) is platform-agnostic, so it's sufficient to cover it on POSIX.
+      this.skip();
+      return;
+    }
+    const fs2 = await import('fs/promises');
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-gdb-crash-test-'));
+    fakeGdbPath = path.join(dir, 'fake-gdb.sh');
+    // Reads (and discards) exactly one line -- the first command GdbDriver sends -- then exits
+    // without ever responding, simulating gdb crashing or being killed mid-command.
+    await fs2.writeFile(fakeGdbPath, '#!/bin/sh\nread line\nexit 1\n', 'utf8');
+    await fs2.chmod(fakeGdbPath, 0o755);
+  });
+
+  after(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('rejects a pending command instead of hanging forever when the process exits unexpectedly', async function () {
+    this.timeout(10000);
+    const driver = new GdbDriver();
+    driver.start({ gdbPath: fakeGdbPath, programPath: '/dev/null', cwd: dir });
+
+    await assert.rejects(() => driver.sendCommand('-exec-run', 8000), /exited/i);
+  });
 });
