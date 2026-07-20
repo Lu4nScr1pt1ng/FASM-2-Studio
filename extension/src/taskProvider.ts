@@ -98,18 +98,21 @@ export class FasmTaskProvider implements vscode.TaskProvider {
     if (!editor || editor.document.languageId !== 'fasm') return [];
 
     const file = editor.document.uri.fsPath;
-    const tasks: vscode.Task[] = [];
 
-    try {
-      tasks.push(await buildTask({ type: FASM_TASK_TYPE, file }, 'Build active file'));
-    } catch {
-      // Compiler not found: contribute nothing rather than surfacing a broken task in the picker.
-    }
-    try {
-      tasks.push(await buildTask({ type: FASM_TASK_TYPE, file, debugBuild: true }, DEBUG_BUILD_TASK_NAME));
-    } catch {
-      // Not a fasm2 file, or compiler not found — same reasoning as above.
-    }
+    // Both resolve the compiler independently, but resolveCompiler already de-dupes concurrent
+    // probes for the same dialect into one in-flight promise, so running them together costs no
+    // extra process spawns — just avoids waiting for the first to fully finish before starting
+    // the second.
+    const [build, debugBuild] = await Promise.allSettled([
+      buildTask({ type: FASM_TASK_TYPE, file }, 'Build active file'),
+      buildTask({ type: FASM_TASK_TYPE, file, debugBuild: true }, DEBUG_BUILD_TASK_NAME),
+    ]);
+
+    const tasks: vscode.Task[] = [];
+    // Either can fail independently (no compiler found, or not a fasm2 file for the debug
+    // build) — contribute whichever succeeded rather than surfacing a broken task in the picker.
+    if (build.status === 'fulfilled') tasks.push(build.value);
+    if (debugBuild.status === 'fulfilled') tasks.push(debugBuild.value);
 
     return tasks;
   }
