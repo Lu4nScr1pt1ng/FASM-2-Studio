@@ -4,6 +4,7 @@
   "description": "Syntax highlighting, autocomplete, hover docs, diagnostics and build tasks for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
   "version": "0.1.0",
   "publisher": "fasm2-studio",
+  "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
