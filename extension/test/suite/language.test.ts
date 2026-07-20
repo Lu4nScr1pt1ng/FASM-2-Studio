@@ -12,8 +12,12 @@ async function openFixture(name: string): Promise<vscode.TextDocument> {
 }
 
 function fasm2Available(): boolean {
-  const result = spawnSync('fasm2', [], { shell: true, timeout: 3000 });
-  return !(result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT') && result.status !== 127;
+  // "Not found" is reported differently per shell (bash: exit 127, cmd.exe: exit 1 with its own
+  // "not recognized" text) — rather than guess at exit codes, look for fasm2's own stable banner
+  // text, which only appears when the real binary actually ran.
+  const result = spawnSync('fasm2', [], { shell: true, timeout: 3000, encoding: 'utf8' });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.toLowerCase();
+  return output.includes('flat assembler');
 }
 
 describe('FASM2 Studio extension (real VS Code host)', () => {
