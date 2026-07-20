@@ -102,6 +102,28 @@ describe('Workspace indexing', () => {
     assert.strictEqual(skipped, 1);
   });
 
+  it('walkIncludeGraph terminates on a circular include instead of recursing forever', async () => {
+    const uriA = await writeFile('circ-a.inc', "SHARED = 1\ninclude 'circ-b.inc'\n");
+    await writeFile('circ-b.inc', "include 'circ-a.inc'\nOTHER = 2\n");
+    const uriMain = await writeFile('circ-main.asm', "include 'circ-a.inc'\nstart:\n\tmov eax, SHARED\n");
+
+    const ws = new Workspace();
+    ws.updateDocument(uriMain, 1, "include 'circ-a.inc'\nstart:\n\tmov eax, SHARED\n", 'fasm2');
+
+    const defs = await Promise.race([
+      Promise.resolve(ws.findDefinitions(uriMain, 'SHARED', 'fasm2')),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('findDefinitions did not return — likely an infinite loop on the circular include')), 2000)),
+    ]);
+
+    assert.strictEqual(defs.length, 1);
+    assert.strictEqual(defs[0].uri, uriA);
+
+    // OTHER is only reachable through the cycle (main -> a -> b), proving the graph is actually
+    // walked into b.inc rather than the cycle just being detected and abandoned early.
+    const other = ws.findDefinitions(uriMain, 'OTHER', 'fasm2');
+    assert.strictEqual(other.length, 1);
+  });
+
   it('reverts to the indexed-from-disk version in the global index when the live buffer closes', async () => {
     const uri = await writeFile('reverts.asm', 'DISK_NAME = 1\n');
     const ws = new Workspace();

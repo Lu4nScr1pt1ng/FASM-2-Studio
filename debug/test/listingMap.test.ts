@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, parseListingFile } from '../src/listingMap';
 
@@ -65,6 +66,35 @@ describe('buildCandidateSequence', () => {
         'with-macro-and-include.asm:9 mov ebx, 99',
       ],
     );
+  });
+
+  it('terminates on a circular include (A includes B includes A) instead of recursing forever', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-circular-include-test-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'a.inc'), "A_SYM = 1\ninclude 'b.inc'\n", 'utf8');
+      fs.writeFileSync(path.join(dir, 'b.inc'), "B_SYM = 2\ninclude 'a.inc'\n", 'utf8');
+
+      const candidates = buildCandidateSequence(path.join(dir, 'a.inc'));
+      const texts = candidates.map((c) => c.text);
+
+      // Each file is visited exactly once despite the cycle: a.inc's own two lines, plus
+      // b.inc's two lines reached through the first include, and no more after that.
+      assert.deepStrictEqual(texts, ['A_SYM = 1', 'B_SYM = 2']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates on a file that includes itself directly', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-self-include-test-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'self.inc'), "SELF_SYM = 1\ninclude 'self.inc'\n", 'utf8');
+
+      const candidates = buildCandidateSequence(path.join(dir, 'self.inc'));
+      assert.deepStrictEqual(candidates.map((c) => c.text), ['SELF_SYM = 1']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
