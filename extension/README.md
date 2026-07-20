@@ -11,8 +11,9 @@ toolchain rather than shipping its own.
 Open a `.asm`, `.inc`, `.fasm`, or `.fas` file and it's syntax-highlighted immediately. Behind
 that, a language server parses your project and gives you:
 
-- **Completion and hover** for instructions, registers, directives, and your own
-  labels/macros/constants.
+- **Completion and hover** for instructions, registers, directives, `format`/`segment`/`section`
+  sub-keywords (`ELF64`, `executable`, `DLL`, ...), operand-size/addressing qualifiers (`byte`,
+  `dword`, `ptr`, `near`, ...), and your own labels/macros/constants.
 - **Go to definition, find references, rename, and workspace symbol search** that work across
   your whole project — not just the open file. Files are indexed once in the background and kept
   in sync as you edit, so this stays fast on real-sized projects.

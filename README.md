@@ -37,7 +37,9 @@ fallback when a file is ambiguous.
 
 Open a `.asm`/`.inc`/`.fasm`/`.fas` file and it's highlighted and editable immediately. Behind
 that, a language server parses your project, walks `include` chains, and gives you completion and
-hover for instructions/registers/directives and your own labels/macros/constants; go-to-definition,
+hover for instructions/registers/directives, `format`/`segment`/`section` sub-keywords (`ELF64`,
+`executable`, `DLL`, ...), operand-size/addressing qualifiers (`byte`, `dword`, `ptr`, `near`,
+...), and your own labels/macros/constants; go-to-definition,
 find-references, and rename that work across your whole workspace (not just the open file — files
 are indexed once in the background and kept in sync as you edit, so this stays fast on real
 projects); and signature help while you're filling in a macro call.
