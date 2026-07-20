@@ -218,6 +218,25 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   let tempDir: string | undefined;
   let compileFsPath = fsPath;
   let cwd = fsPath ? path.dirname(fsPath) : undefined;
+  let reportForFsPath: string | undefined;
+
+  // This file may be a fragment with no `format` of its own (an .inc/.asm meant only to be
+  // `include`d into a real program) — compiling it standalone is meaningless and its real errors
+  // would be missed. Compile the actual entry point instead, and filter the result back down to
+  // this file.
+  if (isRealFile) {
+    const entryUri = workspace.findEntryFile(uri);
+    if (entryUri && entryUri !== uri) {
+      try {
+        const entryFsPath = URI.parse(entryUri).fsPath;
+        reportForFsPath = fsPath;
+        compileFsPath = entryFsPath;
+        cwd = path.dirname(entryFsPath);
+      } catch {
+        // Fall back to compiling the file itself.
+      }
+    }
+  }
 
   if (!isRealFile) {
     try {
@@ -236,6 +255,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       compilerPath,
       sourceFsPath: compileFsPath!,
       cwd: cwd!,
+      reportForFsPath,
     });
 
     // A newer edit (or diagnostics being disabled) arrived while the compiler was running; drop
@@ -324,7 +344,7 @@ connection.onDefinition((params: DefinitionParams): Location[] | undefined => {
     if (!doc) return undefined;
     const word = getWordAtPosition(doc, params.position);
     if (!word) return undefined;
-    return getDefinitions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word);
+    return getDefinitions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word, params.position);
   } catch (err) {
     logHandlerError('onDefinition', err);
     return undefined;

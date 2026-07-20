@@ -169,4 +169,43 @@ describe('Workspace indexing', () => {
     assert.strictEqual(indexed, 1);
     assert.strictEqual(skipped, 1);
   });
+
+  describe('findEntryFile', () => {
+    it('walks back through `include` to find the entry point for a fragment with no format directive', async () => {
+      const uriMain = await writeFile('cc.asm', "format ELF64 executable 3\n\ninclude 'lexer.asm'\n");
+      const uriFragment = await writeFile('lexer.asm', 'lex_source:\n\tmov r12, rsi\n');
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain, uriFragment], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.findEntryFile(uriFragment), uriMain);
+    });
+
+    it('returns the file itself when it already has a format directive', async () => {
+      const uriMain = await writeFile('standalone.asm', 'format binary\nstart:\n\tmov eax, 1\n');
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.findEntryFile(uriMain), uriMain);
+    });
+
+    it('returns undefined for an orphaned fragment with no known includer', async () => {
+      const uriOrphan = await writeFile('orphan.inc', 'X = 1\n');
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriOrphan], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.findEntryFile(uriOrphan), undefined);
+    });
+
+    it('walks multiple levels of inclusion to find the entry point', async () => {
+      const uriMain = await writeFile('top.asm', "format binary\ninclude 'mid.inc'\n");
+      const uriMid = await writeFile('mid.inc', "include 'leaf.inc'\n");
+      const uriLeaf = await writeFile('leaf.inc', 'Y = 1\n');
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain, uriMid, uriLeaf], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.findEntryFile(uriLeaf), uriMain);
+    });
+  });
 });

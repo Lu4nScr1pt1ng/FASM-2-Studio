@@ -11,7 +11,7 @@ describe('detectDialect', () => {
     assert.strictEqual(detectDialect('iterate x, 1, 2\nend iterate\n', 'fasm1'), 'fasm2');
     assert.strictEqual(detectDialect('namespace foo\nend namespace\n', 'fasm1'), 'fasm2');
     assert.strictEqual(detectDialect('irp x, 1, 2\nend irp\n', 'fasm1'), 'fasm2');
-    assert.strictEqual(detectDialect('irps x, a b c\nend irps\n', 'fasm1'), 'fasm2');
+    assert.strictEqual(detectDialect('irpv param, var\nend irpv\n', 'fasm1'), 'fasm2');
   });
 
   it('detects fasm1 from use16/use32/use64, rept, and endp', () => {

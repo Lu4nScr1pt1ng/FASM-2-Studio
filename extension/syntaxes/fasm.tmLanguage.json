@@ -104,15 +104,15 @@
     },
     "directives": {
       "name": "keyword.control.directive.fasm",
-      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struct|ends|if|else|while|repeat|rept|irp|irps|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|at|db|dw|dd|dq|dt|du|rb|rw|rd|rq|file|label)\\b"
+      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|at|db|dw|dd|dp|df|dq|dt|ddq|dqq|ddqq|du|rb|rw|rd|rp|rf|rq|rt|rdq|rqq|rdqq|file|label)\\b"
     },
     "size-specifiers": {
       "name": "storage.type.fasm",
-      "match": "(?i)\\b(byte|word|dword|fword|pword|qword|tword|tbyte|xmmword|ymmword|zmmword|ptr|near|far|short)\\b"
+      "match": "(?i)\\b(byte|word|dword|fword|pword|qword|tbyte|tword|dqword|xword|qqword|yword|dqqword|zword|ptr|near|far|short)\\b"
     },
     "format-keywords": {
       "name": "support.constant.format.fasm",
-      "match": "(?i)\\b(binary|MZ|PE|COFF|ELF|ELF64|console|GUI|native|DLL|WDM|efi|as|at)\\b"
+      "match": "(?i)\\b(binary|MZ|PE64|PE|COFF|MS64|MS|MachO64|MachO|ELF64|ELFx32|ELF|console|GUI|native|DLL|WDM|EFIboot|EFIruntime|efi|as|at|executable|dynamic|large|NX|on|readable|writeable|discardable|shareable|interpreter|note|gnustack|gnuehframe|gnurelro)\\b"
     },
     "registers": {
       "name": "variable.language.register.fasm",

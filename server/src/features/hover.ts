@@ -4,11 +4,15 @@ import { Workspace } from '../workspace';
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
-import { DirectiveEntry, InstructionEntry, RegisterEntry } from '../types';
+import formatKeywordsData from '../data/formatKeywords.json';
+import sizeSpecifiersData from '../data/sizeSpecifiers.json';
+import { DirectiveEntry, FormatKeywordEntry, InstructionEntry, RegisterEntry, SizeSpecifierEntry } from '../types';
 
 const directives = directivesData as DirectiveEntry[];
 const instructions = instructionsData as InstructionEntry[];
 const registers = registersData as RegisterEntry[];
+const formatKeywords = formatKeywordsData as FormatKeywordEntry[];
+const sizeSpecifiers = sizeSpecifiersData as SizeSpecifierEntry[];
 
 export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string): Hover | undefined {
   const lower = word.toLowerCase();
@@ -28,9 +32,19 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
     };
   }
 
+  const size = sizeSpecifiers.find((s) => s.name.toLowerCase() === lower);
+  if (size) {
+    return { contents: { kind: MarkupKind.Markdown, value: `**${size.name}** _(size specifier)_  \n${size.summary}` } };
+  }
+
   const dir = directives.find((d) => d.name.toLowerCase() === lower && (d.dialect === 'both' || d.dialect === dialect));
   if (dir) {
     return { contents: { kind: MarkupKind.Markdown, value: `**${dir.name}** _(directive)_  \n${dir.summary}` } };
+  }
+
+  const fmt = formatKeywords.find((f) => f.name.toLowerCase() === lower);
+  if (fmt) {
+    return { contents: { kind: MarkupKind.Markdown, value: `**${fmt.name}** _(format/section keyword)_  \n${fmt.summary}` } };
   }
 
   for (const parsed of workspace.walkIncludeGraph(uri, dialect)) {

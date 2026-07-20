@@ -17,16 +17,26 @@ export interface CompileResult {
 }
 
 const HEADER_RE = /^(.+) \[(\d+)\]:$/;
-const MESSAGE_RE = /^(Error|Warning):\s*(.*)$/;
+// fasmg emits "Error: ..." for built-in assembler errors and "Custom error: ..." for errors
+// raised by an `err` instruction — which is how virtually all of fasmg's own instruction-encoding
+// validation (wrong operand size, illegal addressing mode, ...) reports problems, so missing this
+// prefix would silently drop most everyday mistakes. fasmg has no warning concept; "Warning: " is
+// fasm1's.
+const MESSAGE_RE = /^(Error|Custom error|Warning):\s*(.*)$/;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_ERRORS = 200;
 
 export interface RunCompilerOptions {
   compilerPath: string;
+  /** The file actually handed to the compiler — the project's entry point when `sourceFsPath`
+   * is a fragment included by it, or `sourceFsPath` itself otherwise. */
   sourceFsPath: string;
   cwd: string;
   timeoutMs?: number;
+  /** The file diagnostics should be reported for, if different from `sourceFsPath` (compiling an
+   * entry point on behalf of a fragment file it includes). Defaults to `sourceFsPath`. */
+  reportForFsPath?: string;
 }
 
 export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileResult> {
@@ -47,7 +57,7 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
       return { diagnostics: [], toolError: 'Compiler timed out' };
     }
 
-    return { diagnostics: parseDiagnostics(stdout, opts.sourceFsPath) };
+    return { diagnostics: parseDiagnostics(stdout, opts.reportForFsPath ?? opts.sourceFsPath) };
   } finally {
     fs.promises.unlink(tmpOut).catch(() => undefined);
   }
@@ -156,7 +166,7 @@ export function parseDiagnostics(output: string, sourceFsPath: string): Diagnost
       if (pendingIsCurrentFile) {
         const lineNo = Math.max(0, pendingLine);
         diagnostics.push({
-          severity: message[1] === 'Error' ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
+          severity: message[1] === 'Warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
           range: { start: { line: lineNo, character: 0 }, end: { line: lineNo, character: Number.MAX_SAFE_INTEGER } },
           message: message[2],
           source: 'fasm',

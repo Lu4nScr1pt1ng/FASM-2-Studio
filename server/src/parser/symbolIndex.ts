@@ -11,6 +11,14 @@ import registersData from '../data/registers.json';
 import { DirectiveEntry, Dialect, InstructionEntry, IncludeDirective, ParsedDocument, Range, RegisterEntry, SymbolDefinition, SymbolKind, SymbolReference } from '../types';
 import { Token, TokenType, tokenizeDocument, unquoteString } from './tokenizer';
 
+// Data-defining directives that, when immediately preceded by a bare identifier on the same line
+// (no colon needed), implicitly define a label at that point — e.g. "tok_type rb TOK_CAP" or
+// "err_open_prefix db 'message'" are equivalent to "tok_type: rb TOK_CAP".
+const DATA_DIRECTIVES: ReadonlySet<string> = new Set([
+  'db', 'dw', 'dd', 'dp', 'df', 'dq', 'dt', 'ddq', 'dqq', 'ddqq', 'du',
+  'rb', 'rw', 'rd', 'rp', 'rf', 'rq', 'rt', 'rdq', 'rqq', 'rdqq', 'file',
+]);
+
 const BLOCK_END_KEYWORDS: Record<string, string> = {
   macro: 'end',
   struct: 'ends',
@@ -167,6 +175,30 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           value: tokens.slice(2).map((t) => t.text).join(' '),
           uri,
         });
+        continue;
+      }
+
+      // --- NAME db/dw/dd/dq/dt/du/rb/rw/rd/rq/file ... (implicit data-label, no colon) ---
+      if (
+        t0.type === TokenType.Ident &&
+        !NON_SYMBOL_IDENTIFIERS.has(t0.text.toLowerCase()) &&
+        tokens[1] &&
+        tokens[1].type === TokenType.Ident &&
+        DATA_DIRECTIVES.has(lower(tokens[1]))
+      ) {
+        const isLocal = t0.text.startsWith('.');
+        symbols.push({
+          name: t0.text,
+          kind: isLocal ? SymbolKind.LocalLabel : SymbolKind.Label,
+          range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
+          nameRange: tokenRange(t0),
+          parentLabel: isLocal ? lastGlobalLabel : undefined,
+          value: tokens.slice(1).map((t) => t.text).join(' '),
+          uri,
+        });
+        if (!isLocal) lastGlobalLabel = t0.text;
+
+        collectReferences(tokens.slice(2), uri, references);
         continue;
       }
 

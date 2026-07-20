@@ -75,3 +75,15 @@ export interface DirectiveEntry {
   dialect: Dialect | 'both';
   snippet?: string;
 }
+
+/** A sub-keyword of "format"/"segment"/"section" (e.g. ELF64, executable, readable, DLL). */
+export interface FormatKeywordEntry {
+  name: string;
+  summary: string;
+}
+
+/** An operand-size or addressing qualifier (e.g. byte, dword, ptr, near). */
+export interface SizeSpecifierEntry {
+  name: string;
+  summary: string;
+}

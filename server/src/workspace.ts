@@ -131,6 +131,66 @@ export class Workspace {
     }
   }
 
+  /** Resolves an `include '...'` path to the URI of the target file, for go-to-definition. */
+  resolveIncludeUri(fromUri: string, includePath: string): string | undefined {
+    const fsPath = this.resolveIncludePath(fromUri, includePath);
+    return fsPath ? URI.file(fsPath).toString() : undefined;
+  }
+
+  /** Every document this Workspace currently has parsed state for, from any of its three layers. */
+  private allKnownDocuments(): ParsedDocument[] {
+    const docs: ParsedDocument[] = [...this.openDocuments.values()];
+    for (const [uri, doc] of this.indexedDocuments) if (!this.openDocuments.has(uri)) docs.push(doc);
+    for (const [uri, doc] of this.externalDiskCache) {
+      if (doc && !this.openDocuments.has(uri) && !this.indexedDocuments.has(uri)) docs.push(doc);
+    }
+    return docs;
+  }
+
+  /** Every known document whose `include` resolves to `targetUri` — the reverse of `includes`. */
+  private findIncluders(targetUri: string): string[] {
+    const includers: string[] = [];
+    for (const doc of this.allKnownDocuments()) {
+      for (const inc of doc.includes) {
+        if (this.resolveIncludeUri(doc.uri, inc.path) === targetUri) {
+          includers.push(doc.uri);
+          break;
+        }
+      }
+    }
+    return includers;
+  }
+
+  /**
+   * Finds the file that would actually be handed to the compiler for `uri`: `uri` itself if it
+   * already has a top-level `format` directive, otherwise the nearest document reachable by
+   * walking `include` edges *backwards* (who includes this file, and who includes that...) that
+   * does. This is what makes diagnostics work for a fragment file (a `.inc`/`.asm` with no
+   * `format` of its own, meant only to be `include`d into a real entry point) — compiling the
+   * fragment in isolation is meaningless, so its errors need to be found by compiling the actual
+   * program and filtering the result back down to this file.
+   * Returns undefined if no reachable ancestor with a `format` directive is known (e.g. an
+   * orphaned fragment, or the including file hasn't been indexed/opened yet).
+   */
+  findEntryFile(uri: string): string | undefined {
+    const visited = new Set<string>();
+    const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
+
+    while (queue.length > 0) {
+      const { uri: currentUri, depth } = queue.shift()!;
+      if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
+      visited.add(currentUri);
+
+      const doc = this.openDocuments.get(currentUri) ?? this.indexedDocuments.get(currentUri) ?? this.externalDiskCache.get(currentUri) ?? undefined;
+      if (doc?.formatDirective !== undefined) return currentUri;
+
+      for (const includer of this.findIncluders(currentUri)) {
+        queue.push({ uri: includer, depth: depth + 1 });
+      }
+    }
+    return undefined;
+  }
+
   private loadForInclude(fsPath: string, dialect: Dialect): ParsedDocument | undefined {
     const uri = URI.file(fsPath).toString();
     const known = this.openDocuments.get(uri) ?? this.indexedDocuments.get(uri);

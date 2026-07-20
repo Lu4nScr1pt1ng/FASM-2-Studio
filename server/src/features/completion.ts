@@ -4,11 +4,15 @@ import { Workspace } from '../workspace';
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
-import { DirectiveEntry, InstructionEntry, RegisterEntry } from '../types';
+import formatKeywordsData from '../data/formatKeywords.json';
+import sizeSpecifiersData from '../data/sizeSpecifiers.json';
+import { DirectiveEntry, FormatKeywordEntry, InstructionEntry, RegisterEntry, SizeSpecifierEntry } from '../types';
 
 const directives = directivesData as DirectiveEntry[];
 const instructions = instructionsData as InstructionEntry[];
 const registers = registersData as RegisterEntry[];
+const formatKeywords = formatKeywordsData as FormatKeywordEntry[];
+const sizeSpecifiers = sizeSpecifiersData as SizeSpecifierEntry[];
 
 const SYMBOL_KIND_TO_COMPLETION: Record<SymbolKind, CompletionItemKind> = {
   [SymbolKind.Label]: CompletionItemKind.Reference,
@@ -53,6 +57,22 @@ function buildStaticItems(dialect: Dialect): CompletionItem[] {
       item.insertTextFormat = InsertTextFormat.Snippet;
     }
     items.push(item);
+  }
+
+  for (const fmt of formatKeywords) {
+    items.push({
+      label: fmt.name,
+      kind: CompletionItemKind.Keyword,
+      documentation: fmt.summary,
+    });
+  }
+
+  for (const size of sizeSpecifiers) {
+    items.push({
+      label: size.name,
+      kind: CompletionItemKind.Keyword,
+      documentation: size.summary,
+    });
   }
 
   return items;

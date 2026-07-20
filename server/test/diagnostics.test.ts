@@ -60,6 +60,19 @@ describe('parseDiagnostics', () => {
     assert.match(diags[0].message, /might not do what you expect/);
   });
 
+  it('maps a "Custom error:" line (from an `err` instruction) to error severity, not dropped', () => {
+    const output = [
+      'custom.asm [7]:',
+      '\tmovzx eax, byte [r12 + r11]',
+      'movzx? [30] x86.store_instruction@src [77] x86.require.bits64? [6]',
+      'Custom error: bits64 or higher required.',
+    ].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/custom.asm');
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].severity, DiagnosticSeverity.Error);
+    assert.match(diags[0].message, /bits64 or higher required/);
+  });
+
   it('handles a mix of error and warning blocks in the same run', () => {
     const output = [
       'mixed.asm [2]:',
@@ -97,6 +110,25 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.toolError, undefined);
       assert.strictEqual(result.diagnostics.length, 1);
       assert.strictEqual(result.diagnostics[0].range.start.line, 1);
+      assert.match(result.diagnostics[0].message, /undefinedsymbol/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('compiles an entry file but reports diagnostics against an included fragment via reportForFsPath', async function () {
+    this.timeout(15000);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-'));
+    const entryFile = path.join(dir, 'main.asm');
+    const fragmentFile = path.join(dir, 'fragment.inc');
+    fs.writeFileSync(entryFile, "format binary\ninclude 'fragment.inc'\n");
+    fs.writeFileSync(fragmentFile, 'mov eax, undefinedsymbol\n');
+
+    try {
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: entryFile, cwd: dir, reportForFsPath: fragmentFile });
+      assert.strictEqual(result.toolError, undefined);
+      assert.strictEqual(result.diagnostics.length, 1);
+      assert.strictEqual(result.diagnostics[0].range.start.line, 0);
       assert.match(result.diagnostics[0].message, /undefinedsymbol/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

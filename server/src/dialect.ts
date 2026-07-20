@@ -6,7 +6,7 @@ import { Dialect } from './types';
 // is exhaustive, so an unrecognized file falls back to the configured default dialect rather than
 // guessing further — a wrong guess would misfire highlighting/directive filtering, so silence
 // (falling back) is safer than a confident wrong answer.
-const FASM2_MARKERS = /\bend\s+macro\b|\bcalminstruction\b|\biterate\b|\bnamespace\b|\birp[sv]?\b|\bend\s+repeat\b/i;
+const FASM2_MARKERS = /\bend\s+macro\b|\bcalminstruction\b|\biterate\b|\bnamespace\b|\birpv?\b|\bend\s+repeat\b/i;
 const FASM1_MARKERS = /\buse(16|32|64)\b|\brept\b|\bendp\b/i;
 
 export function detectDialect(text: string, fallback: Dialect): Dialect {
