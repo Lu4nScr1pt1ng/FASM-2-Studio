@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- No functional changes; fixes the publish workflow (previous tag failed CI validation).
+
 ## 0.2.0
 
 - Completion, hover, go-to-definition, and diagnostics now recognize `format`/`segment`/`section`
