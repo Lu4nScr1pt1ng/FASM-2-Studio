@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildAddressLineMap, buildCandidateSequence, correlateListing, parseListingFile } from '../src/listingMap';
+import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, parseListingFile } from '../src/listingMap';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -102,5 +102,27 @@ describe('correlateListing / buildAddressLineMap (end-to-end, real captured outp
     assert.doesNotThrow(() => correlateListing(entries, []));
     const map = correlateListing(entries, []);
     assert.strictEqual(map.addressToLocation.size, 0);
+  });
+
+  it('bounds the forward search so a real match just past the lookahead window is left unmapped rather than scanned for unboundedly', () => {
+    // A long run of candidates that never match anything, followed by the real target sitting
+    // just beyond the search window used internally by correlateListing.
+    const filler = Array.from({ length: MAX_LOOKAHEAD }, (_, i) => ({ fsPath: '/f.asm', line: i + 1, text: `filler_${i}` }));
+    const target = { fsPath: '/f.asm', line: MAX_LOOKAHEAD + 1, text: 'target line' };
+
+    const entries = parseListingFile('[0000000000000000]                                    target line\n');
+    const map = correlateListing(entries, [...filler, target]);
+
+    assert.strictEqual(map.addressToLocation.size, 0, 'a match past the lookahead window should not be found');
+  });
+
+  it('still finds a match sitting well within the lookahead window, past a long run of misses', () => {
+    const filler = Array.from({ length: 200 }, (_, i) => ({ fsPath: '/f.asm', line: i + 1, text: `filler_${i}` }));
+    const target = { fsPath: '/f.asm', line: 201, text: 'target line' };
+
+    const entries = parseListingFile('[0000000000000000]                                    target line\n');
+    const map = correlateListing(entries, [...filler, target]);
+
+    assert.strictEqual(map.addressToLocation.get(0n)?.line, 201);
   });
 });

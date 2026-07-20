@@ -12,6 +12,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TokenType, Token, tokenizeDocument, unquoteString } from '@fasm2-studio/server/src/parser/tokenizer';
 
+// Bounds the forward search in correlateListing: without it, an entry with no real match would
+// scan all the way to the end of the candidate list, and every subsequent miss would redo that
+// same scan from the same (unadvanced) cursor — O(entries × candidates) in a pathological case
+// (many consecutive unmapped statements). Capping the lookahead makes each entry's search
+// O(window) instead, so the whole pass stays linear in the number of listing entries. Far larger
+// than any realistic single macro-library body, so this only trades away correlation for
+// statements separated by an implausibly large unmatched gap — a debug-quality-of-life edge case,
+// not a correctness one anything in this codebase's own test fixtures ever hits.
+export const MAX_LOOKAHEAD = 5000;
+
 export interface ListingEntry {
   address: bigint;
   text: string;
@@ -123,13 +133,14 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
   let cursor = 0;
   for (const entry of entries) {
     let found = -1;
-    for (let i = cursor; i < candidates.length; i++) {
+    const limit = Math.min(candidates.length, cursor + MAX_LOOKAHEAD);
+    for (let i = cursor; i < limit; i++) {
       if (candidates[i].text === entry.text) {
         found = i;
         break;
       }
     }
-    if (found === -1) continue; // no matching candidate found ahead; leave this entry unmapped
+    if (found === -1) continue; // no matching candidate found within the window; leave this entry unmapped
 
     const loc: SourceLocation = { fsPath: candidates[found].fsPath, line: candidates[found].line };
     addressToLocation.set(entry.address, loc);

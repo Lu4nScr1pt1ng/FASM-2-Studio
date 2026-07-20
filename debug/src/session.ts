@@ -43,6 +43,17 @@ export class FasmDebugSession extends DebugSession {
     super();
     this.setDebuggerLinesStartAt1(true);
     this.setDebuggerColumnsStartAt1(true);
+
+    // VS Code stops this adapter process by signal (SIGTERM) as a normal part of ending a debug
+    // session, not just via the disconnect/terminate DAP requests — without this, that path would
+    // skip GdbDriver.dispose() and leave the gdb (and its debuggee) child process orphaned. This
+    // can't cover a hard SIGKILL (unrecoverable by any process, by OS design), but it makes the
+    // ordinary shutdown path clean rather than leaky.
+    const shutdown = () => {
+      void this.gdb?.dispose().finally(() => process.exit(0));
+    };
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
   }
 
   protected initializeRequest(response: DebugProtocol.InitializeResponse, _args: DebugProtocol.InitializeRequestArguments): void {
