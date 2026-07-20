@@ -1,0 +1,31 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Publish to Open VSX
+        working-directory: extension
+        run: npx ovsx publish --no-dependencies -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_TOKEN }}
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ secrets.VSCE_TOKEN != '' }}
+        working-directory: extension
+        run: npx vsce publish --no-dependencies -p "$VSCE_PAT"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_TOKEN }}
