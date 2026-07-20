@@ -62,7 +62,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string): Promise<
     throw new Error('FASM: Debug currently only supports fasm2/fasmg sources (fasm1 listing format is not supported).');
   }
 
-  const compiler = resolveCompiler(dialect);
+  const compiler = await resolveCompiler(dialect);
   if (!compiler) {
     throw new Error(
       `Could not find a ${dialect === 'fasm1' ? 'fasm1' : 'fasm2/fasmg'} executable on PATH. ` +

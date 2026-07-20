@@ -194,7 +194,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
 
   const dialect = currentDialect(uri);
   const configuredPath = dialect === 'fasm1' ? settings.fasm1CompilerPath : settings.fasm2CompilerPath;
-  const compilerPath = configuredPath || resolveCompilerOnPath(dialect);
+  const compilerPath = configuredPath || (await resolveCompilerOnPath(dialect));
 
   if (!compilerPath) {
     connection.sendDiagnostics({ uri, diagnostics: [] });

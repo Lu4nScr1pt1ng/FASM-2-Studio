@@ -15,7 +15,7 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
 
     try {
       const dialect = await dialectFor(editor.document.uri.fsPath);
-      const compiler = resolveCompiler(dialect);
+      const compiler = await resolveCompiler(dialect);
       item.text = compiler ? `$(tools) ${dialect} (${compiler.path})` : `$(warning) ${dialect}: compiler not found`;
       item.tooltip = compiler
         ? `FASM2 Studio — using ${compiler.path}${compiler.autoDetected ? ' (auto-detected)' : ''}. Click to change.`
