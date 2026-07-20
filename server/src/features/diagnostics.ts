@@ -4,7 +4,7 @@
 // output buffering, and a guaranteed temp-file cleanup, so a hung or runaway compiler process can
 // never wedge the language server or leak disk/OS resources.
 
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -53,6 +53,29 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
   }
 }
 
+const KILL_GRACE_PERIOD_MS = 2000;
+
+/**
+ * Kills `child` and anything it spawned, not just the single direct process. This matters
+ * because fasm2's own official distribution wraps the real binary in a shell script that invokes
+ * it as a plain (not `exec`'d) subprocess — so on a hang, killing only the wrapper leaves the
+ * real compiler process orphaned and still holding the stdout pipe open, and `close` never fires.
+ * On POSIX this is a process-group kill (spawned detached, killed via the negated pid); on
+ * Windows, `taskkill /T` walks the process tree since there's no equivalent process-group signal.
+ */
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  if (process.platform === 'win32') {
+    if (child.pid) execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => undefined);
+    return;
+  }
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    // The process group may already be empty/gone; fall back to just the direct child.
+    child.kill('SIGKILL');
+  }
+}
+
 function execCompiler(
   command: string,
   args: string[],
@@ -62,7 +85,7 @@ function execCompiler(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { cwd, windowsHide: true });
+      child = spawn(command, args, { cwd, windowsHide: true, detached: process.platform !== 'win32' });
     } catch (err) {
       resolve({ stdout: '', timedOut: false, spawnError: (err as Error).message });
       return;
@@ -71,18 +94,24 @@ function execCompiler(
     let out = '';
     let settled = false;
     let timedOut = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (result: { stdout: string; timedOut: boolean; spawnError?: string }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       resolve(result);
     };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(child);
+      // A process-tree kill is not a hard guarantee in every edge case (e.g. a grandchild that
+      // detached itself from the group) — give up after a short grace period regardless, so a
+      // hung compiler can never wedge the diagnostics pipeline indefinitely either way.
+      graceTimer = setTimeout(() => finish({ stdout: out, timedOut: true }), KILL_GRACE_PERIOD_MS);
+    }, timeoutMs);
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (out.length < MAX_OUTPUT_BYTES) out += chunk.toString('utf8');
