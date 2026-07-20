@@ -14,6 +14,15 @@ function isAvailable(command: string): boolean {
   return !(result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT');
 }
 
+interface RawDapMessage {
+  type: 'response' | 'event';
+  request_seq?: number;
+  success?: boolean;
+  message?: string;
+  event?: string;
+  body?: unknown;
+}
+
 class DapClient {
   private buffer = Buffer.alloc(0);
   private seq = 1;
@@ -38,20 +47,20 @@ class DapClient {
       if (this.buffer.length < bodyStart + length) return;
       const body = this.buffer.subarray(bodyStart, bodyStart + length).toString('utf8');
       this.buffer = this.buffer.subarray(bodyStart + length);
-      this.handleMessage(JSON.parse(body));
+      this.handleMessage(JSON.parse(body) as RawDapMessage);
     }
   }
 
-  private handleMessage(msg: any): void {
+  private handleMessage(msg: RawDapMessage): void {
     if (msg.type === 'response') {
-      const p = this.pending.get(msg.request_seq);
+      const p = this.pending.get(msg.request_seq!);
       if (p) {
-        this.pending.delete(msg.request_seq);
+        this.pending.delete(msg.request_seq!);
         if (msg.success) p.resolve(msg.body);
         else p.reject(new Error(msg.message ?? 'request failed'));
       }
     } else if (msg.type === 'event') {
-      this.events.push({ event: msg.event, body: msg.body });
+      this.events.push({ event: msg.event!, body: msg.body });
       for (let i = this.eventWaiters.length - 1; i >= 0; i--) {
         const w = this.eventWaiters[i];
         if (w.event === msg.event && (!w.predicate || w.predicate(msg.body))) {
@@ -166,7 +175,9 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
 
       await client.sendRequest('configurationDone');
 
-      const stoppedBody = (await client.waitForEvent('stopped', (b: any) => b.reason === 'breakpoint')) as { threadId: number };
+      const stoppedBody = (await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint')) as {
+        threadId: number;
+      };
       assert.strictEqual(stoppedBody.threadId, 1);
 
       const stackTrace = await client.sendRequest<{ stackFrames: Array<{ line: number; source: { path: string } }> }>('stackTrace', { threadId: 1 });
