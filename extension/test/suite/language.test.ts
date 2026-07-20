@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { invalidateCompilerCache, resolveCompiler } from '../../src/compilerDiscovery';
 
 const FIXTURES = path.resolve(__dirname, '..', '..', '..', 'test', 'fixtures');
 
@@ -125,6 +126,23 @@ describe('FASM2 Studio extension (real VS Code host)', () => {
       assert.match(diagnostics[0].message, /anotherUndefinedSymbol/);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors an explicit fasm2Studio.fasm2CompilerPath setting instead of auto-detecting', async () => {
+    const config = vscode.workspace.getConfiguration('fasm2Studio');
+    const original = config.get<string>('fasm2CompilerPath');
+
+    try {
+      await config.update('fasm2CompilerPath', '/not/a/real/path/to/fasm2', vscode.ConfigurationTarget.Global);
+      invalidateCompilerCache();
+
+      const resolved = await resolveCompiler('fasm2');
+      assert.strictEqual(resolved?.path, '/not/a/real/path/to/fasm2');
+      assert.strictEqual(resolved?.autoDetected, false, 'an explicitly configured path must not be reported as auto-detected');
+    } finally {
+      await config.update('fasm2CompilerPath', original, vscode.ConfigurationTarget.Global);
+      invalidateCompilerCache();
     }
   });
 });

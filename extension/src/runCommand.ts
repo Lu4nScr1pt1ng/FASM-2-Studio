@@ -5,6 +5,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as vscode from 'vscode';
+import { quoteForShell } from './shellQuote';
 
 const TERMINAL_NAME = 'FASM';
 
@@ -28,6 +29,5 @@ export async function runOutputBinary(outputFsPath: string): Promise<void> {
   terminal.show(true);
   // outputFsPath is always absolute (derived from the source file's own absolute path), so it
   // runs directly on every shell without needing a "./" prefix or PATH lookup.
-  const quoted = /\s/.test(outputFsPath) ? `"${outputFsPath}"` : outputFsPath;
-  terminal.sendText(quoted);
+  terminal.sendText(quoteForShell(outputFsPath));
 }
