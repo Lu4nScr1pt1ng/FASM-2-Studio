@@ -1,0 +1,32 @@
+{
+  "name": "fasm2-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "VS Code tooling for flat assembler (fasm2/fasmg and fasm1)",
+  "license": "MIT",
+  "workspaces": [
+    "server",
+    "debug",
+    "extension"
+  ],
+  "scripts": {
+    "bootstrap": "npm install",
+    "build": "npm run build --workspace server && npm run build --workspace debug && npm run build --workspace extension",
+    "watch": "npm run watch --workspace server & npm run watch --workspace debug & npm run watch --workspace extension",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace debug && npm run typecheck --workspace extension",
+    "test": "npm run test --workspace server && npm run test --workspace debug && npm run test --workspace extension",
+    "test:server": "npm run test --workspace server",
+    "test:debug": "npm run test --workspace debug",
+    "test:extension": "npm run test --workspace extension",
+    "package": "npm run build && npm run package --workspace extension"
+  },
+  "devDependencies": {
+    "eslint": "^10.7.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.64.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

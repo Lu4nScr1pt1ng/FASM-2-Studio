@@ -1,0 +1,28 @@
+{
+  "name": "@fasm2-studio/debug",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Debug adapter (DAP) for fasm2/fasm1 binaries, driving gdb/lldb as the process-control backend",
+  "license": "MIT",
+  "main": "dist/adapter.js",
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc -p . --noEmit",
+    "pretest": "node esbuild.js",
+    "test": "mocha --require tsx 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@fasm2-studio/server": "*",
+    "@vscode/debugadapter": "^1.68.0",
+    "@vscode/debugprotocol": "^1.68.0"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.28.1",
+    "mocha": "^11.7.6",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
+  }
+}

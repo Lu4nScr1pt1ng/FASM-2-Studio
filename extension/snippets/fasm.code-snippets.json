@@ -1,0 +1,73 @@
+{
+  "format binary": {
+    "prefix": "format-binary",
+    "body": ["format binary as '${1:bin}'", "org ${2:0}", "", "$0"],
+    "description": "Flat binary output"
+  },
+  "format PE console (x64)": {
+    "prefix": "format-pe64",
+    "body": [
+      "format PE64 console",
+      "entry ${1:start}",
+      "",
+      "include 'win64a.inc'",
+      "",
+      "section '.text' code readable executable",
+      "",
+      "${1:start}:",
+      "\t$0",
+      "\tret",
+      "",
+      "section '.idata' import data readable writeable",
+      "",
+      "\tlibrary kernel32, 'kernel32.dll'",
+      "\timport kernel32, ExitProcess, 'ExitProcess'"
+    ],
+    "description": "PE64 console executable skeleton (fasm2/fasmg)"
+  },
+  "format ELF64 executable": {
+    "prefix": "format-elf64",
+    "body": ["format ELF64 executable 3", "entry ${1:start}", "", "segment readable executable", "", "${1:start}:", "\t$0"],
+    "description": "ELF64 executable skeleton (fasm2/fasmg)"
+  },
+  "macro block": {
+    "prefix": "macro",
+    "body": ["macro ${1:name} ${2:params}", "\t$0", "end macro"],
+    "description": "Define a macro (fasm2/fasmg)"
+  },
+  "struct block": {
+    "prefix": "struct",
+    "body": ["struct ${1:name}", "\t$0", "ends"],
+    "description": "Define a structure layout"
+  },
+  "virtual at": {
+    "prefix": "virtual",
+    "body": ["virtual at ${1:address}", "\t$0", "end virtual"],
+    "description": "Assemble a block without emitting it to output"
+  },
+  "if block": {
+    "prefix": "if",
+    "body": ["if ${1:condition}", "\t$0", "end if"],
+    "description": "Conditional assembly"
+  },
+  "while block": {
+    "prefix": "while",
+    "body": ["while ${1:condition}", "\t$0", "end while"],
+    "description": "Assemble-time loop"
+  },
+  "repeat block": {
+    "prefix": "repeat",
+    "body": ["repeat ${1:count}", "\t$0", "end repeat"],
+    "description": "Repeat a block a fixed number of times (fasm2/fasmg)"
+  },
+  "include": {
+    "prefix": "include",
+    "body": "include '${1:file.inc}'",
+    "description": "Include another source file"
+  },
+  "label at": {
+    "prefix": "label-at",
+    "body": "label ${1:name} at ${2:address}",
+    "description": "Define a label at a given address"
+  }
+}

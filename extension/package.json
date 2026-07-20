@@ -1,0 +1,173 @@
+{
+  "name": "fasm2-studio",
+  "displayName": "FASM2 Studio",
+  "description": "Syntax highlighting, autocomplete, hover docs, diagnostics and build tasks for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
+  "version": "0.1.0",
+  "publisher": "fasm2-studio",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lu4nScr1pt1ng/FASM-2-Studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lu4nScr1pt1ng/FASM-2-Studio/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Snippets", "Linters", "Debuggers"],
+  "keywords": ["fasm", "fasm2", "fasmg", "assembly", "x86", "assembler"],
+  "activationEvents": ["onLanguage:fasm"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "fasm",
+        "aliases": ["FASM", "FASM2", "fasmg", "FASM1"],
+        "extensions": [".asm", ".inc", ".fasm", ".fas"],
+        "configuration": "./language-configuration/fasm.language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fasm",
+        "scopeName": "source.fasm",
+        "path": "./syntaxes/fasm.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "fasm",
+        "path": "./snippets/fasm.code-snippets.json"
+      }
+    ],
+    "configuration": {
+      "title": "FASM2 Studio",
+      "properties": {
+        "fasm2Studio.defaultDialect": {
+          "type": "string",
+          "enum": ["fasm2", "fasm1"],
+          "default": "fasm2",
+          "description": "Dialect assumed for source files where the dialect cannot be auto-detected from their contents."
+        },
+        "fasm2Studio.fasm2CompilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the fasm2/fasmg executable. Leave empty to auto-detect it on PATH."
+        },
+        "fasm2Studio.fasm1CompilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the fasm1 (classic flat assembler) executable. Leave empty to auto-detect it on PATH."
+        },
+        "fasm2Studio.diagnosticsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Compile in the background to show errors/warnings as you edit."
+        },
+        "fasm2Studio.diagnosticsDebounceMs": {
+          "type": "number",
+          "default": 400,
+          "minimum": 100,
+          "description": "Milliseconds to wait after you stop typing before re-running diagnostics."
+        },
+        "fasm2Studio.buildOutputPath": {
+          "type": "string",
+          "default": "",
+          "description": "Output path for the default Build task, relative to the source file's directory. Leave empty to use the source file name with its extension stripped."
+        },
+        "fasm2Studio.gdbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to gdb, used by FASM: Debug. Leave empty to use \"gdb\" from PATH (e.g. from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
+        }
+      }
+    },
+    "commands": [
+      { "command": "fasm2Studio.build", "title": "FASM: Build", "category": "FASM" },
+      { "command": "fasm2Studio.buildAndRun", "title": "FASM: Build and Run", "category": "FASM" },
+      { "command": "fasm2Studio.run", "title": "FASM: Run", "category": "FASM" },
+      { "command": "fasm2Studio.debug", "title": "FASM: Debug", "category": "FASM" },
+      { "command": "fasm2Studio.selectCompiler", "title": "FASM: Select Compiler", "category": "FASM" }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "fasm",
+        "required": ["file"],
+        "properties": {
+          "file": { "type": "string", "description": "Source file to assemble, relative to the workspace or absolute." },
+          "output": { "type": "string", "description": "Output file path. Defaults to the source file name with its extension stripped." },
+          "dialect": { "type": "string", "enum": ["fasm2", "fasm1"], "description": "Overrides auto-detected dialect for this task." },
+          "extraArgs": { "type": "array", "items": { "type": "string" }, "description": "Additional command-line arguments passed to the compiler." },
+          "debugBuild": { "type": "boolean", "description": "Injects the bundled listing macro (fasm2 only) so the FASM debugger can map addresses back to source lines." }
+        }
+      }
+    ],
+    "breakpoints": [{ "language": "fasm" }],
+    "debuggers": [
+      {
+        "type": "fasm",
+        "label": "FASM",
+        "languages": ["fasm"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["asmFile"],
+            "properties": {
+              "asmFile": { "type": "string", "description": "The .asm source file to debug.", "default": "${file}" },
+              "program": { "type": "string", "description": "Path to the assembled executable. Defaults to the source file name with its extension stripped." },
+              "listingFile": { "type": "string", "description": "Path to the .lst listing produced by a debug build. Defaults to \"<program>.lst\"." },
+              "gdbPath": { "type": "string", "description": "Path to gdb. Leave unset to use \"gdb\" from PATH." },
+              "cwd": { "type": "string", "description": "Working directory for the debugged program." },
+              "stopOnEntry": { "type": "boolean", "description": "Stop at the program's first instruction.", "default": true }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "fasm",
+            "request": "launch",
+            "name": "Debug FASM program",
+            "asmFile": "${file}",
+            "preLaunchTask": "fasm: Debug build (active file)",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "FASM: Debug",
+            "description": "Assemble the active file with debug listing info and launch it under gdb.",
+            "body": {
+              "type": "fasm",
+              "request": "launch",
+              "name": "Debug FASM program",
+              "asmFile": "^\"\\${file}\"",
+              "preLaunchTask": "fasm: Debug build (active file)",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc -p . --noEmit",
+    "pretest": "tsc -p tsconfig.test.json",
+    "test": "node ./out-test/test/runTest.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.1.1",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "mocha": "^11.7.6",
+    "typescript": "^5.9.3"
+  }
+}

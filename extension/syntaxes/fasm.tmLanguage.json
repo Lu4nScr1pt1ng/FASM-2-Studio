@@ -1,0 +1,130 @@
+{
+  "name": "FASM",
+  "scopeName": "source.fasm",
+  "fileTypes": ["asm", "inc", "fasm", "fas"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#include-directive" },
+    { "include": "#label-definition" },
+    { "include": "#macro-struct-definition" },
+    { "include": "#constant-definition" },
+    { "include": "#directives" },
+    { "include": "#format-keywords" },
+    { "include": "#size-specifiers" },
+    { "include": "#registers" },
+    { "include": "#mnemonics" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.semicolon.fasm",
+      "match": ";.*$"
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.fasm",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "match": "''", "name": "constant.character.escape.fasm" }]
+        },
+        {
+          "name": "string.quoted.double.fasm",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "match": "\"\"", "name": "constant.character.escape.fasm" }]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.float.fasm", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9]+)?\\b" },
+        { "name": "constant.numeric.hex.fasm", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.hex.fasm", "match": "\\b[0-9][0-9A-Fa-f_]*[hH]\\b" },
+        { "name": "constant.numeric.binary.fasm", "match": "\\b[01][01_]*[bB]\\b" },
+        { "name": "constant.numeric.octal.fasm", "match": "\\b[0-7][0-7_]*[oOqQ]\\b" },
+        { "name": "constant.numeric.decimal.fasm", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "include-directive": {
+      "match": "^\\s*(include|file)\\b",
+      "captures": { "1": { "name": "keyword.control.import.fasm" } }
+    },
+    "label-definition": {
+      "patterns": [
+        {
+          "match": "^\\s*(\\.[A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(:)",
+          "captures": {
+            "1": { "name": "entity.name.label.local.fasm" },
+            "2": { "name": "punctuation.separator.label.fasm" }
+          }
+        },
+        {
+          "match": "^\\s*([A-Za-z_@$?][A-Za-z0-9_.@$?]*)\\s*(:)(?!=)",
+          "captures": {
+            "1": { "name": "entity.name.label.fasm" },
+            "2": { "name": "punctuation.separator.label.fasm" }
+          }
+        },
+        {
+          "match": "\\b(label)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)",
+          "captures": {
+            "1": { "name": "keyword.control.directive.fasm" },
+            "2": { "name": "entity.name.label.fasm" }
+          }
+        }
+      ]
+    },
+    "macro-struct-definition": {
+      "match": "\\b(macro|struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
+      "captures": {
+        "1": { "name": "keyword.control.directive.fasm" },
+        "2": { "name": "entity.name.function.fasm" }
+      }
+    },
+    "constant-definition": {
+      "patterns": [
+        {
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(=)(?!=)",
+          "captures": {
+            "1": { "name": "variable.other.constant.fasm" },
+            "2": { "name": "keyword.operator.assignment.fasm" }
+          }
+        },
+        {
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s+(equ)\\b",
+          "captures": {
+            "1": { "name": "variable.other.constant.fasm" },
+            "2": { "name": "keyword.control.directive.fasm" }
+          }
+        }
+      ]
+    },
+    "directives": {
+      "name": "keyword.control.directive.fasm",
+      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struct|ends|if|else|while|repeat|rept|irp|irps|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|at|db|dw|dd|dq|dt|du|rb|rw|rd|rq|file|label)\\b"
+    },
+    "size-specifiers": {
+      "name": "storage.type.fasm",
+      "match": "(?i)\\b(byte|word|dword|fword|pword|qword|tword|tbyte|xmmword|ymmword|zmmword|ptr|near|far|short)\\b"
+    },
+    "format-keywords": {
+      "name": "support.constant.format.fasm",
+      "match": "(?i)\\b(binary|MZ|PE|COFF|ELF|ELF64|console|GUI|native|DLL|WDM|efi|as|at)\\b"
+    },
+    "registers": {
+      "name": "variable.language.register.fasm",
+      "match": "(?i)\\b(xmm1[0-5]|xmm[0-9]|ymm[0-7]|zmm[0-3]|r1[0-5][dwb]?|r[89][dwb]?|spl|bpl|sil|dil|e[a-d]x|e[sb]p|e[sd]i|r[a-d]x|r[sb]p|r[sd]i|st[0-7]|mm[0-7]|cr[0-4]|cr8|dr[0-3]|dr[67]|k[0-7]|[a-d][lh]|[a-d]x|sp|bp|si|di|rip|eip|ip|cs|ds|es|fs|gs|ss)\\b"
+    },
+    "mnemonics": {
+      "name": "keyword.mnemonic.fasm",
+      "match": "(?i)\\b(cmpxchg16b|vzeroupper|cmpxchg8b|sysenter|syscall|cmpxchg|vmovaps|movsxd|popcnt|loopne|cmovne|movaps|movups|movapd|movdqa|movdqu|movzx|movsx|pushf|lzcnt|tzcnt|jecxz|jrcxz|loope|setne|cmove|cmovg|cmovl|cpuid|rdtsc|movsb|movsw|movsd|movsq|stosb|stosw|stosd|stosq|repne|leave|enter|movss|addss|addps|subss|mulss|divss|wrmsr|rdmsr|xchg|push|popf|imul|idiv|test|shld|shrd|call|retn|retf|jcxz|loop|sete|setg|setl|seta|setb|int3|movs|cmps|scas|stos|lods|repe|lock|xadd|cwde|cdqe|wait|fstp|fadd|fsub|fmul|fdiv|pxor|pand|mov|lea|pop|add|adc|sub|sbb|inc|dec|neg|mul|div|cmp|and|xor|not|shl|sal|shr|sar|rol|ror|rcl|rcr|bts|btr|btc|bsf|bsr|jmp|ret|jne|jnz|jge|jle|jae|jbe|jnc|jno|jns|jnp|nop|hlt|int|cld|std|clc|stc|cmc|cli|sti|rep|cbw|cwd|cdq|cqo|fld|fst|por|out|or|bt|je|jz|jg|jl|ja|jb|jc|jo|js|jp|in)\\b"
+    },
+    "operators": {
+      "name": "keyword.operator.fasm",
+      "match": "(?i)\\b(and|or|xor|not|shl|shr|mod|ptr|dup)\\b|[+\\-*/%<>=!&|~]"
+    }
+  }
+}

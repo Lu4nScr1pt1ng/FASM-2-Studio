@@ -1,0 +1,31 @@
+=thread-group-added,id="i1"
+~"Reading symbols from ./prog...\n"
+~"(No debugging symbols found in ./prog)\n"
+(gdb)
+1^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x0000000000400082",thread-groups=["i1"],times="0",original-location="*0x400082"}
+(gdb)
+=thread-group-started,id="i1",pid="73677"
+=thread-created,id="1",group-id="i1"
+~"\nThis GDB supports auto-downloading debuginfo from the following URLs:\n"
+~"  <https://debuginfod.opensuse.org/>\n"
+~"Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]\n"
+~"Debuginfod has been disabled.\nTo make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.\n"
+2^running
+*running,thread-id="all"
+(gdb)
+=breakpoint-modified,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x0000000000400082",thread-groups=["i1"],times="1",original-location="*0x400082"}
+~"\n"
+~"Breakpoint 1, 0x0000000000400082 in ?? ()\n"
+*stopped,reason="breakpoint-hit",disp="keep",bkptno="1",frame={addr="0x0000000000400082",func="??",args=[],arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="7"
+(gdb)
+3^done,register-values=[{number="0",value="0x1"},{number="0",value="0x1"}]
+(gdb)
+4^running
+*running,thread-id="all"
+(gdb)
+~"[Inferior 1 (process 73677) exited normally]\n"
+=thread-exited,id="1",group-id="i1"
+=thread-group-exited,id="i1",exit-code="0"
+*stopped,reason="exited-normally"
+(gdb)
+5^exit
