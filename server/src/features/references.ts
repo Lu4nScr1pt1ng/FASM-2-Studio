@@ -9,8 +9,9 @@ function toLspRange(r: { startLine: number; startChar: number; endLine: number; 
 }
 
 /**
- * Best-effort find-all-references: see the doc comment on Workspace.allKnownDocuments for the
- * scope limit (open documents + their resolved includes, not a full workspace crawl).
+ * Best-effort find-all-references, backed by Workspace's name-indexed global map: covers every
+ * open editor plus the background-indexed workspace plus anything resolved on demand via
+ * `include`, but not files outside all of those that nothing has ever touched this session.
  */
 export function getReferences(workspace: Workspace, word: string, includeDeclaration: boolean): Location[] {
   return workspace.findReferences(word, includeDeclaration).map((entry) => ({

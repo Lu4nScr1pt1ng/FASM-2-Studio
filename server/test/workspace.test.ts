@@ -102,6 +102,42 @@ describe('Workspace indexing', () => {
     assert.strictEqual(skipped, 1);
   });
 
+  it('reverts to the indexed-from-disk version in the global index when the live buffer closes', async () => {
+    const uri = await writeFile('reverts.asm', 'DISK_NAME = 1\n');
+    const ws = new Workspace();
+    await ws.indexWorkspace([uri], dialectAlwaysFasm2);
+
+    ws.updateDocument(uri, 2, 'EDITOR_ONLY_NAME = 1\n', 'fasm2');
+    assert.strictEqual(ws.findWorkspaceSymbols('EDITOR_ONLY_NAME').length, 1);
+    assert.strictEqual(ws.findWorkspaceSymbols('DISK_NAME').length, 0);
+
+    // Closing the editor without saving should fall back to whatever's still indexed from disk,
+    // not just delete the symbol from the global index outright.
+    ws.removeDocument(uri);
+    assert.strictEqual(ws.findWorkspaceSymbols('EDITOR_ONLY_NAME').length, 0);
+    assert.strictEqual(ws.findWorkspaceSymbols('DISK_NAME').length, 1);
+  });
+
+  it('retracts only the names a changed document no longer contributes, keeping unrelated ones intact', async () => {
+    const uriA = await writeFile('multi.asm', 'FIRST = 1\nSECOND = 2\n');
+    const uriB = await writeFile('other.asm', 'THIRD = 3\n');
+    const ws = new Workspace();
+    await ws.indexWorkspace([uriA, uriB], dialectAlwaysFasm2);
+
+    assert.strictEqual(ws.findWorkspaceSymbols('FIRST').length, 1);
+    assert.strictEqual(ws.findWorkspaceSymbols('SECOND').length, 1);
+    assert.strictEqual(ws.findWorkspaceSymbols('THIRD').length, 1);
+
+    // Edit multi.asm to drop SECOND and add a brand new name, leaving FIRST untouched.
+    ws.updateDocument(uriA, 2, 'FIRST = 1\nBRAND_NEW = 4\n', 'fasm2');
+
+    assert.strictEqual(ws.findWorkspaceSymbols('FIRST').length, 1);
+    assert.strictEqual(ws.findWorkspaceSymbols('SECOND').length, 0);
+    assert.strictEqual(ws.findWorkspaceSymbols('BRAND_NEW').length, 1);
+    // A completely unrelated file's symbol must survive an edit to a different file untouched.
+    assert.strictEqual(ws.findWorkspaceSymbols('THIRD').length, 1);
+  });
+
   it('never throws when given a mix of missing, unreadable and valid files', async () => {
     const uriValid = await writeFile('ok.asm', 'OK = 1\n');
     const uriMissing = URI.file(path.join(tmpDir, 'does-not-exist.asm')).toString();

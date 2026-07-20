@@ -12,6 +12,11 @@ const INDEX_BATCH_SIZE = 40; // files parsed per tick before yielding back to th
 
 export type DialectResolver = (uri: string, text: string) => Dialect;
 
+interface Contribution {
+  symbolNames: Set<string>;
+  refNames: Set<string>;
+}
+
 /**
  * Tracks parsed state for three layers, checked in this priority order everywhere a document is
  * looked up:
@@ -22,24 +27,34 @@ export type DialectResolver = (uri: string, text: string) => Dialect;
  *                         *outside* the workspace (e.g. the compiler's own system include dir) —
  *                         those aren't covered by the workspace scan, so they're read the first
  *                         time something actually references them, then cached.
- * This is what makes findReferences/findWorkspaceSymbols/rename workspace-wide without paying a
- * disk read per keystroke: indexing happens once, off the interactive request path, and every
- * lookup after that is an in-memory Map hit.
+ *
+ * findReferences/findSymbolAnywhere/findWorkspaceSymbols are backed by a name-indexed global map
+ * (symbolsByName/referencesByName) rather than scanning every known document on every call: each
+ * mutation (open/edit/index/close/remove) does O(that one document's symbol count) work to keep
+ * the index in sync, so a lookup that used to cost O(every document × its symbols) is an O(1)
+ * average Map access instead — the cost moves from "every keystroke-triggered rename preview" to
+ * "the edit that already happened anyway", which is the right side of that trade for an editor.
  */
 export class Workspace {
   private readonly openDocuments = new Map<string, ParsedDocument>();
   private readonly indexedDocuments = new Map<string, ParsedDocument>();
   private readonly externalDiskCache = new Map<string, ParsedDocument | null>();
 
+  private readonly symbolsByName = new Map<string, SymbolDefinition[]>();
+  private readonly referencesByName = new Map<string, SymbolReference[]>();
+  private readonly contributions = new Map<string, Contribution>();
+
   updateDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
     const parsed = parseDocument(uri, version, text, dialect);
     this.openDocuments.set(uri, parsed);
     this.externalDiskCache.delete(uri);
+    this.syncGlobalIndex(uri);
     return parsed;
   }
 
   removeDocument(uri: string): void {
     this.openDocuments.delete(uri);
+    this.syncGlobalIndex(uri);
   }
 
   getDocument(uri: string): ParsedDocument | undefined {
@@ -80,11 +95,15 @@ export class Workspace {
   /** Re-indexes a single file from disk — used to react to workspace/didChangeWatchedFiles. */
   async reindexFile(uri: string, resolveDialect: DialectResolver): Promise<void> {
     if (this.openDocuments.has(uri)) return;
-    if (!(await this.readAndIndex(uri, resolveDialect))) this.indexedDocuments.delete(uri);
+    if (!(await this.readAndIndex(uri, resolveDialect))) {
+      this.indexedDocuments.delete(uri);
+      this.syncGlobalIndex(uri);
+    }
   }
 
   removeIndexedFile(uri: string): void {
     this.indexedDocuments.delete(uri);
+    this.syncGlobalIndex(uri);
   }
 
   private async readAndIndex(uri: string, resolveDialect: DialectResolver): Promise<boolean> {
@@ -94,6 +113,7 @@ export class Workspace {
       if (!stat.isFile() || stat.size > MAX_INDEXED_FILE_BYTES) return false;
       const text = await fs.readFile(fsPath, 'utf8');
       this.indexedDocuments.set(uri, parseDocument(uri, -1, text, resolveDialect(uri, text)));
+      this.syncGlobalIndex(uri);
       return true;
     } catch {
       return false;
@@ -126,6 +146,7 @@ export class Workspace {
       const text = fsSync.readFileSync(fsPath, 'utf8');
       const parsed = parseDocument(uri, -1, text, dialect);
       this.externalDiskCache.set(uri, parsed);
+      this.syncGlobalIndex(uri);
       return parsed;
     } catch {
       this.externalDiskCache.set(uri, null);
@@ -171,6 +192,67 @@ export class Workspace {
     return results;
   }
 
+  // --- global name index -----------------------------------------------------------------
+
+  /** Recomputes uri's contribution to the global index from whatever is currently authoritative
+   * for it (open buffer > indexed-from-disk > external-disk-cache), retracting the previous
+   * contribution first. O(that document's own symbol/reference count), never the whole workspace. */
+  private syncGlobalIndex(uri: string): void {
+    this.retractFromGlobalIndex(uri);
+    const doc = this.openDocuments.get(uri) ?? this.indexedDocuments.get(uri) ?? this.externalDiskCache.get(uri) ?? undefined;
+    if (doc) this.addToGlobalIndex(doc);
+  }
+
+  private addToGlobalIndex(doc: ParsedDocument): void {
+    const symbolNames = new Set<string>();
+    const refNames = new Set<string>();
+
+    for (const sym of doc.symbols) {
+      let bucket = this.symbolsByName.get(sym.name);
+      if (!bucket) {
+        bucket = [];
+        this.symbolsByName.set(sym.name, bucket);
+      }
+      bucket.push(sym);
+      symbolNames.add(sym.name);
+    }
+
+    for (const ref of doc.references) {
+      let bucket = this.referencesByName.get(ref.name);
+      if (!bucket) {
+        bucket = [];
+        this.referencesByName.set(ref.name, bucket);
+      }
+      bucket.push(ref);
+      refNames.add(ref.name);
+    }
+
+    this.contributions.set(doc.uri, { symbolNames, refNames });
+  }
+
+  private retractFromGlobalIndex(uri: string): void {
+    const contribution = this.contributions.get(uri);
+    if (!contribution) return;
+
+    for (const name of contribution.symbolNames) {
+      const bucket = this.symbolsByName.get(name);
+      if (!bucket) continue;
+      const filtered = bucket.filter((s) => s.uri !== uri);
+      if (filtered.length > 0) this.symbolsByName.set(name, filtered);
+      else this.symbolsByName.delete(name);
+    }
+
+    for (const name of contribution.refNames) {
+      const bucket = this.referencesByName.get(name);
+      if (!bucket) continue;
+      const filtered = bucket.filter((r) => r.uri !== uri);
+      if (filtered.length > 0) this.referencesByName.set(name, filtered);
+      else this.referencesByName.delete(name);
+    }
+
+    this.contributions.delete(uri);
+  }
+
   /**
    * Exact-name lookup across the whole known workspace, regardless of `include` reachability.
    * Hover/go-to-definition/signature-help search the include graph first (that's what the
@@ -180,73 +262,26 @@ export class Workspace {
    * that distinction obvious (see hover's "not included in this file" note).
    */
   findSymbolAnywhere(name: string): SymbolDefinition[] {
-    const results: SymbolDefinition[] = [];
-    for (const doc of this.allKnownDocuments()) {
-      for (const sym of doc.symbols) {
-        if (sym.name === name) results.push(sym);
-      }
-    }
-    return results;
-  }
-
-  /** Every document this workspace instance currently knows about: open editors (authoritative
-   * for their own uri) plus the full workspace index plus anything reached on-demand outside it. */
-  private *allKnownDocuments(): Generator<ParsedDocument> {
-    const seen = new Set<string>();
-    for (const doc of this.openDocuments.values()) {
-      seen.add(doc.uri);
-      yield doc;
-    }
-    for (const doc of this.indexedDocuments.values()) {
-      if (seen.has(doc.uri)) continue;
-      seen.add(doc.uri);
-      yield doc;
-    }
-    for (const doc of this.externalDiskCache.values()) {
-      if (!doc || seen.has(doc.uri)) continue;
-      seen.add(doc.uri);
-      yield doc;
-    }
+    return this.symbolsByName.get(name)?.slice() ?? [];
   }
 
   findReferences(name: string, includeDeclaration: boolean): Array<SymbolReference | SymbolDefinition> {
-    const results: Array<SymbolReference | SymbolDefinition> = [];
-    const seen = new Set<string>();
-
-    for (const doc of this.allKnownDocuments()) {
-      if (includeDeclaration) {
-        for (const sym of doc.symbols) {
-          if (sym.name !== name) continue;
-          const key = `${sym.uri}:${sym.nameRange.startLine}:${sym.nameRange.startChar}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          results.push(sym);
-        }
-      }
-      for (const ref of doc.references) {
-        if (ref.name !== name) continue;
-        const key = `${ref.uri}:${ref.range.startLine}:${ref.range.startChar}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        results.push(ref);
-      }
-    }
+    const results: Array<SymbolReference | SymbolDefinition> = includeDeclaration ? (this.symbolsByName.get(name)?.slice() ?? []) : [];
+    const refs = this.referencesByName.get(name);
+    if (refs) results.push(...refs);
     return results;
   }
 
+  /** Substring match over symbol names — inherently O(total distinct names) since every name has
+   * to be tested, but it's one flat pass over the index rather than re-deriving "every document,
+   * every symbol, deduped" on each call. */
   findWorkspaceSymbols(query: string): SymbolDefinition[] {
     const needle = query.toLowerCase();
-    const results: SymbolDefinition[] = [];
-    const seen = new Set<string>();
+    if (!needle) return [...this.symbolsByName.values()].flat();
 
-    for (const doc of this.allKnownDocuments()) {
-      for (const sym of doc.symbols) {
-        if (needle && !sym.name.toLowerCase().includes(needle)) continue;
-        const key = `${sym.uri}:${sym.nameRange.startLine}:${sym.nameRange.startChar}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        results.push(sym);
-      }
+    const results: SymbolDefinition[] = [];
+    for (const [name, symbols] of this.symbolsByName) {
+      if (name.toLowerCase().includes(needle)) results.push(...symbols);
     }
     return results;
   }
