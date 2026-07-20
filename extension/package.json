@@ -157,7 +157,9 @@
     "pretest": "tsc -p tsconfig.test.json",
     "test": "node ./out-test/test/runTest.js",
     "test:unit": "mocha --require tsx 'test/unit/**/*.test.ts'",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "publish:marketplace": "vsce publish --no-dependencies",
+    "publish:openvsx": "ovsx publish --no-dependencies"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.0"
@@ -170,6 +172,7 @@
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.1",
     "mocha": "^11.7.6",
+    "ovsx": "^1.0.2",
     "tsx": "^4.23.1",
     "typescript": "^5.9.3"
   }
