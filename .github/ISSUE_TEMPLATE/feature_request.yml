@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a new capability, or a change to how an existing one works
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Requests that describe the problem tend to get a better response than requests that
+        describe a solution — there might already be a way to do what you want, or a simpler
+        approach than the one you have in mind. Both are welcome, but lead with the "why".
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do, and what's stopping you right now?
+      description: >
+        The actual workflow you're stuck on, not just "add X". If there's a workaround you're
+        using today, mention it — it helps calibrate how painful the gap actually is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd want instead
+      description: If you have a specific idea of how this should work, describe it here. If not, that's fine too — say so.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Other extensions, settings, or approaches you tried before opening this.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does this belong?
+      options:
+        - Syntax highlighting
+        - Autocomplete / hover
+        - Go to definition / references / rename
+        - Diagnostics
+        - Build / Run tasks
+        - Debugger
+        - fasm1 support
+        - Not sure
+    validations:
+      required: false

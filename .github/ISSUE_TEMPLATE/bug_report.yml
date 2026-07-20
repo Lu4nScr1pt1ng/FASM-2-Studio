@@ -1,0 +1,105 @@
+name: Bug report
+description: Something in the extension, language server, or debugger isn't working right
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A couple of things that make bug reports here much faster to act on:
+
+        - If you can attach a small `.asm`/`.inc` file that reproduces it, do that instead of
+          describing the source — this extension deals with a lot of fasm2/fasm1 syntax edge
+          cases, and a real file removes all the guessing.
+        - "It doesn't work" without an error message, an Output panel log, or a screenshot is
+          usually not enough to act on. Include what you actually saw.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected instead, and what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Ideally: open this file, do this, see this. If it only happens with a specific project
+        layout (multiple files, particular includes), mention that too.
+      placeholder: |
+        1. Open example.asm (attached below)
+        2. Trigger completion after `mov `
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Minimal .asm/.inc that reproduces it
+      description: Paste it directly, or attach the file(s) by dragging them into this box.
+      render: fasm
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does this show up?
+      multiple: true
+      options:
+        - Syntax highlighting
+        - Autocomplete / hover
+        - Go to definition / references / rename
+        - Diagnostics (error/warning squiggles)
+        - Build / Run
+        - Debugger
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: dialect
+    attributes:
+      label: fasm2 or fasm1?
+      placeholder: fasm2 (fasmg) — most people are on this
+    validations:
+      required: true
+
+  - type: input
+    id: compiler-version
+    attributes:
+      label: Compiler version
+      description: Output of `fasm2` (or `fasm1`) run with no arguments.
+      placeholder: "flat assembler  version g.kp60"
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11 / macOS 15 (Apple Silicon) / Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: input
+    id: vscode-version
+    attributes:
+      label: VS Code version
+      description: Help → About, or `code --version`.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: >
+        For language-server issues: Output panel → "FASM2 Studio Language Server". For debugger
+        issues: the Debug Console output, and whether gdb/lldb is on your PATH.
+      render: text
+    validations:
+      required: false
