@@ -60,6 +60,19 @@ describe('symbolIndex', () => {
     assert.strictEqual(doc.formatDirective, "binary as 'img'");
   });
 
+  it('excludes instruction mnemonics, registers, and directives from collected references', () => {
+    const src = ['format binary', 'start:', '\tmov eax, sharedConst', '\tadd eax, ebx', '\tjnz start'].join('\n');
+    const doc = parseDocument('file:///refs.asm', 1, src, 'fasm2');
+
+    const refNames = doc.references.map((r) => r.name);
+    for (const noise of ['mov', 'eax', 'ebx', 'add', 'jnz']) {
+      assert.ok(!refNames.includes(noise), `expected "${noise}" to be filtered out of references, got: ${refNames.join(', ')}`);
+    }
+    // A genuine user symbol on the same lines must still come through.
+    assert.ok(refNames.includes('sharedConst'));
+    assert.ok(refNames.includes('start'));
+  });
+
   it('never throws on malformed or pathological input', () => {
     const pathological = [
       'macro',

@@ -5,7 +5,10 @@
 // expand macros. Parsing never throws: malformed or partial lines are simply skipped so one bad
 // file can't take down the server or block editing of the rest of the document.
 
-import { Dialect, IncludeDirective, ParsedDocument, Range, SymbolDefinition, SymbolKind, SymbolReference } from '../types';
+import directivesData from '../data/directives.json';
+import instructionsData from '../data/instructions.json';
+import registersData from '../data/registers.json';
+import { DirectiveEntry, Dialect, InstructionEntry, IncludeDirective, ParsedDocument, Range, RegisterEntry, SymbolDefinition, SymbolKind, SymbolReference } from '../types';
 import { Token, TokenType, tokenizeDocument, unquoteString } from './tokenizer';
 
 const BLOCK_END_KEYWORDS: Record<string, string> = {
@@ -14,6 +17,18 @@ const BLOCK_END_KEYWORDS: Record<string, string> = {
   virtual: 'end',
   namespace: 'end',
 };
+
+// Bare identifiers that are instructions, registers, or directives aren't user symbols — they can
+// never be defined, renamed, or meaningfully "found" as a reference, and collecting them anyway
+// would flood find-references/rename with every "mov"/"eax" in the file for no benefit. Built
+// once from the same static data completion/hover already use, not per-parse.
+const NON_SYMBOL_IDENTIFIERS: ReadonlySet<string> = new Set([
+  ...(instructionsData as InstructionEntry[]).map((i) => i.mnemonic.toLowerCase()),
+  ...(registersData as RegisterEntry[]).map((r) => r.name.toLowerCase()),
+  ...(directivesData as DirectiveEntry[])
+    .map((d) => d.name.toLowerCase())
+    .filter((name) => !name.includes(' ')), // multi-word entries ("end macro") never match a single token anyway
+]);
 
 function tokenRange(t: Token): Range {
   return { startLine: t.line, startChar: t.startChar, endLine: t.line, endChar: t.endChar };
@@ -186,7 +201,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
 
 function collectReferences(tokens: Token[], uri: string, out: SymbolReference[]): void {
   for (const t of tokens) {
-    if (t.type === TokenType.Ident) {
+    if (t.type === TokenType.Ident && !NON_SYMBOL_IDENTIFIERS.has(t.text.toLowerCase())) {
       out.push({ name: t.text, range: tokenRange(t), uri });
     }
   }
