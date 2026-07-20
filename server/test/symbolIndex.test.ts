@@ -73,6 +73,70 @@ describe('symbolIndex', () => {
     assert.ok(refNames.includes('start'));
   });
 
+  it('tracks nested blocks correctly (struct inside a namespace, sibling macros)', () => {
+    const src = [
+      'namespace geometry',
+      '  struct point',
+      '    x dd ?',
+      '    y dd ?',
+      '  ends',
+      '  macro make_point? x*, y*',
+      '    dd x, y',
+      '  end macro',
+      'end namespace',
+      'macro unrelated?',
+      'end macro',
+    ].join('\n');
+
+    const doc = parseDocument('file:///nested.asm', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('point').length, 1);
+    assert.strictEqual(byName('make_point').length, 1);
+    assert.strictEqual(byName('unrelated').length, 1);
+  });
+
+  it('does not pop the block stack on a mismatched end keyword', () => {
+    // "end struct" doesn't correspond to how struct blocks close (that's bare "ends"), so it
+    // must not be treated as closing the still-open struct.
+    const src = ['struct point', '  x dd ?', 'end struct', 'ends'].join('\n');
+    assert.doesNotThrow(() => parseDocument('file:///mismatched.asm', 1, src, 'fasm2'));
+    const doc = parseDocument('file:///mismatched.asm', 1, src, 'fasm2');
+    assert.strictEqual(doc.symbols.filter((s) => s.name === 'point').length, 1);
+  });
+
+  it('only records the first top-level format directive, and ignores one nested inside a block', () => {
+    const src = ['format binary', 'format ELF64 executable 3', 'macro foo?', '  format PE console', 'end macro'].join('\n');
+    const doc = parseDocument('file:///format.asm', 1, src, 'fasm2');
+    assert.strictEqual(doc.formatDirective, 'binary');
+  });
+
+  it('leaves parentLabel undefined for a local label with no preceding global label', () => {
+    const src = ['.orphan:', '\tnop'].join('\n');
+    const doc = parseDocument('file:///orphan.asm', 1, src, 'fasm2');
+    const orphan = doc.symbols.find((s) => s.name === '.orphan');
+    assert.strictEqual(orphan?.kind, SymbolKind.LocalLabel);
+    assert.strictEqual(orphan?.parentLabel, undefined);
+  });
+
+  it('handles a macro/struct declared with no parameters', () => {
+    const src = ['macro noop?', '  nop', 'end macro', 'struct empty', 'ends'].join('\n');
+    const doc = parseDocument('file:///noparams.asm', 1, src, 'fasm2');
+    const macro = doc.symbols.find((s) => s.name === 'noop');
+    const struct = doc.symbols.find((s) => s.name === 'empty');
+    assert.strictEqual(macro?.params, undefined);
+    assert.strictEqual(struct?.params, undefined);
+  });
+
+  it('keeps every definition when a constant is redefined rather than silently dropping earlier ones', () => {
+    const src = ['SIZE = 1', 'SIZE = 2'].join('\n');
+    const doc = parseDocument('file:///redefined.asm', 1, src, 'fasm2');
+    const sizeDefs = doc.symbols.filter((s) => s.name === 'SIZE');
+    assert.strictEqual(sizeDefs.length, 2);
+    assert.strictEqual(sizeDefs[0].value, '1');
+    assert.strictEqual(sizeDefs[1].value, '2');
+  });
+
   it('never throws on malformed or pathological input', () => {
     const pathological = [
       'macro',
