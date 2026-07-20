@@ -17,7 +17,7 @@ async function retry<T>(fn: () => Promise<T>, isReady: (v: T) => boolean, attemp
 
 describe('FASM2 Studio workspace-wide features (real VS Code host)', () => {
   before(async () => {
-    const ext = vscode.extensions.getExtension('fasm2-studio.fasm2-studio');
+    const ext = vscode.extensions.getExtension('Lu4nScr1pt1ng.fasm2-studio');
     await ext!.activate();
     // Give the one-shot workspace index (triggered on activation) time to finish before any
     // test relies on it having indexed defs.asm/uses.asm, neither of which we open here.

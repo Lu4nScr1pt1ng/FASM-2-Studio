@@ -29,7 +29,7 @@ const PROGRAM_SRC = [
 
 describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)', () => {
   before(async () => {
-    const ext = vscode.extensions.getExtension('fasm2-studio.fasm2-studio');
+    const ext = vscode.extensions.getExtension('Lu4nScr1pt1ng.fasm2-studio');
     await ext!.activate();
   });
 

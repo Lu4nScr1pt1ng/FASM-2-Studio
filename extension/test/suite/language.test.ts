@@ -23,7 +23,7 @@ function fasm2Available(): boolean {
 
 describe('FASM2 Studio extension (real VS Code host)', () => {
   before(async () => {
-    const ext = vscode.extensions.getExtension('fasm2-studio.fasm2-studio');
+    const ext = vscode.extensions.getExtension('Lu4nScr1pt1ng.fasm2-studio');
     assert.ok(ext, 'extension should be discoverable by id');
     await ext!.activate();
   });
