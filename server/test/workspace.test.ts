@@ -198,6 +198,23 @@ describe('Workspace indexing', () => {
       assert.strictEqual(ws.resolveIncludeUri(uriMain, symbols![0].path), uriTarget);
     });
 
+    it('normalizes backslashes across multiple ".." parent-directory traversals too, not just a single subdirectory level', async () => {
+      // Mirrors fasmg's own packages/x86/include/macro/struct.inc, which does
+      // `include '..\..\..\utility\xcalm.inc'` — three levels up, then back down into a sibling
+      // package, all with backslash separators.
+      await fs.mkdir(path.join(tmpDir, 'x86', 'include', 'macro'), { recursive: true });
+      await fs.mkdir(path.join(tmpDir, 'utility'), { recursive: true });
+      const uriTarget = await writeFile('utility/xcalm.inc', 'XCALM = 1\n');
+      const uriMain = await writeFile('x86/include/macro/struct.inc', "include '..\\\\..\\\\..\\\\utility\\\\xcalm.inc'\n");
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain, uriTarget], dialectAlwaysFasm2);
+
+      const includes = ws.getDocument(uriMain)?.includes;
+      assert.strictEqual(includes?.length, 1);
+      assert.strictEqual(ws.resolveIncludeUri(uriMain, includes![0].path), uriTarget);
+    });
+
     it('falls back to a configured include search path when the include is not found next to the including file', async () => {
       // Mirrors the real, standard way fasmg's own bundled make.bat scripts build any project
       // sharing a package directory: `set include=..\..\include` before compiling, since a bare
