@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0
+
+- Hover is far richer now: instructions show a syntax-highlighted signature; registers show their
+  full width family (`al` → `ax` → `eax` → `rax`, current one bolded) and calling-convention role
+  (System V AMD64 ABI argument order, caller/callee-saved, syscall clobbers); non-GP registers
+  (segment/control/debug/FPU/MMX/SSE/AVX/AVX-512) explain what that register class is; symbols
+  show which file they're defined in and whether they're actually reachable via this file's own
+  `include` chain.
+- Fixed: a macro/struct whose body opens on the same line (e.g. `macro foo a, b {`) leaked a
+  stray `{` into its recorded parameter list (affects hover, completion, and signature help).
+- Fixed: `format`/`section`'s `executable` keyword only documented its meaning right after
+  `format` (produce an ET_EXEC); its far more common use as a segment attribute
+  (`segment readable executable`) wasn't mentioned at all.
+- Fixed: `fasm2Studio.buildOutputPath` was declared as a setting but never actually read anywhere
+  — Build/Run/Debug always output next to the source regardless of this setting. Now respected,
+  resolved relative to the source file's own directory; missing output directories are created
+  automatically.
+
 ## 0.3.0
 
 - Registers now display as unsigned hex/decimal/binary (previously gdb's raw signed default,
