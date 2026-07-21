@@ -1,7 +1,7 @@
 {
   "name": "@fasm2-studio/debug",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Debug adapter (DAP) for fasm2/fasm1 binaries, driving gdb/lldb as the process-control backend",
   "license": "MIT",
   "main": "dist/adapter.js",

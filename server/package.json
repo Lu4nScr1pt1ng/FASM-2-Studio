@@ -1,7 +1,7 @@
 {
   "name": "@fasm2-studio/server",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Language Server for FASM2 (fasmg) and FASM1",
   "license": "MIT",
   "main": "dist/server.js",

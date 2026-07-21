@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Registers now display as unsigned hex/decimal/binary (previously gdb's raw signed default,
+  e.g. `0xffffffff` read as `-1`), and hovering any x86-64 register alias in source while
+  debugging (`eax`, `al`, `r8w`, `sil`, etc.) shows its current value the same way.
+- Register values can now be edited directly — from the Registers panel, or from a Watch entry.
+  Accepts decimal, `0x../0b..`, and the asm-style `..h` hex suffix; a negative decimal wraps to
+  the register's own two's-complement bit pattern.
+
 ## 0.2.4
 
 - Compiler auto-detection now also checks well-known install directories not on `PATH`
