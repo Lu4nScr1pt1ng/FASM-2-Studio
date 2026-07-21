@@ -207,6 +207,28 @@ describe('Workspace indexing', () => {
 
       assert.strictEqual(ws.findEntryFile(uriLeaf), uriMain);
     });
+
+    it('treats a top-level `org` with no `format` directive as a complete entry point (fasmg does not require `format` for flat-binary output)', async () => {
+      // Mirrors fasmg's own core/examples/x86/hello.asm: a real, directly-assemblable .com-style
+      // program that never uses `format` at all.
+      const uriMain = await writeFile('hello.asm', "include '8086.inc'\n\torg 100h\n\tmov ah, 9\n\tint 21h\n");
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.findEntryFile(uriMain), uriMain);
+    });
+
+    it('does not treat a fragment as its own entry point just because it uses `org` internally, when something else includes it', async () => {
+      // Mirrors fasmg's own core/examples/x86/include/format/mz.inc: a hand-written executable
+      // format definition library that uses `org 0` as an internal implementation detail while
+      // still being meant only for inclusion into a real program.
+      const uriFormatLib = await writeFile('mz.inc', 'MZ_HEADER_LENGTH = 20h\n\norg 0\n\nmacro entry? definition\nend macro\n');
+      const uriMain = await writeFile('usedpmi.asm', "include 'mz.inc'\n");
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriFormatLib, uriMain], dialectAlwaysFasm2);
+
+      assert.strictEqual(ws.listEntryPoints().includes(uriFormatLib), false);
+    });
   });
 
   describe('listEntryPoints', () => {
@@ -231,6 +253,15 @@ describe('Workspace indexing', () => {
       await ws.indexWorkspace([uriFragment], dialectAlwaysFasm2);
 
       assert.deepStrictEqual(ws.listEntryPoints(), []);
+    });
+
+    it('also lists a file with a top-level `org` and no `format` directive', async () => {
+      const uriOrgOnly = await writeFile('hello.asm', '\torg 100h\n\tmov ah, 9\n');
+      const uriFormatted = await writeFile('projectA.asm', 'format binary\nstart:\n\tnop\n');
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriOrgOnly, uriFormatted], dialectAlwaysFasm2);
+
+      assert.deepStrictEqual([...ws.listEntryPoints()].sort(), [uriFormatted, uriOrgOnly].sort());
     });
   });
 

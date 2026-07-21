@@ -162,6 +162,20 @@ export class Workspace {
   }
 
   /**
+   * Whether `doc` is its own directly-compilable entry point rather than a fragment meant only to
+   * be `include`d. A `format` directive is always a deliberate "this is the whole program" marker.
+   * A top-level `org`/`section` with no `format` is the same thing for flat-binary output (fasmg
+   * doesn't require `format` at all, e.g. a plain `org 100h` .com file) — but only when nothing
+   * else `include`s this file: some reusable fragments (e.g. a hand-written executable-format
+   * definition library) use `org` internally as an implementation detail while still being meant
+   * only for inclusion, and are already reached by something else in that case.
+   */
+  private isEntryPointDocument(doc: ParsedDocument): boolean {
+    if (doc.formatDirective !== undefined) return true;
+    return doc.hasTopLevelOrg === true && this.findIncluders(doc.uri).length === 0;
+  }
+
+  /**
    * Finds the file that would actually be handed to the compiler for `uri`: `uri` itself if it
    * already has a top-level `format` directive, otherwise the nearest document reachable by
    * walking `include` edges *backwards* (who includes this file, and who includes that...) that
@@ -181,18 +195,19 @@ export class Workspace {
    */
   listEntryPoints(): string[] {
     return this.allKnownDocuments()
-      .filter((doc) => doc.formatDirective !== undefined)
+      .filter((doc) => this.isEntryPointDocument(doc))
       .map((doc) => doc.uri)
       .sort();
   }
 
   /**
-   * Every entry point (file with its own top-level `format` directive) reachable from `uri` by
-   * walking `include` edges backward — usually exactly one, but a fragment shared by more than
-   * one unrelated project (each with its own entry point, neither including the other) can have
-   * several, and a genuinely orphaned fragment (or one whose includer isn't indexed/opened) can
-   * have none. Unlike `findEntryFile`, this doesn't stop at the first one found — callers that
-   * need to know about (or let the user resolve) ambiguity use this instead.
+   * Every entry point (file with its own top-level `format` directive, or a top-level `org` with
+   * nothing else including it) reachable from `uri` by walking `include` edges backward — usually
+   * exactly one, but a fragment shared by more than one unrelated project (each with its own entry
+   * point, neither including the other) can have several, and a genuinely orphaned fragment (or
+   * one whose includer isn't indexed/opened) can have none. Unlike `findEntryFile`, this doesn't
+   * stop at the first one found — callers that need to know about (or let the user resolve)
+   * ambiguity use this instead.
    */
   findReachableEntryPoints(uri: string): string[] {
     const visited = new Set<string>();
@@ -205,7 +220,7 @@ export class Workspace {
       visited.add(currentUri);
 
       const doc = this.openDocuments.get(currentUri) ?? this.indexedDocuments.get(currentUri) ?? this.externalDiskCache.get(currentUri) ?? undefined;
-      if (doc?.formatDirective !== undefined) {
+      if (doc && this.isEntryPointDocument(doc)) {
         found.add(currentUri);
         continue; // an entry point's own includers (if any) are a separate, unrelated concern
       }
@@ -227,7 +242,7 @@ export class Workspace {
       visited.add(currentUri);
 
       const doc = this.openDocuments.get(currentUri) ?? this.indexedDocuments.get(currentUri) ?? this.externalDiskCache.get(currentUri) ?? undefined;
-      if (doc?.formatDirective !== undefined) return currentUri;
+      if (doc && this.isEntryPointDocument(doc)) return currentUri;
 
       for (const includer of this.findIncluders(currentUri)) {
         queue.push({ uri: includer, depth: depth + 1 });

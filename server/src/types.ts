@@ -58,6 +58,14 @@ export interface ParsedDocument {
   includes: IncludeDirective[];
   /** format/use directives found at top level, useful for diagnostics context and hover. */
   formatDirective?: string;
+  /**
+   * Whether a top-level `org`/`section` directive appears in this file. fasmg doesn't require a
+   * `format` directive at all for flat-binary output — `org 100h` alone is a complete, directly
+   * assemblable program (see fasmg's own core/examples/x86/hello.asm) — so this is a second,
+   * independent signal (alongside formatDirective) that a file is its own entry point rather than
+   * a fragment meant only to be `include`d.
+   */
+  hasTopLevelOrg?: boolean;
 }
 
 export interface InstructionEntry {

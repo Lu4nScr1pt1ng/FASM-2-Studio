@@ -72,6 +72,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   const references: SymbolReference[] = [];
   const includes: IncludeDirective[] = [];
   let formatDirective: string | undefined;
+  let hasTopLevelOrg = false;
 
   const blockStack: string[] = [];
   let lastGlobalLabel: string | undefined;
@@ -109,6 +110,12 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       // --- format ... (recorded once, top level) ---
       if (kw0 === 'format' && formatDirective === undefined && blockStack.length === 0) {
         formatDirective = tokens.slice(1).map((t) => t.text).join(' ');
+      }
+
+      // --- org/section ... (a top-level output area with no format directive is still a
+      // complete, directly assemblable program in fasmg, e.g. a flat "org 100h" .com file) ---
+      if ((kw0 === 'org' || kw0 === 'section') && blockStack.length === 0) {
+        hasTopLevelOrg = true;
       }
 
       // --- macro NAME params... ---
@@ -242,7 +249,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
     // Never let a parse failure propagate — degrade to whatever was collected so far.
   }
 
-  return { uri, version, dialect, symbols, references, includes, formatDirective };
+  return { uri, version, dialect, symbols, references, includes, formatDirective, hasTopLevelOrg };
 }
 
 function collectReferences(tokens: Token[], uri: string, out: SymbolReference[]): void {
