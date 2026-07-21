@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0
+
+- Fixed: hover, completion, and signature help only ever looked at symbols reachable via the
+  current file's own `include` chain. A fragment with no `format` of its own (included only by a
+  larger entry point) missed sibling fragments included by that same entry point but not by each
+  other — e.g. a symbol from `io.asm` was reported as "not included" while editing `lexer.asm`,
+  even though both are included by `cc.asm`. Fixed centrally, so all three features (and
+  go-to-definition) benefit.
+- More hover content upgrades: directives with a completion snippet (`virtual`, `macro`, `struct`,
+  `if`, `while`, `repeat`, `include`) now show it as a code example; CALM sub-commands (`match`,
+  `assemble`, `arrange`, `compute`, `check`, `emit`) get their own tag instead of "directive";
+  format keywords show their real category (output format / PE subsystem / segment attribute /
+  ...) instead of one generic label; size specifiers distinguish "size specifier" from
+  "addressing qualifier"; `equ` constants show their real `NAME equ value` syntax with a note that
+  it's textual substitution, not a stored value like `=`; size specifiers (`dword`, `byte`, ...)
+  and same-width data directives (`dd`/`rd`, `db`/`rb`, ...) now cross-reference each other,
+  since they're easy to conflate despite being genuinely different things.
+
 ## 0.4.0
 
 - Hover is far richer now: instructions show a syntax-highlighted signature; registers show their
