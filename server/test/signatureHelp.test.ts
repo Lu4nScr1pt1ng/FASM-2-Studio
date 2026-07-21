@@ -44,6 +44,21 @@ describe('signatureHelp', () => {
     assert.match(help!.signatures[0].label, /^mov /);
   });
 
+  it('shows a signature for a "struc"-defined labeled instruction called as "LABEL struc-name args", not just a plain macro call', () => {
+    // Found while validating against manual.txt section 9 ("Labeled macroinstructions"): a struc is
+    // invoked as "LABEL struc-name args" (the struc name is the *second* token, e.g. "wc WNDCLASS"
+    // for the "struct" convenience macro's own instances), so the plain-macro-call assumption
+    // (callee name is the first token) never found it at all.
+    const ws = new Workspace();
+    const uri = 'file:///strucs.asm';
+    ws.updateDocument(uri, 1, 'struc mystruc arg1,arg2\n\tdb arg1\nend struc\n', 'fasm2');
+
+    const help = getSignatureHelp(ws, uri, 'fasm2', 'lbl mystruc ');
+    assert.ok(help, 'expected a signature for the labeled "mystruc" call');
+    assert.strictEqual(help!.signatures[0].parameters!.length, 2);
+    assert.strictEqual(help!.activeParameter, 0);
+  });
+
   it('returns undefined for an unknown callee', () => {
     const ws = new Workspace();
     const help = getSignatureHelp(ws, 'file:///none.asm', 'fasm2', 'totallyUnknownThing ');

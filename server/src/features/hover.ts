@@ -23,6 +23,8 @@ const SPECIAL_SYMBOLS: Record<string, string> = {
   $: 'The current address (position in the output). `NAME = $` is equivalent to placing a label at this exact point.',
   '$$': 'The base address of the current addressing space (the `org`/`section` argument). `$ - $$` gives the current offset from the start of the area.',
   '$@': 'The base address of the current block of uninitialized (reserved) data. Equals `$` when there\'s no such pending block, or `$` minus that block\'s length otherwise.',
+  '$%': 'The offset within the *output file* at which initialized data would be generated if some was defined right at this point — i.e. it already accounts for any pending reserved (uninitialized) data that would need to be filled in first. Compare `$%%`, the current, actual offset within the output file; the two differ only after some uninitialized data has been reserved. Not the same as `$`/`$$` (in-memory address), which keep counting through uninitialized data as if it were really there.',
+  '$%%': 'The current offset within the *output file* (as opposed to `$%`, which is where initialized data would land if generated right now — larger than `$%%` whenever some pending uninitialized data hasn\'t been backed by real output bytes yet).',
   '%': 'Inside `repeat`/`while`/`iterate`, the current repetition number (starting from 1) — substituted as plain text before the line is processed, e.g. `f#%` builds identifiers like `f1`, `f2`, ...',
   '%%': 'Inside `repeat`, the total number of repetitions planned (undefined inside `while`). `db %%-%` produces a descending byte sequence.',
 };
@@ -32,7 +34,7 @@ const SPECIAL_SYMBOLS: Record<string, string> = {
 // anything else in the language: on the *last parameter of a macro/struct/calminstruction
 // definition* it means something else entirely (see PARAM_MODIFIERS) — real, easy-to-conflate
 // ambiguity confirmed against fasmg's own real code, where both usages appear side by side.
-const LOGICAL_OPERATORS: Record<string, string> = {
+export const LOGICAL_OPERATORS: Record<string, string> = {
   '~': 'Logical negation, evaluated first (higher precedence than "&"/"|"). `if ~ used name` is true when `name` is *not* used. Only valid inside a logical expression (`if`/`while` condition, CALM `check` argument) — not a general bitwise-NOT for ordinary arithmetic (use the `not` operator there instead).',
   '&': 'Logical conjunction (AND) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `|`. Not the same as the "&" on a macro/struct/calminstruction\'s *last parameter*, which instead means "capture the rest of the line as one value" — and not a general bitwise-AND for ordinary arithmetic either (use the `and` operator there instead).',
   '|': 'Logical alternative (OR) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `&`. Not a general bitwise-OR for ordinary arithmetic (use the `or` operator there instead).',
@@ -41,6 +43,27 @@ const LOGICAL_OPERATORS: Record<string, string> = {
   used: 'Followed by a single identifier; true when that symbol\'s value has been used anywhere in the source (not merely defined). Common for conditionally emitting something only if it turned out to be referenced, e.g. import.inc\'s own `if used label`.',
   eqtype: 'Compares two basic expressions; true when their values are of the same *type* (algebraic/integer, string, or floating-point) regardless of whether the values themselves are equal. See `eq` for a version that also requires equality.',
   eq: 'Compares two basic expressions; true only when they are of the same type *and* equal — able to compare values the plain `=` operator cannot (strings, floating-point numbers, linear polynomials). See `eqtype` for a type-only comparison, and `export.inc`\'s own `string eqtype \'\'` (checking a value is a string at all) for a real example of the two used together.',
+  relativeto: 'True only when the difference of the two compared linear polynomials contains no variable terms — i.e. whether they\'re comparable (same variable terms) at all. Useful to safely compare two values that might not share the same base, since logical expressions are lazily evaluated: `if a relativeto b & a > b` only evaluates `a > b` once `relativeto` has confirmed it won\'t error. The standard way to tell apart labels from different address spaces (e.g. distinguishing a CODE-space label from a DATA-space one, or from a plain absolute value).',
+};
+
+// Value operators from manual.txt's "Expression values" section, covering strings and linear
+// polynomials (the value class created by an "element"-defined symbol) — a separate family from
+// LOGICAL_OPERATORS above (those produce true/false; these produce a number, string, or polynomial
+// term). "element"/"scale"/"metadata" take the polynomial as their first argument and a term index
+// as their second; "elementof"/"scaleof"/"metadataof" are the same three with arguments reversed
+// (higher precedence, right-associative) — "sizeof" is exactly "0 metadataof".
+export const VALUE_OPERATORS: Record<string, string> = {
+  string: 'Unary operator (lowest possible precedence, so it applies to the *entire* expression that follows) converting a number to a string of bytes. The reverse direction (string to number) just needs a unary `+`.',
+  lengthof: 'Unary operator (one of the highest-precedence ones) giving the length, in bytes, of a string value.',
+  bappend: 'Appends the byte sequence of its second argument to that of its first (numbers are implicitly converted to strings first) — same precedence as the binary bitwise operators. Used by `listing2.inc`\'s own listing generator to build up output text: `text bappend line bappend 13 bappend 10`.',
+  scale: 'Extracts the *coefficient* of a linear polynomial\'s term (the number a term\'s variable is multiplied by) — with an index of 0, gives the constant term itself. See `scaleof` for the same operator with arguments reversed.',
+  metadata: 'With an index of 0, gives the size associated with its first argument (a symbol, or an expression containing one) — only meaningful when that symbol actually has an associated size; otherwise 0. `sizeof X` is shorthand for `X metadata 0` (equivalently `0 metadataof X`). See `metadataof` for the same operator with arguments reversed.',
+  elementof: '`index elementof polynomial` — same as `polynomial element index`, just with the arguments in the opposite order; higher precedence and right-associative.',
+  scaleof: '`index scaleof polynomial` — same as `polynomial scale index`, just with the arguments in the opposite order; higher precedence and right-associative.',
+  metadataof: '`index metadataof value` — same as `value metadata index`, just with the arguments in the opposite order; higher precedence and right-associative. `sizeof X` is exactly `0 metadataof X`.',
+  elementsof: 'Unary operator (highest precedence) counting the number of distinct variable terms in a linear polynomial.',
+  float: 'Unary operator (highest precedence) converting an integer value to floating-point.',
+  trunc: 'Unary operator (highest precedence) truncating a floating-point number toward zero to a plain integer. Leaves an already-integer argument unchanged.',
 };
 
 export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string, line = 0): Hover | undefined {
@@ -64,11 +87,30 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
     );
   }
 
+  // "@@"/"@f"/"@b" (anonymous labels) are not a core language feature — they come from the
+  // standard macro/@@.inc package (pulled in by fasm2.inc), confirmed real via fasm2's own
+  // examples/globstr and IDE source: "@@:" declares an unnamed label, "@f" refers to whichever
+  // "@@:" comes *next* below it, and "@b" to whichever comes *previous* above it — neither is a
+  // fixed symbol (their meaning depends entirely on where they're written), so a normal lookup for
+  // "@f"/"@b" finds nothing at all (they're never real label names themselves) and "@@" itself
+  // would otherwise just show a bare, unhelpful "Label" tag with no explanation of the mechanism.
+  if (word === '@@' || lower === '@f' || lower === '@b') {
+    const explanations: Record<string, string> = {
+      '@@': 'Anonymous label (`macro/@@.inc`, pulled in by `fasm2.inc` — not a core directive). Declares an unnamed label; a later `@f` refers to the *next* one below it, and an earlier `@b` to the *previous* one above it — lets short local jumps skip inventing a unique name for every target.',
+      '@f': 'Forward reference to whichever `@@:` anonymous label comes *next* below this line (`macro/@@.inc`). Not a fixed symbol — it means something different depending on where it\'s written.',
+      '@b': 'Backward reference to whichever `@@:` anonymous label comes *previous* above this line (`macro/@@.inc`) — the counterpart to `@f`.',
+    };
+    return markdown(renderTagged(word === '@@' ? '@@' : lower, 'Anonymous label', explanations[word === '@@' ? '@@' : lower]));
+  }
+
   const special = SPECIAL_SYMBOLS[word];
   if (special) return markdown(renderTagged(word, 'Built-in symbol', special));
 
   const logicalOp = LOGICAL_OPERATORS[word] ?? LOGICAL_OPERATORS[lower];
   if (logicalOp) return markdown(renderTagged(word, 'Logical operator', logicalOp));
+
+  const valueOp = VALUE_OPERATORS[word] ?? VALUE_OPERATORS[lower];
+  if (valueOp) return markdown(renderTagged(lower, 'Value operator', valueOp));
 
   // An in-scope `local` variable is an unambiguous match tied to exactly this query position —
   // check it before anything context-free like an instruction mnemonic. fasmg's own parser
@@ -331,6 +373,7 @@ function paramModifierNotes(params: string): string[] {
   if (params.includes('*')) notes.push('`*` — a required argument (an error is raised if the macro is called without it).');
   if (params.includes(':')) notes.push('`:` — followed by a default value, used when that argument is omitted.');
   if (params.endsWith('&')) notes.push('`&` — this last argument captures the entire rest of the line as one value, even if it contains commas (a different "&" from the logical-AND operator inside `if`/`while`/CALM `check`).');
+  if (/\?/.test(params)) notes.push('`?` on a parameter name — that argument is case-insensitive (a different "?" from the one marking the macro/struct\'s own name weak/overridable). Only affects how the parameter is referenced within the macro body — a caller may still write it in any case.');
   return notes;
 }
 

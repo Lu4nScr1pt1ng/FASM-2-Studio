@@ -18,6 +18,21 @@ describe('getCompletions', () => {
     assert.ok(labels.includes('mov'));
   });
 
+  it('suggests hover.ts\'s own logical/value operators (defined, eqtype, relativeto, scale, trunc, ...), not just directives/mnemonics', () => {
+    // Found a real gap while validating against manual.txt: LOGICAL_OPERATORS/VALUE_OPERATORS in
+    // hover.ts fed hover only, never completion, unlike every other keyword family here.
+    const ws = new Workspace();
+    const uri = 'file:///synthetic.asm';
+    ws.updateDocument(uri, 1, 'format binary\n', 'fasm2');
+
+    const labels = getCompletions(ws, uri, 'fasm2').map((i) => i.label);
+    for (const word of ['defined', 'definite', 'used', 'eqtype', 'eq', 'relativeto', 'scale', 'metadata', 'elementof', 'trunc']) {
+      assert.ok(labels.includes(word), `expected "${word}" among completions`);
+    }
+    // Bare punctuation ("~"/"&"/"|") isn't something a user types a prefix of, so it's excluded.
+    assert.ok(!labels.includes('~'));
+  });
+
   it('suggests a symbol in a sibling fragment neither includes directly, both reachable only via their shared entry point', async () => {
     // Regression test for the same underlying bug fixed in workspace.ts's walkIncludeGraph: cc.asm
     // includes both callsite.asm and constants.inc, but callsite.asm doesn't include

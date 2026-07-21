@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.14.0
+
+- Fixed a real, potentially file-wide corruption bug: a number using a single quote as a digit
+  separator (manual.txt's own documented `1'000'000`, since `'` is otherwise the string-quote
+  character) split into `1` + a fake string `'000'` + `000` — and a number with an *odd* count of
+  embedded quotes would open an unterminated string that corrupts syntax highlighting for the rest
+  of the file, since TextMate's string state persists across lines. Fixed in both the tokenizer
+  (server-side symbol indexing) and the grammar. Also added the two documented `f`-suffixed float
+  forms that don't require a `.` (`5e10`, and `5f` — the *only* way to mark a dot-less,
+  exponent-less literal as floating-point), and an explicit `d` suffix on plain decimals (`123d`,
+  analogous to `h`/`b`/`o`/`q` on the other bases), none of which matched any pattern before.
+- Added the `relativeto` logical operator and `rawmatch`/`rmatch` (a synonym), `esc`,
+  `elementsof`, `float`, and `trunc` — all real, documented core directives/operators found on a
+  full line-by-line pass through manual.txt that had no hover documentation or grammar highlight
+  at all.
+- Fixed `completion.ts` never suggesting any of the logical/value operators documented in
+  `hover.ts` (`defined`, `definite`, `used`, `eq`, `eqtype`, `relativeto`, `scale`, `metadata`,
+  `elementof`, `scaleof`, `metadataof`, `elementsof`, `string`, `lengthof`, `bappend`, `float`,
+  `trunc`) — every other keyword family (directives, mnemonics, ...) already flowed into
+  autocomplete; this one silently didn't.
+- Added `struc NAME params ... end struc` (the core "labeled macroinstruction" directive that
+  `struct` is itself built on top of, per manual.txt section 9) as a real indexed symbol — hover/
+  go-to-definition/workspace-symbol-search previously found nothing for a raw `struc`, unlike its
+  `struct` wrapper.
+- Fixed signature help never recognizing a labeled-instruction call (`LABEL struc-name args`, e.g.
+  `wc WNDCLASS`) — it only ever looked at the first word of the line as the callee name. Now falls
+  back to the second word (treating the first as a label) when the first doesn't resolve to
+  anything, without changing behavior for an ordinary macro/instruction call.
+- Documented the per-parameter `?` case-insensitivity modifier (e.g. `macro foo x?,y`) in macro/
+  struct hover — a different `?` from the one marking the macro's own name weak/overridable, and
+  previously not mentioned at all.
+- Stress-tested the syntax grammar and symbol indexer against the full real fasmg example/package
+  corpus (307 files, ~100k lines) with zero crashes, confirming the fixes above hold up beyond
+  synthetic test cases.
+
 ## 0.13.0
 
 - Fixed live diagnostics (the buffer-aware compile used while editing) failing on any `include`

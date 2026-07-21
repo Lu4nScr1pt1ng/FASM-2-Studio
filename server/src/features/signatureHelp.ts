@@ -46,12 +46,27 @@ function activeParameterIndex(textBeforeCursor: string): number {
   return Math.max(0, splitTopLevelCommas(textBeforeCursor).length - 1);
 }
 
-function findCalleeName(lineBeforeCursor: string): { name: string; argsText: string } | undefined {
-  const match = IDENT_RE.exec(lineBeforeCursor.trimStart());
-  if (!match) return undefined;
-  const name = match[0];
+/**
+ * Returns the possible callee-name readings of the line, in priority order: the ordinary "NAME
+ * args" call shape first, then — since a "struc"-defined labeled instruction (including "struct"'s
+ * own instances, e.g. "wc WNDCLASS") is invoked as "LABEL struc-name args", not a plain call — the
+ * second identifier, treating the first as a label. Without the second reading, signature help for
+ * a labeled instruction's own parameters (a real, if less common, case per manual.txt section 9)
+ * never triggers at all, since the first token ("LABEL") is never a real macro name.
+ */
+function findCalleeCandidates(lineBeforeCursor: string): Array<{ name: string; argsText: string }> {
+  const first = IDENT_RE.exec(lineBeforeCursor.trimStart());
+  if (!first) return [];
+  const name = first[0];
   const afterName = lineBeforeCursor.slice(lineBeforeCursor.indexOf(name) + name.length);
-  return { name, argsText: afterName };
+  const candidates = [{ name, argsText: afterName }];
+
+  const second = IDENT_RE.exec(afterName.trimStart());
+  if (second) {
+    const afterSecond = afterName.slice(afterName.indexOf(second[0]) + second[0].length);
+    candidates.push({ name: second[0], argsText: afterSecond });
+  }
+  return candidates;
 }
 
 function findMacro(workspace: Workspace, uri: string, dialect: Dialect, name: string) {
@@ -65,30 +80,29 @@ function findMacro(workspace: Workspace, uri: string, dialect: Dialect, name: st
 }
 
 export function getSignatureHelp(workspace: Workspace, uri: string, dialect: Dialect, lineBeforeCursor: string): SignatureHelp | undefined {
-  const callee = findCalleeName(lineBeforeCursor);
-  if (!callee) return undefined;
+  for (const callee of findCalleeCandidates(lineBeforeCursor)) {
+    const activeParameter = activeParameterIndex(callee.argsText);
 
-  const activeParameter = activeParameterIndex(callee.argsText);
+    const macro = findMacro(workspace, uri, dialect, callee.name);
+    if (macro && macro.params) {
+      const paramLabels = splitTopLevelCommas(macro.params).map((p) => p.trim());
+      const signature: SignatureInformation = {
+        label: `${macro.name} ${paramLabels.join(', ')}`,
+        parameters: paramLabels.map((p): ParameterInformation => ({ label: p })),
+      };
+      return { signatures: [signature], activeSignature: 0, activeParameter };
+    }
 
-  const macro = findMacro(workspace, uri, dialect, callee.name);
-  if (macro && macro.params) {
-    const paramLabels = splitTopLevelCommas(macro.params).map((p) => p.trim());
-    const signature: SignatureInformation = {
-      label: `${macro.name} ${paramLabels.join(', ')}`,
-      parameters: paramLabels.map((p): ParameterInformation => ({ label: p })),
-    };
-    return { signatures: [signature], activeSignature: 0, activeParameter };
-  }
-
-  const ins = instructions.find((i) => i.mnemonic.toLowerCase() === callee.name.toLowerCase());
-  if (ins && ins.operands) {
-    const paramLabels = ins.operands.split(',').map((p) => p.trim());
-    const signature: SignatureInformation = {
-      label: `${ins.mnemonic} ${ins.operands}`,
-      documentation: ins.summary,
-      parameters: paramLabels.map((p): ParameterInformation => ({ label: p })),
-    };
-    return { signatures: [signature], activeSignature: 0, activeParameter };
+    const ins = instructions.find((i) => i.mnemonic.toLowerCase() === callee.name.toLowerCase());
+    if (ins && ins.operands) {
+      const paramLabels = ins.operands.split(',').map((p) => p.trim());
+      const signature: SignatureInformation = {
+        label: `${ins.mnemonic} ${ins.operands}`,
+        documentation: ins.summary,
+        parameters: paramLabels.map((p): ParameterInformation => ({ label: p })),
+      };
+      return { signatures: [signature], activeSignature: 0, activeParameter };
+    }
   }
 
   return undefined;

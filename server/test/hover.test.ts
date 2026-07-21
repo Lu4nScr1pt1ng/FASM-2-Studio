@@ -216,10 +216,13 @@ describe('getHover', () => {
       assert.match(v, /\*Macro\*/);
     });
 
-    it('explains "?" (weak), "!" (unconditional), "*" (required), ":" (default value), and "&" (rest-of-line) macro modifiers', async () => {
+    it('explains "?" (weak), "!" (unconditional), "*" (required), ":" (default value), "&" (rest-of-line), and per-parameter "?" (case-insensitive) macro modifiers', async () => {
       // Mirrors fasmg's own packages/x86/include/macro/import64.inc ("macro library?
-      // definitions&") and proc64.inc ("macro endp?!").
-      const src = ['format binary', 'macro library? definitions&', 'end macro', 'macro endp?!', 'end macro', 'macro proc name*,flag:0', 'end macro'].join('\n');
+      // definitions&") and proc64.inc ("macro endp?!"). The per-parameter "?" (manual.txt section
+      // 11: "every time a parameter is defined, its name can have the '?' character attached to it
+      // to indicate that this parameter is case-insensitive") is a distinct thing from the macro's
+      // own weak-name "?" and was previously undocumented.
+      const src = ['format binary', 'macro library? definitions&', 'end macro', 'macro endp?!', 'end macro', 'macro proc name*,flag:0', 'end macro', 'macro caseinsens x?,y', 'end macro'].join('\n');
       const mainUri = await writeFile('main.asm', src);
       const local = new Workspace();
       local.updateDocument(mainUri, 1, src, 'fasm2');
@@ -235,6 +238,9 @@ describe('getHover', () => {
       const proc = value(getHover(local, mainUri, 'fasm2', 'proc'));
       assert.match(proc, /required argument/);
       assert.match(proc, /default value/);
+
+      const caseinsens = value(getHover(local, mainUri, 'fasm2', 'caseinsens'));
+      assert.match(caseinsens, /case-insensitive/);
     });
 
     it('resolves a macro name to the one *nested* macro actually in scope, not an unrelated same-named macro or instruction elsewhere', async () => {
@@ -378,6 +384,87 @@ describe('getHover', () => {
       assert.match(value(getHover(local, mainUri, 'fasm2', '$@')), /block of uninitialized/);
       assert.match(value(getHover(local, mainUri, 'fasm2', '%')), /current repetition number/);
       assert.match(value(getHover(local, mainUri, 'fasm2', '%%')), /total number of repetitions/);
+    });
+
+    it('documents "$%"/"$%%" (output-file offset) as built-ins, distinct from "$" (in-memory address), instead of falling through to an unrelated workspace symbol', async () => {
+      // Mirrors a real, confirmed bug: fasm2's own source/macos/macho.inc temporarily overrides the
+      // built-in with "$%? = $%?-($-address)" (a real, documented "virtual at" trick) -- since "$%"
+      // was missing from SPECIAL_SYMBOLS entirely, hovering a genuine "$%" elsewhere (e.g.
+      // examples/tetros/tetros.asm's own "rb 510 - ($% + signature - pieces)") fell through to
+      // workspace-wide symbol search and surfaced that unrelated, incorrectly-indexed override
+      // instead of explaining the built-in.
+      const src = 'format binary\nrb 10 - ($%)\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const dollarPercent = value(getHover(local, mainUri, 'fasm2', '$%'));
+      assert.match(dollarPercent, /offset within the.*output file/);
+      assert.doesNotMatch(dollarPercent, /Not included/);
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', '$%%')), /current offset within the.*output file/);
+    });
+
+    it('explains "@@"/"@f"/"@b" (the standard macro/@@.inc anonymous-label package) instead of a bare "Label" tag or nothing at all', async () => {
+      // Mirrors real usage across fasm2's own examples/IDE source: "jz @f" / "@@:" / "jz @f" / "@@:".
+      const src = 'format binary\ntest al,al\njz @f\nxor [di],dx\n  @@:\ntest [di],dx\njz @f\ninc ah\n  @@:\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', '@@')), /Anonymous label/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '@f')), /next.*below/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '@b')), /previous.*above/);
+    });
+
+    it('documents the linear-polynomial/string "Expression values" operators (scale/metadata/elementof/scaleof/metadataof/string/lengthof/bappend), previously undocumented entirely', async () => {
+      // Mirrors real usage: manual.txt's own "vterm = linpoly scale 1 * linpoly element 1" sample,
+      // and listing2.inc's own "text bappend line bappend 13 bappend 10".
+      const src = 'format binary\nelement A\nlinpoly = A + A + 3\nvterm = linpoly scale 1\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'scale')), /coefficient/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'metadata')), /size associated/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'elementof')), /arguments.*opposite order/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'scaleof')), /arguments.*opposite order/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'metadataof')), /arguments.*opposite order/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'string')), /converting a number to a string/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'lengthof')), /length, in bytes/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'bappend')), /Appends the byte sequence/);
+      // "element" keeps its directive explanation (defining the polynomial symbol) since the same
+      // word is also the term-extraction operator — both meanings are folded into one entry.
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'element')), /linear-polynomial term/);
+    });
+
+    it('documents "relativeto" (comparability of two address-space-relative values) and "rawmatch"/"rmatch", found in fasmg.txt\'s own overview doc', async () => {
+      // Mirrors fasmg.txt's own sample: "if a relativeto b & a > b" (safely comparing two values
+      // that might be in different, incomparable address spaces), and manual.txt's "rawmatch"
+      // (synonym "rmatch"): like "match" but strips recognition context and doesn't evaluate
+      // symbolic variables.
+      const src = 'format binary\nif a relativeto b & a > b\nend if\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'relativeto')), /no variable terms/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'rawmatch')), /strips any recognition-context/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'rmatch')), /Synonym for "rawmatch"/);
+    });
+
+    it('documents "esc", "elementsof", "float" and "trunc", found on a final pass through manual.txt', async () => {
+      // Mirrors manual.txt's own samples: "esc macro name x&" (escaping a macro/end-macro pair from
+      // nesting count) and the "elementsof"/"float"/"trunc" unary expression-value operators.
+      const src = 'format binary\nesc macro name x&\nn = elementsof p\nf = float 3\ni = trunc f\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'esc')), /macro.*end macro.*nesting/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'elementsof')), /number of distinct variable terms/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'float')), /converting an integer value to floating-point/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'trunc')), /truncating a floating-point number/);
     });
 
     it('explains the overloaded bare "?" directly instead of resolving it as a symbol, since it is virtually always the uninitialized-data placeholder, not the unrelated anonymous-macro name', async () => {

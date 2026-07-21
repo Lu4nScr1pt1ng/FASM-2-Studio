@@ -64,6 +64,30 @@ describe('symbolIndex', () => {
     assert.strictEqual(sym.value, '7');
   });
 
+  it('does not index a redefinition of a built-in pseudo-variable ("$%?", "%", ...) as an ordinary workspace-wide constant', () => {
+    // Mirrors a real, confirmed bug: fasm2's own source/macos/macho.inc temporarily overrides the
+    // built-in "$%" inside a "virtual at" trick: "$%? = $%?-($-address)" -- a real, documented way
+    // to redefine a built-in (manual.txt: built-ins "are always case-insensitive and may be
+    // redefined"). Registering "$%" as a plain constant here polluted hover's workspace-wide
+    // fallback for every other file's genuine, unrelated use of the real "$%" built-in.
+    const src = 'format binary\n$%? = $%?-($-address)\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const names = doc.symbols.map((s) => s.name);
+    assert.ok(!names.includes('$%'), `expected no "$%" symbol to be indexed, got: ${JSON.stringify(names)}`);
+  });
+
+  it('indexes "struc NAME params ... end struc" (the core labeled-macroinstruction directive "struct" is itself built on) as a real symbol', () => {
+    // Found while validating against manual.txt section 9 ("Labeled macroinstructions"): "struct"
+    // (already indexed as SymbolKind.Struct) is documented as a friendlier macro built on top of
+    // the core "struc" directive, but raw "struc" itself -- used directly in real code, e.g.
+    // fasmg's own packages/x86/include/format/pe.inc -- had no SymbolDefinition at all.
+    const src = 'format binary\nstruc mystruc arg\n\tdb arg\nend struc\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'mystruc');
+    assert.ok(sym, `expected a symbol named "mystruc", got: ${JSON.stringify(doc.symbols.map((s) => s.name))}`);
+    assert.strictEqual(sym.params, 'arg');
+  });
+
   it('indexes "proc NAME params" (the standard proc32.inc/proc64.inc package) as a real Label symbol', () => {
     // Mirrors real usage across virtually every fasmg Windows program, e.g. fasm2's own
     // source/ide/windows/fasmgw.asm: "proc MainWindow hwnd,wmsg,wparam,lparam". The "proc?" macro's

@@ -32,6 +32,13 @@ export interface Token {
 const IDENT_START = /[A-Za-z_.@$?%]/;
 const IDENT_PART = /[A-Za-z0-9_.@$?%]/;
 const DIGIT = /[0-9]/;
+// manual.txt's "Fundamental syntax rules": "the numbers are also allowed to contain underscores or
+// single quotes to act as a separator or padding" (e.g. "1'000'000") — a number-only allowance,
+// not a general identifier one, since "'" is otherwise the string-quote character. Without this, a
+// quote embedded in an already-started number token fell through to the *outer* loop's quote
+// branch, which doesn't know it's mid-number and starts an unrelated string there instead —
+// mangling the rest of the number into Number("1") + String("'000'") + Number("000").
+const NUMBER_PART = /[A-Za-z0-9_.@$?%']/;
 
 /** Tokenizes a single line. Strings and comments never span lines in fasm syntax. */
 export function tokenizeLine(text: string, line: number): Token[] {
@@ -74,7 +81,7 @@ export function tokenizeLine(text: string, line: number): Token[] {
 
     if (DIGIT.test(ch)) {
       const start = i;
-      while (i < len && IDENT_PART.test(text[i])) i++;
+      while (i < len && NUMBER_PART.test(text[i])) i++;
       tokens.push({ type: TokenType.Number, text: text.slice(start, i), line, startChar: start, endChar: i });
       continue;
     }

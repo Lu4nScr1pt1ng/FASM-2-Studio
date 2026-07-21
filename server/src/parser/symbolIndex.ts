@@ -19,6 +19,17 @@ const DATA_DIRECTIVES: ReadonlySet<string> = new Set([
   'rb', 'rw', 'rd', 'rp', 'rf', 'rq', 'rt', 'rdq', 'rqq', 'rdqq', 'file',
 ]);
 
+/** fasmg's own built-in pseudo-variables ($, $$, $@, $%, $%%, %, %%) are always case-insensitive
+ * and redefinable (manual.txt's "Basic symbol definitions" section) — real code exploits this to
+ * temporarily override one inside a "virtual at" trick (e.g. fasm2's own source/macos/macho.inc:
+ * "$%? = $%?-($-address)", adjusting "$%" for the duration of a `store`/`load` at an already-
+ * generated output offset). Registering that as an ordinary workspace-wide constant named "$%"
+ * would pollute hover's "defined elsewhere in the workspace" fallback for every other file's
+ * genuine, unrelated use of the real "$%" built-in — hover.ts's own SPECIAL_SYMBOLS already
+ * explains the built-in meaning and must stay reachable instead.
+ */
+const BUILTIN_PSEUDO_VARIABLES: ReadonlySet<string> = new Set(['$', '$$', '$@', '$%', '$%%', '%', '%%']);
+
 /** Joins a macro/struct's parameter tokens back into source text (no separator, so operators like
  * "*" in "a*,b*" don't grow a spurious space). Drops a trailing "{" — present when the block body
  * opens on the same line (e.g. "macro foo a, b {") — which isn't part of the parameter list. */
@@ -281,6 +292,35 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
+      // --- struc NAME params... (the core "labeled macroinstruction" directive that fasmg's own
+      // "struct" convenience macro is itself built on top of, per manual.txt section 9 -- defined
+      // exactly like "macro", just invoked as "label struc-name args" instead of a plain
+      // instruction. Real code writes raw "struc" directly often enough (e.g. fasmg's own
+      // packages/x86/include/format/pe.inc) that leaving it unrecognized would mean no hover/
+      // go-to-definition for every one of those, unlike the "struct" wrapper macro which already
+      // gets its own SymbolDefinition above) ---
+      if (kw0 === 'struc' && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        const name = baseName(nameTok.text);
+        const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
+        const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
+        const sym: SymbolDefinition = {
+          name,
+          kind: SymbolKind.Macro,
+          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
+          nameRange: tokenRange(nameTok),
+          params: paramsFromTokens(paramTokens),
+          isWeak,
+          isUnconditional,
+          uri,
+        };
+        symbols.push(sym);
+        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
+        blockStack.push('struc');
+        macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
+        continue;
+      }
+
       // --- local NAME1, NAME2, ... (inside a macro body) ---
       if (kw0 === 'local' && macroFrames.length > 0) {
         const frame = macroFrames[macroFrames.length - 1];
@@ -361,6 +401,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         const definedVia = isColonEquals ? ':=' : isEqualsColon ? '=:' : isEqu ? 'equ' : isReequ ? 'reequ' : '=';
         const valueStart = isColonEquals || isEqualsColon ? 3 : 2;
         const name = baseName(t0.text);
+        if (BUILTIN_PSEUDO_VARIABLES.has(name)) continue;
         const sym: SymbolDefinition = {
           name,
           kind: SymbolKind.Constant,
@@ -379,6 +420,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       if ((kw0 === 'define' || kw0 === 'redefine') && tokens[1] && tokens[1].type === TokenType.Ident) {
         const nameTok = tokens[1];
         const name = baseName(nameTok.text);
+        if (BUILTIN_PSEUDO_VARIABLES.has(name)) continue;
         const sym: SymbolDefinition = {
           name,
           kind: SymbolKind.Constant,

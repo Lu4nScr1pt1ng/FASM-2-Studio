@@ -51,6 +51,21 @@ describe('tokenizer', () => {
     assert.strictEqual(unquoteString(strings[0].text), "a'b'c");
   });
 
+  it('absorbs a single-quote digit separator into the number instead of starting a stray string', () => {
+    // manual.txt's "Fundamental syntax rules": "the numbers are also allowed to contain
+    // underscores or single quotes to act as a separator or padding" (e.g. "1'000'000"). Before this
+    // fix, the embedded "'" split the token into Number("1") + String("'000'") + Number("000").
+    const tokens = tokenizeLine("big = 1'000'000", 0);
+    assert.deepStrictEqual(tokens.map((t) => t.text), ['big', '=', "1'000'000"]);
+    assert.strictEqual(tokens[2].type, TokenType.Number);
+  });
+
+  it('still starts a real string at a quote not preceded by an in-progress number', () => {
+    const tokens = tokenizeLine(`s = 'hello'`, 0);
+    const str = tokens.find((t) => t.type === TokenType.String);
+    assert.strictEqual(str?.text, `'hello'`);
+  });
+
   it('does not hang or throw on an unterminated string at end of line', () => {
     assert.doesNotThrow(() => tokenizeLine(`db 'unterminated`, 0));
     const tokens = tokenizeLine(`db 'unterminated`, 0);

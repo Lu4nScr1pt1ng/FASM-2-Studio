@@ -7,6 +7,13 @@ import registersData from '../data/registers.json';
 import formatKeywordsData from '../data/formatKeywords.json';
 import sizeSpecifiersData from '../data/sizeSpecifiers.json';
 import { DirectiveEntry, FormatKeywordEntry, InstructionEntry, RegisterEntry, SizeSpecifierEntry } from '../types';
+import { LOGICAL_OPERATORS, VALUE_OPERATORS } from './hover';
+
+// Only the word-like keys (not bare punctuation like "~"/"&"/"|", which aren't something a user
+// ever types a prefix of to trigger completion for) — e.g. "defined", "eqtype", "relativeto",
+// "scale", "trunc". Without this, none of hover.ts's own logical/value operators ever surfaced in
+// completion at all, unlike every other keyword family (directives, mnemonics, ...) that does.
+const WORD_LIKE = /^[A-Za-z][A-Za-z0-9]*$/;
 
 const directives = directivesData as DirectiveEntry[];
 const instructions = instructionsData as InstructionEntry[];
@@ -72,6 +79,15 @@ function buildStaticItems(dialect: Dialect): CompletionItem[] {
       label: size.name,
       kind: CompletionItemKind.Keyword,
       documentation: size.summary,
+    });
+  }
+
+  for (const [word, doc] of Object.entries({ ...LOGICAL_OPERATORS, ...VALUE_OPERATORS })) {
+    if (!WORD_LIKE.test(word)) continue;
+    items.push({
+      label: word,
+      kind: CompletionItemKind.Operator,
+      documentation: doc,
     });
   }
 

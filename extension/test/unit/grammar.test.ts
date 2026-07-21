@@ -9,6 +9,7 @@ import * as vsctm from 'vscode-textmate';
 
 const GRAMMAR_PATH = path.join(__dirname, '..', '..', 'syntaxes', 'fasm.tmLanguage.json');
 const INSTRUCTIONS_PATH = path.join(__dirname, '..', '..', '..', 'server', 'src', 'data', 'instructions.json');
+const DIRECTIVES_PATH = path.join(__dirname, '..', '..', '..', 'server', 'src', 'data', 'directives.json');
 
 let registryPromise: Promise<vsctm.Registry> | undefined;
 
@@ -171,11 +172,51 @@ describe('fasm TextMate grammar', () => {
     }
   });
 
+  it('tags "$%"/"$%%" (output-file offset) as their own built-in symbol, not as bare "$" plus a stray "%"', async function () {
+    // Mirrors real usage in fasm2's own source/macos/macho.inc: "$%? = $%?-($-address)".
+    this.timeout(10000);
+    const lines = await tokenizeLines(['rb 10 - ($%)', 'x = $%%'].join('\n'));
+    const dollarPercentScopes = scopesOf(lines[0], '$%');
+    assert.strictEqual(dollarPercentScopes[dollarPercentScopes.length - 1], 'variable.language.special.fasm', `expected "$%" to be tagged as a single built-in symbol, got: ${dollarPercentScopes}`);
+    const dollarPercentPercentScopes = scopesOf(lines[1], '$%%');
+    assert.strictEqual(dollarPercentPercentScopes[dollarPercentPercentScopes.length - 1], 'variable.language.special.fasm', `expected "$%%" to be tagged as a single built-in symbol, got: ${dollarPercentPercentScopes}`);
+  });
+
   it('does not mistake fasmg\'s "$1A"-style dollar-prefixed hex literal for the "$" current-address symbol', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines('n = $1A\n');
     const scopes = scopesOf(lines[0], '$1A');
     assert.strictEqual(scopes[scopes.length - 1], 'constant.numeric.hex.fasm', `expected "$1A" to be a hex number, got: ${scopes}`);
+  });
+
+  it('tags a single quote used as a digit separator/padding as part of the number, not as an unrelated string start', async function () {
+    // Mirrors manual.txt's "Fundamental syntax rules": "the numbers are also allowed to contain
+    // underscores or single quotes to act as a separator or padding" (e.g. "1'000'000") -- a real,
+    // confirmed conflict risk since "'" is otherwise the string-quote character. Before this fix,
+    // "1'000'000" split into Number("1") + String("'000'") + Number("000"), and worse, a number
+    // with an *odd* count of embedded quotes would open an unterminated string that corrupts
+    // highlighting for the rest of the file (TextMate string begin/end state persists across lines).
+    this.timeout(10000);
+    const lines = await tokenizeLines(["big = 1'000'000", "s = 'hello' ; still a real string"].join('\n'));
+    const scopes = scopesOf(lines[0], "1'000'000");
+    assert.strictEqual(scopes[scopes.length - 1], 'constant.numeric.decimal.fasm', `expected "1'000'000" to be a single decimal number, got: ${scopes}`);
+    const strScopes = scopesOf(lines[1], 'hello');
+    assert.strictEqual(strScopes[strScopes.length - 1], 'string.quoted.single.fasm', `expected a real quoted string to still work, got: ${strScopes}`);
+  });
+
+  it('tags decimal "d" suffix and the two dot-less float forms ("5e10" and "5f") that manual.txt documents', async function () {
+    // manual.txt's "Expression values"/"Fundamental syntax rules": a plain decimal number may end
+    // with "d" (analogous to "h"/"b"/"o"/"q" on the other bases); a float may be marked by an
+    // exponent alone with no "." ("5e10"), or, lacking both "." and "e", only a trailing "f" marks
+    // it as floating-point at all ("5f") -- none of these three previously matched any pattern.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['n = 123d', 'x = 5e10', 'y = 5f'].join('\n'));
+    const dScopes = scopesOf(lines[0], '123d');
+    assert.strictEqual(dScopes[dScopes.length - 1], 'constant.numeric.decimal.fasm', `expected "123d" to be one decimal token, got: ${dScopes}`);
+    const eScopes = scopesOf(lines[1], '5e10');
+    assert.strictEqual(eScopes[eScopes.length - 1], 'constant.numeric.float.fasm', `expected "5e10" to be a float, got: ${eScopes}`);
+    const fScopes = scopesOf(lines[2], '5f');
+    assert.strictEqual(fScopes[fScopes.length - 1], 'constant.numeric.float.fasm', `expected "5f" to be a float, got: ${fScopes}`);
   });
 
   it('tags "load NAME:size from ADDRESS" and "::" area labels, mirroring proc64.inc\'s "load value:byte from area:pointer"', async function () {
@@ -323,6 +364,37 @@ describe('fasm TextMate grammar', () => {
     assert.strictEqual(doublePercentScopes[doublePercentScopes.length - 1], 'variable.language.special.fasm', `expected a bare "%%" to still be tagged special, got: ${doublePercentScopes}`);
   });
 
+  it('tags "bappend"/"lengthof"/"elementof"/"scaleof"/"metadataof" as operators, mirroring listing2.inc\'s own "text bappend line bappend 13 bappend 10"', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['text bappend line', 'n = lengthof s', 'x = 1 elementof p', 'y = 1 scaleof p', 'z = 0 metadataof v'].join('\n'));
+    for (const [lineIdx, word] of [[0, 'bappend'], [1, 'lengthof'], [2, 'elementof'], [3, 'scaleof'], [4, 'metadataof']] as const) {
+      const scopes = scopesOf(lines[lineIdx], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.fasm', `expected "${word}" to be tagged as an operator, got: ${scopes}`);
+    }
+  });
+
+  it('tags "relativeto" as an operator and "rawmatch"/"rmatch" alongside "match", found while validating against fasmg.txt/manual.txt', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['if a relativeto b & a > b', 'rawmatch text, instruction', 'rmatch text, instruction'].join('\n'));
+    const relScopes = scopesOf(lines[0], 'relativeto');
+    assert.strictEqual(relScopes[relScopes.length - 1], 'keyword.operator.fasm', `expected "relativeto" to be tagged as an operator, got: ${relScopes}`);
+    const rawmatchScopes = scopesOf(lines[1], 'rawmatch');
+    assert.strictEqual(rawmatchScopes[rawmatchScopes.length - 1], 'keyword.other.calm.fasm', `expected "rawmatch" to be tagged like "match", got: ${rawmatchScopes}`);
+    const rmatchScopes = scopesOf(lines[2], 'rmatch');
+    assert.strictEqual(rmatchScopes[rmatchScopes.length - 1], 'keyword.other.calm.fasm', `expected "rmatch" to be tagged like "match", got: ${rmatchScopes}`);
+  });
+
+  it('tags "esc" as a directive and "elementsof"/"trunc" as operators, found on a final pass through manual.txt', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['esc macro name x&', 'n = elementsof p', 'i = trunc f'].join('\n'));
+    const escScopes = scopesOf(lines[0], 'esc');
+    assert.ok(escScopes.some((s) => s.includes('directive')), `expected "esc" to be a directive, got: ${escScopes}`);
+    const elementsofScopes = scopesOf(lines[1], 'elementsof');
+    assert.strictEqual(elementsofScopes[elementsofScopes.length - 1], 'keyword.operator.fasm', `expected "elementsof" to be tagged as an operator, got: ${elementsofScopes}`);
+    const truncScopes = scopesOf(lines[2], 'trunc');
+    assert.strictEqual(truncScopes[truncScopes.length - 1], 'keyword.operator.fasm', `expected "trunc" to be tagged as an operator, got: ${truncScopes}`);
+  });
+
   it('tags "#" (token-pasting) as an operator instead of leaving it unstyled, mirroring export.inc\'s own "names.name#%"', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines('dd RVA names.name#%\n');
@@ -355,5 +427,30 @@ describe('fasm TextMate grammar', () => {
       }
     });
     assert.strictEqual(failures.length, 0, `these mnemonics from instructions.json are not tagged keyword.other.mnemonic.fasm by the grammar: ${failures.join(', ')}`);
+  });
+
+  it('tags every single-word directive from directives.json with some keyword-ish scope, not left as plain unstyled text', async function () {
+    // Found by checking a real gap: directives.json had break/eval/indx/outscope/restartout/
+    // sizeof/mvmacro/mvstruc/restruc (all real fasmg core directives per manual.txt) with zero
+    // grammar coverage at all. "call" and "jno" are deliberately excluded here: both are real x86
+    // mnemonics first and foremost, and #calm-commands itself already documents why they're left
+    // out of that list specifically. Multi-word names (e.g. "end if") aren't single tokens, so
+    // they're excluded too -- covered implicitly by their standalone words ("end", "if").
+    this.timeout(20000);
+    const directives = JSON.parse(fs.readFileSync(DIRECTIVES_PATH, 'utf8')) as Array<{ name: string }>;
+    const words = directives.map((d) => d.name).filter((n) => !n.includes(' ') && !['call', 'jno'].includes(n.toLowerCase()));
+
+    const src = words.map((w) => `${w} eax`).join('\n');
+    const lines = await tokenizeLines(src);
+    const failures: string[] = [];
+    lines.forEach((tokens, idx) => {
+      const word = words[idx];
+      if (!word) return;
+      const token = tokens.find((t) => t.text.toLowerCase() === word.toLowerCase());
+      const scopes = token?.scopes ?? [];
+      const isStyled = scopes.some((s) => s.startsWith('keyword.') || s.startsWith('storage.') || s.startsWith('support.'));
+      if (!isStyled) failures.push(word);
+    });
+    assert.strictEqual(failures.length, 0, `these directives.json entries are not tagged with any keyword-ish scope by the grammar: ${failures.join(', ')}`);
   });
 });
