@@ -207,4 +207,95 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       proc.kill();
     }
   });
+
+  it('formats registers as unsigned hex/decimal/binary, not gdb\'s raw signed default', async function () {
+    this.timeout(30000);
+
+    // eax/dl chosen specifically because their top bit is set: gdb's own default evaluation of a
+    // plain register is *signed*, so 0xffffffff would print as "-1" and 0xab as "-85" — exactly
+    // the confusing behavior this feature fixes. sil is a 64-bit-only sub-register (no 32-bit
+    // legacy alias) to prove the wider REGISTER_WIDTH_BITS alias table works, not just the curated
+    // Registers-scope set.
+    const regDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-regs-'));
+    const regAsmPath = path.join(regDir, 'regs.asm');
+    const regProgramPath = path.join(regDir, 'regs');
+    const regListingPath = path.join(regDir, 'regs.lst');
+    const REG_PROGRAM_SRC = [
+      'format ELF64 executable 3',
+      'entry start',
+      '',
+      'segment readable executable',
+      'start:',
+      '\tmov eax, 0xFFFFFFFF',
+      '\tmov dl, 0xAB',
+      '\tmov sil, 0x7F',
+      '\tnop',
+      '\tmov edi, 0',
+      '\tmov eax, 60',
+      '\tsyscall',
+      '',
+    ].join('\n');
+    fs.writeFileSync(regAsmPath, REG_PROGRAM_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", regAsmPath, regProgramPath], { cwd: regDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(regProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: regProgramPath, asmFile: regAsmPath, listingFile: regListingPath, cwd: regDir });
+
+      const bpResponse = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: regAsmPath },
+        breakpoints: [{ line: 9 }], // "nop"
+      });
+      assert.strictEqual(bpResponse.breakpoints[0].verified, true);
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      // Hovering over "eax" (context: hover) and evaluating from Watch/Debug Console (context:
+      // watch) both go through the same code path — exercised here as "hover" specifically, since
+      // that's the actual feature request (hover a register while debugging, see its value).
+      const eax = await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' });
+      assert.strictEqual(eax.result, 'eax = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+
+      const dl = await client.sendRequest<{ result: string }>('evaluate', { expression: 'dl', context: 'hover' });
+      assert.strictEqual(dl.result, 'dl = 0xab  171  0b1010_1011');
+
+      const sil = await client.sendRequest<{ result: string }>('evaluate', { expression: 'sil', context: 'hover' });
+      assert.strictEqual(sil.result, 'sil = 0x7f  127  0b0111_1111');
+
+      // A bare "$"-prefixed name (as Watch/REPL users are used to typing) resolves the same way.
+      const dollarEax = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax', context: 'watch' });
+      assert.strictEqual(dollarEax.result, eax.result);
+
+      // A compound expression is untouched — still falls through to the generic gdb evaluator.
+      const compound = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax + 1', context: 'watch' });
+      assert.match(compound.result, /^-?\d+$/);
+
+      // The Registers scope panel gets the identical treatment, not just ad-hoc evaluate/hover —
+      // rax reads back zero-extended from the eax write (standard x86-64 semantics).
+      const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const variables = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: scopes.scopes[0].variablesReference,
+      });
+      const rax = variables.variables.find((v) => v.name === 'rax');
+      assert.strictEqual(rax?.value, 'rax = 0x00000000ffffffff  4294967295  0b0000_0000_0000_0000_0000_0000_0000_0000_1111_1111_1111_1111_1111_1111_1111_1111');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(regDir, { recursive: true, force: true });
+    }
+  });
 });

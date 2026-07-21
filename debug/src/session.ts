@@ -22,6 +22,44 @@ const MAX_STEP_INSTRUCTIONS = 200_000;
 
 const REGISTER_NAMES = ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'rip', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15', 'eflags'];
 
+/**
+ * Every x86-64 general-purpose register name/sub-register alias gdb exposes as a `$`-prefixed
+ * convenience register, mapped to its bit width — covers whatever mnemonic a hover in real
+ * assembly source might land on (not just the curated set the Registers scope displays).
+ * `eip` is deliberately excluded: unlike `$rip`, this gdb/target combo evaluates it to "void"
+ * rather than a usable value, so it's left to fall through to the generic evaluator below.
+ */
+const REGISTER_WIDTH_BITS: Record<string, 8 | 16 | 32 | 64> = {
+  rax: 64, rbx: 64, rcx: 64, rdx: 64, rsi: 64, rdi: 64, rbp: 64, rsp: 64, rip: 64,
+  r8: 64, r9: 64, r10: 64, r11: 64, r12: 64, r13: 64, r14: 64, r15: 64,
+  eax: 32, ebx: 32, ecx: 32, edx: 32, esi: 32, edi: 32, ebp: 32, esp: 32, eflags: 32,
+  r8d: 32, r9d: 32, r10d: 32, r11d: 32, r12d: 32, r13d: 32, r14d: 32, r15d: 32,
+  ax: 16, bx: 16, cx: 16, dx: 16, si: 16, di: 16, bp: 16, sp: 16,
+  r8w: 16, r9w: 16, r10w: 16, r11w: 16, r12w: 16, r13w: 16, r14w: 16, r15w: 16,
+  al: 8, bl: 8, cl: 8, dl: 8, ah: 8, bh: 8, ch: 8, dh: 8, sil: 8, dil: 8, bpl: 8, spl: 8,
+  r8b: 8, r9b: 8, r10b: 8, r11b: 8, r12b: 8, r13b: 8, r14b: 8, r15b: 8,
+};
+
+const UNSIGNED_CAST_TYPE: Record<8 | 16 | 32 | 64, string> = {
+  8: 'unsigned char',
+  16: 'unsigned short',
+  32: 'unsigned int',
+  64: 'unsigned long',
+};
+
+/** Renders one bit pattern in every base at once — hex and binary always agree with the decimal
+ * value because all three come from the same parsed bigint, not three separate gdb round-trips
+ * that could each format the same register differently (gdb defaults to *signed* decimal for
+ * plain registers, e.g. -1 for 0xffffffff, which reads as a bug more than a feature here). */
+function formatRegisterValue(name: string, bits: 8 | 16 | 32 | 64, value: bigint): string {
+  const hex = value.toString(16).padStart(bits / 4, '0');
+  const bin = value
+    .toString(2)
+    .padStart(bits, '0')
+    .replace(/(.{4})(?=.)/g, '$1_');
+  return `${name} = 0x${hex}  ${value.toString()}  0b${bin}`;
+}
+
 interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
   /** Path to the assembled, executable binary. */
   program: string;
@@ -235,16 +273,46 @@ export class FasmDebugSession extends DebugSession {
 
     const variables: Variable[] = [];
     for (const name of REGISTER_NAMES) {
-      try {
-        const result = await this.gdb.sendCommand(`-data-evaluate-expression $${name}`);
-        const value = (result.data as Record<string, unknown> | undefined)?.value;
-        variables.push(new Variable(name, typeof value === 'string' ? value : '<unavailable>'));
-      } catch {
-        variables.push(new Variable(name, '<unavailable>'));
-      }
+      const formatted = await this.formatRegister(name, REGISTER_WIDTH_BITS[name]);
+      variables.push(new Variable(name, formatted ?? '<unavailable>'));
     }
     response.body = { variables };
     this.sendResponse(response);
+  }
+
+  /**
+   * Evaluates register `name` (already known to be `bits` wide) and formats it as hex/decimal/
+   * binary. Casts to the appropriately-sized `unsigned` type first — gdb's raw evaluation of a
+   * plain register is *signed* decimal by default (confusing for a bit pattern: 0xffffffff reads
+   * as -1) and, for `eflags` specifically, isn't numeric at all (`$eflags` alone evaluates to a
+   * decoded flag-name string like "[ IF ]", not a value `-data-evaluate-expression` can parse as
+   * a number). The cast sidesteps both: it's always plain unsigned decimal, one format regardless
+   * of register. For `eflags`, that decoded string is still genuinely useful, so it's appended.
+   */
+  private async formatRegister(name: string, bits: 8 | 16 | 32 | 64 | undefined): Promise<string | undefined> {
+    if (!this.gdb || bits === undefined) return undefined;
+    try {
+      const castType = UNSIGNED_CAST_TYPE[bits];
+      const result = await this.gdb.sendCommand(`-data-evaluate-expression "(${castType})$${name}"`);
+      const raw = (result.data as Record<string, unknown> | undefined)?.value;
+      if (typeof raw !== 'string') return undefined;
+      const match = /^\d+/.exec(raw);
+      if (!match) return undefined;
+
+      let text = formatRegisterValue(name, bits, BigInt(match[0]));
+      if (name === 'eflags') {
+        try {
+          const flagsResult = await this.gdb.sendCommand('-data-evaluate-expression $eflags');
+          const flagsValue = (flagsResult.data as Record<string, unknown> | undefined)?.value;
+          if (typeof flagsValue === 'string') text += `  ${flagsValue}`;
+        } catch {
+          // cosmetic addition only — the numeric formatting above already stands on its own
+        }
+      }
+      return text;
+    } catch {
+      return undefined;
+    }
   }
 
   protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {
@@ -330,8 +398,28 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 2, 'Debug session is not running');
       return;
     }
+
+    // A bare register name (hovering over "eax" in the source, or typing it into Watch/Debug
+    // Console) gets the same hex/decimal/binary formatting as the Registers scope, instead of
+    // whatever plain (often signed, or for eflags non-numeric) string gdb would print by default.
+    // Anything else — a compound expression like "*(dword*)$esp" — is passed straight through.
+    const registerName = args.expression.trim().replace(/^\$/, '').toLowerCase();
+    const bits = REGISTER_WIDTH_BITS[registerName];
+    if (bits !== undefined) {
+      const formatted = await this.formatRegister(registerName, bits);
+      if (formatted !== undefined) {
+        response.body = { result: formatted, variablesReference: 0 };
+        this.sendResponse(response);
+        return;
+      }
+    }
+
     try {
-      const result = await this.gdb.sendCommand(`-data-evaluate-expression ${args.expression}`);
+      // Quoted: MI's argument parser splits on whitespace, so an unquoted expression containing
+      // one (e.g. "$eax + 1", or any real C-like expression beyond a single token) would be seen
+      // as several arguments instead of one and rejected with a "Usage: ..." error.
+      const quoted = args.expression.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const result = await this.gdb.sendCommand(`-data-evaluate-expression "${quoted}"`);
       const value = (result.data as Record<string, unknown> | undefined)?.value;
       response.body = { result: typeof value === 'string' ? value : '<no value>', variablesReference: 0 };
       this.sendResponse(response);
