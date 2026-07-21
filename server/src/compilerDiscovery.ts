@@ -13,6 +13,8 @@
 // Windows).
 
 import { spawn } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
 import { Dialect } from './types';
 
 const CANDIDATES: Record<Dialect, string[]> = {
@@ -22,6 +24,25 @@ const CANDIDATES: Record<Dialect, string[]> = {
 
 const PROBE_TIMEOUT_MS = 3000;
 const BANNER_MARKER = 'flat assembler';
+
+// GUI-launched apps (desktop launchers, app menus, some window-manager-driven session setups)
+// often don't inherit the PATH additions an interactive shell's rc file adds — most commonly
+// ~/.local/bin, a conventional install location for user-installed CLI tools that a bare command
+// name lookup won't find in that leaner environment. Checked directly by full path, after the
+// plain PATH-based candidates. Windows generally propagates the registry-based user/system PATH
+// to GUI apps regardless of how they're launched, so this matters less there — but package-manager
+// shim directories (scoop, chocolatey) are common install locations that aren't always on it.
+function extraSearchDirs(): string[] {
+  const home = os.homedir();
+  if (process.platform === 'darwin') return [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+  if (process.platform === 'win32') return [path.join(home, 'scoop', 'shims'), 'C:\\ProgramData\\chocolatey\\bin'];
+  return [path.join(home, '.local', 'bin')];
+}
+
+function candidatePaths(dialect: Dialect): string[] {
+  const names = CANDIDATES[dialect];
+  return [...names, ...extraSearchDirs().flatMap((dir) => names.map((name) => path.join(dir, name)))];
+}
 
 const cache = new Map<Dialect, string | null>();
 const inFlight = new Map<Dialect, Promise<string | undefined>>();
@@ -63,7 +84,7 @@ function probe(candidate: string): Promise<boolean> {
 }
 
 async function probeCandidates(dialect: Dialect): Promise<string | undefined> {
-  for (const candidate of CANDIDATES[dialect]) {
+  for (const candidate of candidatePaths(dialect)) {
     if (await probe(candidate)) {
       cache.set(dialect, candidate);
       return candidate;

@@ -99,4 +99,48 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
     invalidateCompilerCache();
     assert.strictEqual(await resolveCompilerOnPath('fasm2'), undefined, 'expected a fresh probe to reflect the tool now being gone');
   });
+
+  describe('falling back to well-known install directories not on PATH', () => {
+    let originalHome: string | undefined;
+    let emptyPathDir: string;
+
+    beforeEach(async () => {
+      // PATH points somewhere that genuinely has nothing in it, simulating a GUI-launched process
+      // whose PATH lacks the ~/.local/bin an interactive shell's rc file would normally add.
+      emptyPathDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-compiler-discovery-emptypath-'));
+      process.env.PATH = emptyPathDir;
+      originalHome = process.env.HOME;
+      process.env.HOME = tmpDir;
+    });
+
+    afterEach(async () => {
+      process.env.HOME = originalHome;
+      await fs.rm(emptyPathDir, { recursive: true, force: true });
+    });
+
+    it('finds a tool in ~/.local/bin even when PATH does not include it', async () => {
+      const localBin = path.join(tmpDir, '.local', 'bin');
+      await fs.mkdir(localBin, { recursive: true });
+      const fsPath = path.join(localBin, 'fasm2');
+      await fs.writeFile(fsPath, '#!/bin/sh\necho "flat assembler  version g.fake"\n', 'utf8');
+      await fs.chmod(fsPath, 0o755);
+
+      const result = await resolveCompilerOnPath('fasm2');
+      assert.strictEqual(result, fsPath);
+    });
+
+    it('still prefers a PATH match over the ~/.local/bin fallback', async () => {
+      await writeFakeTool('fasm2', 'echo "flat assembler  version g.fake (on PATH)"');
+      process.env.PATH = `${emptyPathDir}${path.delimiter}${tmpDir}`;
+
+      const localBin = path.join(tmpDir, '.local', 'bin');
+      await fs.mkdir(localBin, { recursive: true });
+      const fallbackPath = path.join(localBin, 'fasm2');
+      await fs.writeFile(fallbackPath, '#!/bin/sh\necho "flat assembler  version g.fake (fallback)"\n', 'utf8');
+      await fs.chmod(fallbackPath, 0o755);
+
+      const result = await resolveCompilerOnPath('fasm2');
+      assert.strictEqual(result, 'fasm2', 'expected the bare PATH-resolved name, not the ~/.local/bin full path');
+    });
+  });
 });
