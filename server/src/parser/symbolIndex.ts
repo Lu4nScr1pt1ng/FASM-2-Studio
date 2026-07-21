@@ -62,13 +62,32 @@ function lower(t: Token | undefined): string {
   return t ? t.text.toLowerCase() : '';
 }
 
-/** Strips a trailing "?" used by fasmg to mark a macro name as overridable/weak (e.g. "foo?" ->
- * "foo"). A bare "?" is different: it's fasmg's syntax for an anonymous macro, and the name IS
- * "?" — stripping it here would turn it into an empty string, which every consumer downstream
- * (hover, completion, document symbols) treats as "no symbol", and which VS Code's own
- * DocumentSymbol validation rejects outright ("name must not be falsy"). */
+/** Strips a trailing "?" used by fasmg to mark a name (or, independently, each dot-separated
+ * component of a compound name) as overridable/weak — e.g. "foo?" -> "foo", and "end?.frame?" ->
+ * "end.frame" (both components stripped, matching the manual's own "xor?.mask? := ..." example: a
+ * "?" can independently follow *each* part of a dotted identifier). A component that is a bare "?"
+ * is different: it's fasmg's syntax for an anonymous macro, and the name IS "?" — stripping it
+ * would turn it into an empty string, which every consumer downstream (hover, completion, document
+ * symbols) treats as "no symbol", and which VS Code's own DocumentSymbol validation rejects
+ * outright ("name must not be falsy"). */
 function baseName(name: string): string {
-  return name.length > 1 && name.endsWith('?') ? name.slice(0, -1) : name;
+  return name
+    .split('.')
+    .map((part) => (part.length > 1 && part.endsWith('?') ? part.slice(0, -1) : part))
+    .join('.');
+}
+
+/**
+ * fasmg lets user code extend its CALM command set by defining a calminstruction namespaced under
+ * the special "calminstruction" symbol (e.g. fasmg's own packages/x86/include/cpu/8086.inc defines
+ * "calminstruction?.xcall?", used elsewhere as a bare "xcall" — a genuinely different mechanism
+ * from an ordinary dotted identifier like "x87.parse_operand@dest", which *is* invoked with its
+ * full dotted path intact). Detects that case and returns just the bare command name actually used
+ * at call sites; returns undefined for a normal (non-command-namespaced) calminstruction name.
+ */
+function calmCommandBareName(cleanedName: string): string | undefined {
+  const match = /^calminstruction\.(.+)$/i.exec(cleanedName);
+  return match ? match[1] : undefined;
 }
 
 /** Tracks one open `macro ... end macro` block, so a name declared `local` inside it can be told
@@ -126,7 +145,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         if (idx !== -1) {
           while (blockStack.length > idx) {
             const popped = blockStack.pop();
-            if (popped === 'macro') {
+            if (popped === 'macro' || popped === 'calminstruction') {
               const frame = macroFrames.pop();
               if (frame) {
                 for (const sym of frame.pendingSymbols) {
@@ -230,6 +249,34 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         // unrelated same-named instruction or macro elsewhere in the file.
         if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
         blockStack.push('macro');
+        macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
+        continue;
+      }
+
+      // --- calminstruction NAME params... (fasmg implements virtually every real x86
+      // instruction this way, e.g. this very file's own "fld?"/"fadd"-family/"xcall" — without
+      // this, none of them had any SymbolDefinition at all, so hover/go-to-definition on a
+      // calminstruction-defined name found nothing unless it happened to already be hardcoded in
+      // this extension's own static instructions.json) ---
+      if (kw0 === 'calminstruction' && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        const cleaned = baseName(nameTok.text);
+        const name = calmCommandBareName(cleaned) ?? cleaned;
+        const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
+        const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
+        const sym: SymbolDefinition = {
+          name,
+          kind: SymbolKind.Macro,
+          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
+          nameRange: tokenRange(nameTok),
+          params: paramsFromTokens(paramTokens),
+          isWeak,
+          isUnconditional,
+          uri,
+        };
+        symbols.push(sym);
+        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
+        blockStack.push('calminstruction');
         macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
         continue;
       }

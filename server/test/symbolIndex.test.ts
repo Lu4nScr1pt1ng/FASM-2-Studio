@@ -265,12 +265,13 @@ describe('symbolIndex', () => {
     assert.ok(sym?.localScope, 'expected "area" to be scoped to the enclosing macro like any other local');
   });
 
-  it('strips a trailing "?" from a constant name defined via any operator, not just macro/struct names', () => {
+  it('strips "?" from every dot-separated component of a constant name defined via any operator, not just macro/struct names', () => {
     // The manual's own example: "xor?.mask? := 10101010b" — the same weak/overridable "?" suffix
-    // convention macro names use also applies to symbolic constants.
+    // convention macro names use also applies independently to each part of a dotted symbolic
+    // constant name.
     const src = 'xor?.mask? := 10101010b';
     const doc = parseDocument('file:///weakconst.asm', 1, src, 'fasm2');
-    assert.strictEqual(doc.symbols.find((s) => s.name === 'xor?.mask')?.definedVia, ':=');
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'xor.mask')?.definedVia, ':=');
   });
 
   it('does not mistake a macro\'s "!" (unconditional-instruction marker) for a parameter', () => {
@@ -282,6 +283,44 @@ describe('symbolIndex', () => {
     const macro = doc.symbols.find((s) => s.name === 'endp');
     assert.ok(macro, 'expected "endp" (not "endp?" or "endp?!") to be the indexed macro name');
     assert.strictEqual(macro?.params, undefined);
+  });
+
+  it('recognizes "calminstruction NAME params" as a symbol definition, same as "macro"', () => {
+    // Mirrors fasmg's own packages/x86/include/cpu/8087.inc: "calminstruction fld? src*" — before
+    // this, NO calminstruction anywhere (i.e. how virtually every real x86 instruction is
+    // actually implemented) had any SymbolDefinition at all.
+    const src = 'calminstruction fld? src*\n\tasm db 0D9h\nend calminstruction\n';
+    const doc = parseDocument('file:///calminstr.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'fld');
+    assert.strictEqual(sym?.kind, SymbolKind.Macro);
+    assert.strictEqual(sym?.params, 'src*');
+    assert.strictEqual(sym?.isWeak, true);
+  });
+
+  it('extracts the bare command name from a calminstruction namespaced under "calminstruction." (extends the CALM command set)', () => {
+    // Mirrors fasmg's own packages/x86/include/cpu/8086.inc: "calminstruction calminstruction?.xcall?
+    // instruction*, arguments&" — invoked elsewhere as a bare "xcall", not "calminstruction.xcall".
+    const src = 'calminstruction calminstruction?.xcall? instruction*, arguments&\nend calminstruction\n';
+    const doc = parseDocument('file:///xcall.asm', 1, src, 'fasm2');
+    assert.ok(doc.symbols.find((s) => s.name === 'xcall'), 'expected the bare "xcall" name to be indexed');
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'calminstruction.xcall'), undefined);
+  });
+
+  it('strips "?" from every dot-separated component of a name, not just the last one', () => {
+    // Mirrors fasmg's own proc64.inc: "macro end?.frame?" — both "end" and "frame" are
+    // independently weak/overridable.
+    const src = 'macro end?.frame?\nend macro\n';
+    const doc = parseDocument('file:///dotweak.asm', 1, src, 'fasm2');
+    assert.ok(doc.symbols.find((s) => s.name === 'end.frame'), 'expected "end.frame" (both components stripped), not "end?.frame"');
+  });
+
+  it('scopes a `local` variable declared inside a calminstruction body the same way as inside a macro', () => {
+    // Mirrors fasmg's own 8087.inc: "calminstruction x87.parse_operand#context operand" declares
+    // "local i" and uses it within its own body only.
+    const src = ['calminstruction x87.parse_operand operand', '\tlocal i', '\ti = 1', 'end calminstruction'].join('\n');
+    const doc = parseDocument('file:///calmlocal.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'i');
+    assert.ok(sym?.localScope, 'expected "i" to be scoped to the enclosing calminstruction');
   });
 
   it('recovers from a macro that deliberately leaves a block open across invocations, instead of desyncing scope tracking for the rest of the file', () => {
