@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0
+
+- Added `fasm2Studio.includePath`, forwarded as the compiler's `INCLUDE` environment variable.
+  Fixed a real, significant gap found by validating against fasmg's own example projects: a bare
+  `include 'foo.inc'` that isn't found next to the including file relies on `INCLUDE` as a search
+  path — fasmg's own bundled `make.bat` scripts set this up themselves (e.g.
+  `packages/x86/examples/windows/make.bat` does `set include=..\..\include` before building).
+  Without an equivalent setting, any project structured this way — including anything importing
+  Windows API declarations via `kernel32.inc`/`user32.inc`-style packages — failed to build or
+  diagnose at all, with a misleading "source file not found" error despite being entirely correct
+  code. Verified end-to-end: 44 false diagnostics on a real Windows example without the fix, 0
+  with it.
+- Fixed dialect detection wrongly classifying real fasmg files as classic fasm1: `endp`,
+  `use16`/`use32`/`use64`, and `rept` were treated as fasm1-only markers, but all three are
+  legitimate macro names defined by fasmg's own official x86 packages. This misclassified 18 of
+  354 real fasmg files, hiding fasm2-only hover content and directive completions for them.
+- Validated macro/symbol detection against fasmg's entire real example tree (354 files): zero
+  crashes, 2,678 macros and 29,354 symbols correctly recognized.
+
 ## 0.7.0
 
 - Massively expanded instruction coverage for hover/completion: from 197 to 1,273 entries,
