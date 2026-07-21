@@ -163,6 +163,23 @@ describe('getHover', () => {
       assert.match(v, /\*\*Not included\*\* — defined elsewhere in the workspace/);
     });
 
+    it('finds a symbol in a sibling fragment neither includes directly, both reachable only via their shared entry point', async () => {
+      // Regression test: cc.asm includes both lexer.asm and io.asm, but lexer.asm doesn't include
+      // io.asm directly (or vice versa) — hovering a symbol from io.asm while looking at lexer.asm
+      // must still resolve as "included", since walking from lexer.asm's own uri alone (instead of
+      // from the shared entry point cc.asm) would never reach io.asm.
+      const lexerUri = await writeFile('lexer.asm', 'lex_source:\n\tnop\n');
+      const ioUri = await writeFile('io.asm', 'IO_BUF_CAP = 4096\n');
+      const mainUri = await writeFile('cc.asm', "format ELF64 executable 3\ninclude 'lexer.asm'\ninclude 'io.asm'\n");
+
+      const local = new Workspace();
+      await local.indexWorkspace([mainUri, lexerUri, ioUri], dialectAlwaysFasm2);
+
+      const v = value(getHover(local, lexerUri, 'fasm2', 'IO_BUF_CAP'));
+      assert.match(v, /Defined in `io\.asm`/);
+      assert.ok(!v.includes('Not included'), 'io.asm IS included — just indirectly, via the shared entry point cc.asm');
+    });
+
     it('omits the "defined in" line when the symbol is defined in the same file being hovered', async () => {
       const mainUri = await writeFile('main.asm', 'format binary\nCAP = 1\n');
       const local = new Workspace();

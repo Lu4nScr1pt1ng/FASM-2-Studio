@@ -214,10 +214,19 @@ export class Workspace {
     }
   }
 
-  /** Walks the include graph starting at `uri`, yielding each reachable parsed document once. */
+  /**
+   * Walks the include graph reachable from `uri`'s real entry point, yielding each parsed
+   * document once. `uri` itself may be a fragment with no `format` of its own (e.g. an .inc/.asm
+   * meant only to be `include`d) — walking from it directly would miss sibling fragments pulled in
+   * by the same entry point but not by `uri` itself (e.g. two files both included by cc.asm, where
+   * neither includes the other). findEntryFile walks backward via `include`rs to find that real
+   * starting point; falls back to `uri` itself when none is known (an orphaned fragment, or `uri`
+   * already being the entry).
+   */
   *walkIncludeGraph(uri: string, dialect: Dialect): Generator<ParsedDocument> {
+    const startUri = this.findEntryFile(uri) ?? uri;
     const visited = new Set<string>();
-    const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
+    const queue: Array<{ uri: string; depth: number }> = [{ uri: startUri, depth: 0 }];
 
     while (queue.length > 0) {
       const { uri: currentUri, depth } = queue.shift()!;

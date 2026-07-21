@@ -1,6 +1,12 @@
 import * as assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { URI } from 'vscode-uri';
 import { getSignatureHelp } from '../src/features/signatureHelp';
 import { Workspace } from '../src/workspace';
+
+const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
 describe('signatureHelp', () => {
   it('shows a macro signature and tracks the active parameter across commas', () => {
@@ -42,5 +48,32 @@ describe('signatureHelp', () => {
     const ws = new Workspace();
     const help = getSignatureHelp(ws, 'file:///none.asm', 'fasm2', 'totallyUnknownThing ');
     assert.strictEqual(help, undefined);
+  });
+
+  it('finds a macro defined in a sibling fragment neither includes directly, both reachable only via their shared entry point', async () => {
+    // Regression test for the same underlying bug fixed in workspace.ts's walkIncludeGraph: cc.asm
+    // includes both callsite.asm and macros.inc, but callsite.asm doesn't include macros.inc
+    // itself — signature help while typing a call in callsite.asm must still find the macro.
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-sighelp-test-'));
+    try {
+      const writeFile = async (name: string, content: string): Promise<string> => {
+        const fsPath = path.join(tmpDir, name);
+        await fs.writeFile(fsPath, content, 'utf8');
+        return URI.file(fsPath).toString();
+      };
+
+      const macrosUri = await writeFile('macros.inc', 'macro point? x*,y*,z*\n\tdd x,y,z\nend macro\n');
+      const callsiteUri = await writeFile('callsite.asm', 'start:\n\tnop\n');
+      const mainUri = await writeFile('cc.asm', "format binary\ninclude 'callsite.asm'\ninclude 'macros.inc'\n");
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([mainUri, callsiteUri, macrosUri], dialectAlwaysFasm2);
+
+      const help = getSignatureHelp(ws, callsiteUri, 'fasm2', 'point 1, ');
+      assert.ok(help, 'expected signature help for "point", reachable via the shared entry point cc.asm');
+      assert.strictEqual(help!.activeParameter, 1);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
