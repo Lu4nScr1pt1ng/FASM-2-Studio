@@ -36,6 +36,11 @@ const LOGICAL_OPERATORS: Record<string, string> = {
   '~': 'Logical negation, evaluated first (higher precedence than "&"/"|"). `if ~ used name` is true when `name` is *not* used. Only valid inside a logical expression (`if`/`while` condition, CALM `check` argument) — not a general bitwise-NOT for ordinary arithmetic (use the `not` operator there instead).',
   '&': 'Logical conjunction (AND) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `|`. Not the same as the "&" on a macro/struct/calminstruction\'s *last parameter*, which instead means "capture the rest of the line as one value" — and not a general bitwise-AND for ordinary arithmetic either (use the `and` operator there instead).',
   '|': 'Logical alternative (OR) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `&`. Not a general bitwise-OR for ordinary arithmetic (use the `or` operator there instead).',
+  defined: 'True when the basic expression that follows contains no symbols lacking an accessible definition (only checks *availability*, not that a value is computable). A symbol reachable through forward-referencing still counts as defined, so this can be true even before the symbol\'s own definition line is reached — an empty expression is also trivially true. See `definite` for the forward-reference-intolerant version (e.g. win32wx.inc\'s own `if ~ definite PE & ~ definite x86.mode`, checking neither has been set yet by an *earlier* line).',
+  definite: 'Like `defined`, but stricter: true only when every symbol in the basic expression that follows has already been defined *earlier* in the source — forward references do not count, and (unlike `defined`) the expression may not be empty. The standard fasmg idiom for "run this only if an earlier file/section has not already set this up" (e.g. win32wx.inc\'s own `if ~ definite PE & ~ definite x86.mode`, which only applies a default `format PE GUI 4.0` when nothing earlier already chose a format or CPU mode).',
+  used: 'Followed by a single identifier; true when that symbol\'s value has been used anywhere in the source (not merely defined). Common for conditionally emitting something only if it turned out to be referenced, e.g. import.inc\'s own `if used label`.',
+  eqtype: 'Compares two basic expressions; true when their values are of the same *type* (algebraic/integer, string, or floating-point) regardless of whether the values themselves are equal. See `eq` for a version that also requires equality.',
+  eq: 'Compares two basic expressions; true only when they are of the same type *and* equal — able to compare values the plain `=` operator cannot (strings, floating-point numbers, linear polynomials). See `eqtype` for a type-only comparison, and `export.inc`\'s own `string eqtype \'\'` (checking a value is a string at all) for a real example of the two used together.',
 };
 
 export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string, line = 0): Hover | undefined {
@@ -62,7 +67,7 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   const special = SPECIAL_SYMBOLS[word];
   if (special) return markdown(renderTagged(word, 'Built-in symbol', special));
 
-  const logicalOp = LOGICAL_OPERATORS[word];
+  const logicalOp = LOGICAL_OPERATORS[word] ?? LOGICAL_OPERATORS[lower];
   if (logicalOp) return markdown(renderTagged(word, 'Logical operator', logicalOp));
 
   // An in-scope `local` variable is an unambiguous match tied to exactly this query position —

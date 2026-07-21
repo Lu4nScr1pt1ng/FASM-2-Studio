@@ -49,6 +49,34 @@ describe('symbolIndex', () => {
     assert.strictEqual(doc.formatDirective, 'binary');
   });
 
+  it('indexes a name containing "%" as one identifier, not splitting it into a shorter name plus a stray "%" token', () => {
+    // Mirrors a real, confirmed bug: fasmg's own packages/x86/include/pcount/kernel32.inc defines
+    // "BackupRead% =  7" -- fasmg's tokenization rule (manual.txt's "Fundamental syntax rules")
+    // lists the small set of characters that are always their own token
+    // (+-/*=<>()[]{}:?!,.|&~#\), and "%" is not among them, so this is a symbol literally named
+    // "BackupRead%", not "BackupRead" followed by punctuation. Before fixing the tokenizer, this
+    // line was never recognized as a constant definition at all.
+    const src = 'format binary\nBackupRead% =  7\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'BackupRead%');
+    assert.ok(sym, `expected a symbol named "BackupRead%", got: ${JSON.stringify(doc.symbols.map((s) => s.name))}`);
+    assert.strictEqual(sym.kind, SymbolKind.Constant);
+    assert.strictEqual(sym.value, '7');
+  });
+
+  it('indexes "proc NAME params" (the standard proc32.inc/proc64.inc package) as a real Label symbol', () => {
+    // Mirrors real usage across virtually every fasmg Windows program, e.g. fasm2's own
+    // source/ide/windows/fasmgw.asm: "proc MainWindow hwnd,wmsg,wparam,lparam". The "proc?" macro's
+    // own body does "match name declaration, statement : if used name / name: / namespace name" --
+    // so this genuinely defines NAME as a real, callable label, exactly like writing "NAME:" by
+    // hand. Before this, hover/go-to-definition/workspace-symbol-search found nothing for it.
+    const src = 'format binary\nproc MainWindow hwnd,wmsg,wparam,lparam\n\tret\nendp\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'MainWindow');
+    assert.ok(sym, `expected a symbol named "MainWindow", got: ${JSON.stringify(doc.symbols.map((s) => s.name))}`);
+    assert.strictEqual(sym.kind, SymbolKind.Label);
+  });
+
   it('indexes names declared via the "import" macro pattern (fasmg\'s api/kernel32.inc-style Windows imports), across a multi-line backslash-continued list', () => {
     // Mirrors the real, standard shape of fasmg's own packages/x86/include/api/kernel32.inc and
     // api/user32.inc: every imported OS function is declared this way rather than as a label, so

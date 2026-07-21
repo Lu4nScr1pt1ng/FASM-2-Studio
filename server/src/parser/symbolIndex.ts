@@ -310,6 +310,27 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
+      // --- proc NAME params... (packages/x86/include/macro/proc32.inc's "proc?" macro) ---
+      // Not a core directive, but its own body does "match name declaration, statement : if used
+      // name / name: / namespace name" -- so "proc NAME ..." genuinely defines NAME as a real,
+      // callable label, exactly like writing "NAME:" by hand. Without this, virtually every real
+      // fasmg Windows program's own procedures (e.g. fasm2's own fasmgw.asm: "proc MainWindow
+      // hwnd,wmsg,wparam,lparam") have no SymbolDefinition at all: no hover, no go-to-definition,
+      // no workspace symbol search, despite being the single most common way to define a function.
+      if (kw0 === 'proc' && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        symbols.push({
+          name: nameTok.text,
+          kind: SymbolKind.Label,
+          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
+          nameRange: tokenRange(nameTok),
+          params: paramsFromTokens(tokens.slice(2)),
+          uri,
+        });
+        lastGlobalLabel = nameTok.text;
+        continue;
+      }
+
       // --- label NAME [size] at EXPR ---
       if (kw0 === 'label' && tokens[1] && tokens[1].type === TokenType.Ident) {
         const nameTok = tokens[1];

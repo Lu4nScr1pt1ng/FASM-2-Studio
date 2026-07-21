@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.13.0
+
+- Fixed live diagnostics (the buffer-aware compile used while editing) failing on any `include`
+  that climbs above its own file's directory with `..` — confirmed against fasm2's own IDE source
+  (`source/windows/dll/fasmg.asm`'s `include '../../version.inc'`, `source/ide/windows/fasmgw.asm`'s
+  backslash `include '..\..\version.inc'`), which used to report those files as "not found" only
+  under live diagnostics, not a plain compile. The shadow compile root now mirrors a bounded chain
+  of ancestor directories, not just the entry file's own directory.
+- Added `proc NAME params` (the standard `proc32.inc`/`proc64.inc` package used by virtually every
+  real fasmg Windows program, e.g. fasm2's own `fasmgw.asm`: `proc MainWindow hwnd,wmsg,wparam,
+  lparam`) as a real symbol definition — its own macro body turns NAME into a genuine label
+  (`if used name / name:`), but hover/go-to-definition/workspace-symbol-search previously found
+  nothing for it at all, arguably the single most common way to define a function.
+- Fixed the tokenizer splitting a name containing "%" (e.g. `packages/x86/include/pcount/
+  kernel32.inc`'s own `BackupRead% =  7`) into a shorter identifier plus a stray "%" token — fasmg
+  does not treat "%" as a special character at all (only a bare "%"/"%%" is the repetition-count
+  pseudo-variable), so the line was never recognized as a constant definition.
+- Synced the syntax-highlight grammar with the above and closed several more real gaps found the
+  same way: `format`-keywords (`PE`, `GUI`, `console`, `at`, `on`, ...) now only apply inside an
+  actual `format ...` line instead of anywhere the same word appears (win32wx.inc's own
+  `if ~ definite PE & ~ definite x86.mode` no longer lights up `PE` as the directive); the core
+  `defined`/`definite`/`used`/`eq`/`eqtype` operators are now recognized (grammar + hover) instead
+  of being completely unstyled/undocumented; `define`/`redefine NAME` now tags NAME as a constant,
+  including a dotted weak name as one token (`win32wx.inc`'s own `define _winx.code? _code`); `#`
+  (token-pasting) is now styled instead of falling through as plain punctuation; a `%` glued to an
+  ordinary name no longer lights up as the repetition-count pseudo-variable; the mnemonic list is
+  now generated from the full 1271-entry instruction set hover/completion already use instead of a
+  159-entry hand-picked subset (`lodsb`/`cmpsb`/`scasb` and the entire SSE/AVX/legacy-FPU families
+  had no color at all); and `library`/`import`/`export`/`directory`/`resource`/`dialog`/`enddialog`/
+  `dialogitem` (the standard import/export/resource packages) get the same treatment already added
+  for `proc`/`invoke`.
+
 ## 0.12.0
 
 - Added `load NAME[:size] from ADDRESS` as a real symbol-defining construct (`proc64.inc`'s own

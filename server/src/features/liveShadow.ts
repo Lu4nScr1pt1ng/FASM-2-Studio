@@ -24,27 +24,66 @@ export interface LiveShadowRoot {
  * shadow tree can't be built (e.g. no symlink permission on Windows without Developer Mode) —
  * callers should fall back to compiling the real file from disk in either case.
  */
+// How many ancestor levels of targetDir get mirrored (see mirrorAncestorChain) before falling back
+// to a real, unmirrored directory. Bounded rather than walking to the filesystem root: cheap, and
+// generously covers any realistic relative-include depth (the real bug this fixes needed only 2 —
+// fasm2's own source/windows/dll/fasmg.asm: "include '../../version.inc'").
+const ANCESTOR_LEVELS = 12;
+
 export async function buildLiveShadowRoot(targetFsPath: string, liveFsPath: string, liveContent: string): Promise<LiveShadowRoot | undefined> {
   const targetDir = path.dirname(targetFsPath);
   const rel = path.relative(targetDir, liveFsPath);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
 
   const shadowRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-shadow-'));
+  let shadowTargetDir: string;
   try {
-    await mirrorWithOverride(targetDir, shadowRoot, rel.split(path.sep), liveContent);
+    shadowTargetDir = await mirrorAncestorChain(targetDir, shadowRoot);
+    await mirrorWithOverride(targetDir, shadowTargetDir, rel.split(path.sep), liveContent);
   } catch {
     await fs.promises.rm(shadowRoot, { recursive: true, force: true }).catch(() => undefined);
     return undefined;
   }
 
   return {
-    compileFsPath: path.join(shadowRoot, path.basename(targetFsPath)),
-    cwd: shadowRoot,
+    compileFsPath: path.join(shadowTargetDir, path.basename(targetFsPath)),
+    cwd: shadowTargetDir,
     cleanup: () => fs.promises.rm(shadowRoot, { recursive: true, force: true }).then(
       () => undefined,
       () => undefined,
     ),
   };
+}
+
+/**
+ * Mirrors up to ANCESTOR_LEVELS real ancestor directories of `targetDir` into `shadowRoot`, so a
+ * relative `include` that climbs above targetDir's own directory with ".." (a real, common pattern
+ * in multi-directory projects, e.g. fasm2's own source tree) still resolves correctly instead of
+ * escaping into the shadow temp dir's real, unrelated parent. At every level of the walk, every
+ * sibling of the real ancestor other than the one continuing the chain is symlinked back to its
+ * real path — exactly what mirrorWithOverride already does for targetDir's own siblings, just
+ * repeated one level at a time on the way down. Returns the shadow path corresponding to targetDir.
+ */
+async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promise<string> {
+  const root = path.parse(targetDir).root;
+  const allSegments = targetDir.slice(root.length).split(path.sep).filter(Boolean);
+  const segments = allSegments.slice(-ANCESTOR_LEVELS);
+
+  let realDir = path.join(root, ...allSegments.slice(0, allSegments.length - segments.length));
+  let shadowDir = shadowRoot;
+  for (const segment of segments) {
+    await fs.promises.mkdir(shadowDir, { recursive: true });
+    const entries = await fs.promises.readdir(realDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === segment) continue;
+      await fs.promises
+        .symlink(path.join(realDir, entry.name), path.join(shadowDir, entry.name), entry.isDirectory() ? 'dir' : 'file')
+        .catch(() => undefined);
+    }
+    realDir = path.join(realDir, segment);
+    shadowDir = path.join(shadowDir, segment);
+  }
+  return shadowDir;
 }
 
 async function mirrorWithOverride(realDir: string, shadowDir: string, overrideRelParts: string[], overrideContent: string): Promise<void> {

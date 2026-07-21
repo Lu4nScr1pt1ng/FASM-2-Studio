@@ -416,6 +416,22 @@ describe('getHover', () => {
       assert.match(pipe, /Logical alternative/);
     });
 
+    it('documents "defined"/"definite"/"used"/"eq"/"eqtype" as core logical/type operators', async () => {
+      // Mirrors real usage in fasmg's own packages/x86/include/win32wx.inc: "if ~ definite PE & ~
+      // definite x86.mode" -- previously undocumented entirely.
+      const src = 'format binary\nif ~ definite PE\nend if\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'defined')), /forward-referencing/);
+      const definite = value(getHover(local, mainUri, 'fasm2', 'definite'));
+      assert.match(definite, /forward references do not count/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'used')), /has been used anywhere/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'eq')), /same type.*equal/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'eqtype')), /same.*type/);
+    });
+
     it('does not show the equ note for an ordinary "=" constant', async () => {
       const src = 'format binary\nCAP = 65536\n';
       const mainUri = await writeFile('main.asm', src);

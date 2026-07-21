@@ -61,6 +61,27 @@ describe('buildLiveShadowRoot', () => {
     assert.ok(fs.existsSync(fragment), 'real fragment must survive cleanup');
   });
 
+  it('resolves an include that climbs above the entry file\'s own directory with ".."', async () => {
+    // Mirrors a real, confirmed bug found in fasm2's own source tree: source/windows/dll/fasmg.asm
+    // has "include '../../version.inc'" (two levels above its own directory) -- the shadow used to
+    // mirror only the entry file's immediate directory into an unrelated fresh temp root, so a
+    // ".." include escaped into that temp root's real, unrelated parent instead of the project's
+    // actual ancestor directory, and failed to resolve even though the real (non-shadowed) compile
+    // works fine.
+    fs.mkdirSync(path.join(dir, 'source', 'windows', 'dll'), { recursive: true });
+    const shared = path.join(dir, 'source', 'shared.inc');
+    fs.writeFileSync(shared, 'db 42\n');
+    const main = path.join(dir, 'source', 'windows', 'dll', 'fasmg.asm');
+    fs.writeFileSync(main, "format binary\ninclude '../../shared.inc'\n");
+
+    const shadow = await buildLiveShadowRoot(main, main, "format binary\ninclude '../../shared.inc'\nlive\n");
+    assert.ok(shadow);
+    const resolved = path.join(shadow!.cwd, '..', '..', 'shared.inc');
+    assert.strictEqual(fs.readFileSync(resolved, 'utf8'), 'db 42\n');
+
+    await shadow!.cleanup();
+  });
+
   it('returns undefined when the live document lives outside the target directory', async () => {
     const main = path.join(dir, 'sub', 'main.asm');
     fs.mkdirSync(path.join(dir, 'sub'));

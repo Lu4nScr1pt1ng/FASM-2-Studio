@@ -20,8 +20,17 @@ export interface Token {
   endChar: number;
 }
 
-const IDENT_START = /[A-Za-z_.@$?]/;
-const IDENT_PART = /[A-Za-z0-9_.@$?]/;
+// fasmg's own tokenization rule (manual.txt's "Fundamental syntax rules") is the inverse of what
+// you'd expect: it lists the small set of characters that are *always* their own separate token
+// (`+-/*=<>()[]{}:?!,.|&~#\`) and says any other contiguous run of characters is a single name —
+// "%" is conspicuously absent from that special-character list, so e.g.
+// packages/x86/include/pcount/kernel32.inc's own "BackupRead% =  7" defines a symbol literally
+// named "BackupRead%", not "BackupRead" followed by a "%" punctuation token. Without "%" here, the
+// tokenizer split it into Ident("BackupRead") + Punct("%"), so the "=" that should immediately
+// follow the identifier ends up in the wrong token slot and the whole line was silently never
+// recognized as a constant definition at all.
+const IDENT_START = /[A-Za-z_.@$?%]/;
+const IDENT_PART = /[A-Za-z0-9_.@$?%]/;
 const DIGIT = /[0-9]/;
 
 /** Tokenizes a single line. Strings and comments never span lines in fasm syntax. */
