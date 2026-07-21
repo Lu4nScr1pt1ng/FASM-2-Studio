@@ -168,6 +168,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(t0),
           value: tokens.slice(2).map((t) => t.text).join(' '),
+          definedVia: '=',
           uri,
         });
         continue;
@@ -181,6 +182,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(t0),
           value: tokens.slice(2).map((t) => t.text).join(' '),
+          definedVia: 'equ',
           uri,
         });
         continue;

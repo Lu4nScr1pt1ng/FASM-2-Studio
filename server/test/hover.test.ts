@@ -160,6 +160,27 @@ describe('getHover', () => {
       assert.match(loopHover, /Scoped to `start`/);
     });
 
+    it('renders an "equ" constant with equ syntax and a note that it\'s textual substitution, not "="', async () => {
+      const src = 'format binary\nBACKGROUND equ 0\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const v = value(getHover(local, mainUri, 'fasm2', 'BACKGROUND'));
+      assert.match(v, /```fasm\nBACKGROUND equ 0\n```/);
+      assert.match(v, /Textual substitution/);
+    });
+
+    it('does not show the equ note for an ordinary "=" constant', async () => {
+      const src = 'format binary\nCAP = 65536\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const v = value(getHover(local, mainUri, 'fasm2', 'CAP'));
+      assert.ok(!v.includes('Textual substitution'), '"=" is a stored value, not textual substitution');
+    });
+
     it('shows the defining file for a symbol reached via this file\'s own include chain, with no "not included" warning', async () => {
       const incUri = await writeFile('constants.inc', 'SRC_CAP = 65536\n');
       const mainUri = await writeFile('main.asm', "format binary\ninclude 'constants.inc'\nstart:\n\tnop\n");

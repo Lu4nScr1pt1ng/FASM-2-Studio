@@ -184,7 +184,12 @@ function renderSymbol(sym: SymbolDefinition, hoverUri: string, notIncluded: bool
   if (sym.kind === SymbolKind.Macro || sym.kind === SymbolKind.Struct) {
     lines.push(fasmCode(sym.params ? `${sym.name} ${sym.params}` : sym.name), '', `*${kindLabel}*`);
   } else if (sym.kind === SymbolKind.Constant && sym.value) {
-    lines.push(fasmCode(`${sym.name} = ${sym.value}`), '', `*${kindLabel}*`);
+    const isEqu = sym.definedVia === 'equ';
+    lines.push(fasmCode(isEqu ? `${sym.name} equ ${sym.value}` : `${sym.name} = ${sym.value}`), '', `*${kindLabel}*`);
+    // equ is textual substitution, re-expanded unevaluated at every use — genuinely different
+    // from "=" (a stored, evaluated value) and a common source of surprise for anyone assuming
+    // it behaves like an assignment.
+    if (isEqu) lines.push('', '*Textual substitution — re-substituted unevaluated wherever it\'s used, not a stored value.*');
   } else {
     lines.push(`**${sym.name}** — *${kindLabel}*`);
     if (sym.parentLabel) lines.push('', `Scoped to \`${sym.parentLabel}\``);

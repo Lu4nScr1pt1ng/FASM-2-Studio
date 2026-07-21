@@ -28,6 +28,10 @@ export interface SymbolDefinition {
   parentLabel?: string;
   /** Raw value expression for constants (right-hand side of = or equ). */
   value?: string;
+  /** How a constant was defined — "=" is a stored, evaluated value; "equ" is textual substitution
+   * (the expression is re-substituted, unevaluated, at every place the name is used). Undefined
+   * for non-constant symbol kinds. */
+  definedVia?: '=' | 'equ';
   /** URI of the document this symbol was defined in. */
   uri: string;
 }
