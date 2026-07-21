@@ -187,11 +187,15 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
   }
 });
 
-// "%" isn't part of the static parser's own identifier charset (tokenizer.ts's IDENT_START) — it's
-// only ever a special built-in ("%"/"%%", the repetition-count pseudo-variables inside
-// repeat/while/iterate, see hover.ts's SPECIAL_SYMBOLS), never a real cross-file symbol worth
-// indexing — but it still needs to be a word character here so hovering it resolves to anything.
-const WORD_CHAR = /[A-Za-z0-9_.@$?%]/;
+// "%", "~", "&", "|" aren't part of the static parser's own identifier charset (tokenizer.ts's
+// IDENT_START) — they're only ever built-ins (the "%"/"%%" repetition-count pseudo-variables, and
+// the "~"/"&"/"|" logical-expression operators — see hover.ts's SPECIAL_SYMBOLS/LOGICAL_OPERATORS),
+// never real cross-file symbols worth indexing — but they still need to be word characters here so
+// hovering them resolves to anything. "#" (identifier concatenation) is deliberately NOT included:
+// unlike these, it's routinely used *inside* a real multi-part identifier (e.g. "v#instr#pd"), so
+// treating it as a word character would merge otherwise-separately-hoverable identifier pieces
+// into one, breaking hover on any of them.
+const WORD_CHAR = /[A-Za-z0-9_.@$?%~&|]/;
 
 function getWordRangeAtPosition(doc: TextDocument, position: { line: number; character: number }): Range | undefined {
   const text = doc.getText({ start: { line: position.line, character: 0 }, end: { line: position.line + 1, character: 0 } });

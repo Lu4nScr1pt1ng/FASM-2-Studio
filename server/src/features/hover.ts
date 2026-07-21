@@ -27,11 +27,25 @@ const SPECIAL_SYMBOLS: Record<string, string> = {
   '%%': 'Inside `repeat`, the total number of repetitions planned (undefined inside `while`). `db %%-%` produces a descending byte sequence.',
 };
 
+// The logical operators used inside "if"/"while"/CALM "check" conditions — a *different*
+// expression class from ordinary arithmetic, with its own operators. Only "&" overlaps with
+// anything else in the language: on the *last parameter of a macro/struct/calminstruction
+// definition* it means something else entirely (see PARAM_MODIFIERS) — real, easy-to-conflate
+// ambiguity confirmed against fasmg's own real code, where both usages appear side by side.
+const LOGICAL_OPERATORS: Record<string, string> = {
+  '~': 'Logical negation, evaluated first (higher precedence than "&"/"|"). `if ~ used name` is true when `name` is *not* used. Only valid inside a logical expression (`if`/`while` condition, CALM `check` argument) — not a general bitwise-NOT for ordinary arithmetic (use the `not` operator there instead).',
+  '&': 'Logical conjunction (AND) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `|`. Not the same as the "&" on a macro/struct/calminstruction\'s *last parameter*, which instead means "capture the rest of the line as one value" — and not a general bitwise-AND for ordinary arithmetic either (use the `and` operator there instead).',
+  '|': 'Logical alternative (OR) inside a logical expression (`if`/`while` condition, CALM `check` argument) — evaluated left-to-right with no precedence over `&`. Not a general bitwise-OR for ordinary arithmetic (use the `or` operator there instead).',
+};
+
 export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string, line = 0): Hover | undefined {
   const lower = word.toLowerCase();
 
   const special = SPECIAL_SYMBOLS[word];
   if (special) return markdown(renderTagged(word, 'Built-in symbol', special));
+
+  const logicalOp = LOGICAL_OPERATORS[word];
+  if (logicalOp) return markdown(renderTagged(word, 'Logical operator', logicalOp));
 
   // An in-scope `local` variable is an unambiguous match tied to exactly this query position —
   // check it before anything context-free like an instruction mnemonic. fasmg's own parser
@@ -276,12 +290,28 @@ const DEFINED_VIA_RENDER: Record<NonNullable<SymbolDefinition['definedVia']>, { 
   redefine: { syntax: (n, v) => `redefine ${n} ${v}`, note: 'Like `define`, but discards the previous value instead of preserving it.' },
 };
 
+/**
+ * Explains the parameter modifiers actually present in a macro/struct's raw parameter-list text
+ * (e.g. "dest*,src*,imm*", "name:0,flag:11b", "definitions&") — noted once per kind found, not
+ * per parameter, matching how the rest of hover keeps this concise rather than exhaustive.
+ */
+function paramModifierNotes(params: string): string[] {
+  const notes: string[] = [];
+  if (params.includes('*')) notes.push('`*` — a required argument (an error is raised if the macro is called without it).');
+  if (params.includes(':')) notes.push('`:` — followed by a default value, used when that argument is omitted.');
+  if (params.endsWith('&')) notes.push('`&` — this last argument captures the entire rest of the line as one value, even if it contains commas (a different "&" from the logical-AND operator inside `if`/`while`/CALM `check`).');
+  return notes;
+}
+
 function renderSymbol(sym: SymbolDefinition, hoverUri: string, notIncluded: boolean): string {
   const kindLabel = SYMBOL_KIND_LABELS[sym.kind] ?? sym.kind;
   const lines: string[] = [];
 
   if (sym.kind === SymbolKind.Macro || sym.kind === SymbolKind.Struct) {
     lines.push(fasmCode(sym.params ? `${sym.name} ${sym.params}` : sym.name), '', `*${kindLabel}*`);
+    if (sym.isWeak) lines.push('', '*The trailing `?` marks this weak/overridable — it can be redefined later without a "symbol already defined" error (the standard convention for macro packages meant to tolerate being `include`d more than once).*');
+    if (sym.isUnconditional) lines.push('', '*The trailing `!` marks this unconditional — evaluated even inside a suspended (false) conditional block or another macro\'s own definition.*');
+    if (sym.params) for (const note of paramModifierNotes(sym.params)) lines.push('', `*${note}*`);
   } else if (sym.kind === SymbolKind.Constant && sym.value) {
     const render = DEFINED_VIA_RENDER[sym.definedVia ?? '='];
     lines.push(fasmCode(render.syntax(sym.name, sym.value)), '', `*${kindLabel}*`);

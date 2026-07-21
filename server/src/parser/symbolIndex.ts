@@ -32,9 +32,10 @@ function paramsFromTokens(tokens: Token[]): string | undefined {
  * `macro endp?!` (packages/x86/include/macro/proc64.inc) so an "endp" can close out an "if"/"macro"
  * left open by "proc" without a literal "end if"/"end macro" appearing at that point. The "!"
  * isn't a parameter — skip it so it isn't mistaken for the start of one. */
-function paramsAfterMacroName(nameTok: Token, tokens: Token[]): Token[] {
+function paramsAfterMacroName(nameTok: Token, tokens: Token[]): { tokens: Token[]; isUnconditional: boolean } {
   const next = tokens[2];
-  return next && next.type === TokenType.Punct && next.text === '!' && next.startChar === nameTok.endChar ? tokens.slice(3) : tokens.slice(2);
+  const isUnconditional = !!(next && next.type === TokenType.Punct && next.text === '!' && next.startChar === nameTok.endChar);
+  return { tokens: isUnconditional ? tokens.slice(3) : tokens.slice(2), isUnconditional };
 }
 
 // Bare identifiers that are instructions, registers, or directives aren't user symbols — they can
@@ -209,14 +210,25 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       if (kw0 === 'macro' && tokens[1] && tokens[1].type === TokenType.Ident) {
         const nameTok = tokens[1];
         const name = baseName(nameTok.text);
-        symbols.push({
+        const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
+        const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
+        const sym: SymbolDefinition = {
           name,
           kind: SymbolKind.Macro,
           range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(nameTok),
-          params: paramsFromTokens(paramsAfterMacroName(nameTok, tokens)),
+          params: paramsFromTokens(paramTokens),
+          isWeak,
+          isUnconditional,
           uri,
-        });
+        };
+        symbols.push(sym);
+        // A macro defined *inside* another macro's body (e.g. fasmg's own packages/x86/include/
+        // macro/com64.inc's "comcall", which defines its own nested "call" macro) is only
+        // meaningfully in scope for the body of the macro that defines it — reuse the same
+        // localScope mechanism as `local` variables so it doesn't shadow, or get shadowed by, an
+        // unrelated same-named instruction or macro elsewhere in the file.
+        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
         blockStack.push('macro');
         macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
         continue;

@@ -52,6 +52,14 @@ export interface SymbolDefinition {
    * position instead of an arbitrary same-named local from a different macro entirely.
    */
   localScope?: Range;
+  /** For macros: the name was written with a trailing "?" (e.g. `macro foo?`), marking it
+   * weak/overridable — it can be redefined later without a "symbol already defined" error, the
+   * standard convention for macro packages meant to tolerate being `include`d more than once. */
+  isWeak?: boolean;
+  /** For macros: the name was written with a trailing "!" (e.g. `macro endp?!`), marking it
+   * unconditional — evaluated even inside a suspended (false) conditional block or another
+   * macro's own definition, e.g. so an "endp" can close an "if"/"macro" a "proc" left open. */
+  isUnconditional?: boolean;
   /** URI of the document this symbol was defined in. */
   uri: string;
 }

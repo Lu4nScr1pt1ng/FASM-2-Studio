@@ -216,6 +216,60 @@ describe('getHover', () => {
       assert.match(v, /\*Macro\*/);
     });
 
+    it('explains "?" (weak), "!" (unconditional), "*" (required), ":" (default value), and "&" (rest-of-line) macro modifiers', async () => {
+      // Mirrors fasmg's own packages/x86/include/macro/import64.inc ("macro library?
+      // definitions&") and proc64.inc ("macro endp?!").
+      const src = ['format binary', 'macro library? definitions&', 'end macro', 'macro endp?!', 'end macro', 'macro proc name*,flag:0', 'end macro'].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const lib = value(getHover(local, mainUri, 'fasm2', 'library'));
+      assert.match(lib, /weak\/overridable/);
+      assert.match(lib, /captures the entire rest of the line/);
+
+      const endp = value(getHover(local, mainUri, 'fasm2', 'endp'));
+      assert.match(endp, /unconditional/);
+      assert.strictEqual(endp.includes('captures the entire rest of the line'), false);
+
+      const proc = value(getHover(local, mainUri, 'fasm2', 'proc'));
+      assert.match(proc, /required argument/);
+      assert.match(proc, /default value/);
+    });
+
+    it('resolves a macro name to the one *nested* macro actually in scope, not an unrelated same-named macro or instruction elsewhere', async () => {
+      // Mirrors fasmg's own packages/x86/include/macro/com64.inc: "cominvk" and "comcall" each
+      // define their own private "call" macro (no "?", so it would otherwise permanently shadow
+      // — or be shadowed by — the real CALL instruction and each other).
+      const src = [
+        'format binary',
+        'macro cominvk Object,proc,args&',
+        '\tmacro call dummy',
+        '\t\tCall [rax+Object.proc]',
+        '\tend macro',
+        '\tpurge call',
+        'end macro',
+        'macro comcall handle,Interface,proc,args&',
+        '\tmacro call dummy',
+        '\t\tCall [rax+Interface.proc]',
+        '\tend macro',
+        '\tpurge call',
+        'end macro',
+        'call somewhere_else',
+      ].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      // Line 2 (0-based) is cominvk's own "macro call dummy".
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'call', 2)), /\*Macro\*/);
+      // Line 8 (0-based) is comcall's own, distinct "macro call dummy" — not cominvk's.
+      const insideComcall = value(getHover(local, mainUri, 'fasm2', 'call', 8));
+      assert.match(insideComcall, /\*Macro\*/);
+      // Outside either macro, "call" falls back to the real x86 instruction.
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'call', 13)), /x86 instruction/);
+    });
+
     it('renders a constant as "name = value" and a label/local label with kind + scope', async () => {
       const src = ['format binary', 'CAP = 65536', 'start:', '.loop:', '\tnop', '\tjmp .loop'].join('\n');
       const mainUri = await writeFile('main.asm', src);
@@ -324,6 +378,26 @@ describe('getHover', () => {
       assert.match(value(getHover(local, mainUri, 'fasm2', '$@')), /block of uninitialized/);
       assert.match(value(getHover(local, mainUri, 'fasm2', '%')), /current repetition number/);
       assert.match(value(getHover(local, mainUri, 'fasm2', '%%')), /total number of repetitions/);
+    });
+
+    it('documents "~"/"&"/"|" as logical-expression operators, distinct from macro-parameter "&" and arithmetic and/or/not', async () => {
+      // Mirrors real usage in fasmg's own packages/x86/include/macro/com64.inc: "if ~ defined
+      // Interface#.com.interface".
+      const src = 'format binary\nif ~ defined X\nend if\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const tilde = value(getHover(local, mainUri, 'fasm2', '~'));
+      assert.match(tilde, /Logical negation/);
+      assert.match(tilde, /not a general bitwise-NOT/);
+
+      const amp = value(getHover(local, mainUri, 'fasm2', '&'));
+      assert.match(amp, /Logical conjunction/);
+      assert.match(amp, /last parameter/);
+
+      const pipe = value(getHover(local, mainUri, 'fasm2', '|'));
+      assert.match(pipe, /Logical alternative/);
     });
 
     it('does not show the equ note for an ordinary "=" constant', async () => {
