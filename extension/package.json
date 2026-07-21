@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb/lldb debugging for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -268,6 +268,7 @@
     "publish:openvsx": "ovsx publish --no-dependencies"
   },
   "dependencies": {
+    "@fasm2-studio/server": "*",
     "vscode-languageclient": "^10.1.0"
   },
   "devDependencies": {

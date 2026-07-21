@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.16.0
+
+- The Registers view is now organized into expandable groups (General Purpose / Pointers / Flags /
+  Segment) instead of one flat list, and Flags decodes into every individual named bit (CF, ZF, IF,
+  IOPL, ...) with its own description, not just the raw eflags number.
+- Added a "Data Labels" scope alongside Registers, listing every resolvable source-level data label
+  (e.g. `argc dd ?`) with its live value — previously the only way to see one was to hover it or
+  type it into Watch by name.
+- Data labels now understand arrays (`table dd 1,2,3,4` shows every element, expandable by index)
+  and strings (`msg db 'Hello',0` reads back as `"Hello"`, not just its first byte) — both are real
+  memory reads via gdb's own `-data-read-memory-bytes`, not guesses from the static declaration.
+- Added live inline value decorations in the editor during a debug session (e.g. `argc` reading
+  `= 1` right next to `mov [argc], ecx`), via VS Code's inline-values API — filtered against the
+  same mnemonic/directive/size-keyword data hover already uses, so it only ever asks gdb about
+  things that could plausibly be a register or a label, not every word on the line.
+- Fixed a real regression introduced while building the above: the debug adapter's 'launch'
+  response was briefly delayed by an extra gdb round-trip (added to detect the target's real
+  register set), which could race against the client's own session bookkeeping and silently drop
+  the very first `stopped` event on a fast target — found via a real VS Code integration test, not
+  just the adapter's own DAP-level tests, which never depend on that particular timing.
+
 ## 0.15.0
 
 - Fixed a real dialect-detection bug: `end repeat`, `irp`, and `irpv` were treated as unambiguous

@@ -115,6 +115,39 @@ const PROGRAM_SRC = [
   '',
 ].join('\n');
 
+/**
+ * The Registers scope is a tree, not a flat list — its top-level variablesReference resolves to
+ * group headers ("General Purpose", "Pointers", "Flags", "Segment"), each with its own nested
+ * variablesReference holding the actual registers. Finds `registerName`'s own formatted value,
+ * searching every group (read-only lookups don't care which one it's in).
+ */
+async function findRegisterValue(client: DapClient, registersRef: number, registerName: string): Promise<string | undefined> {
+  const groups = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', {
+    variablesReference: registersRef,
+  });
+  for (const group of groups.variables) {
+    const members = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+      variablesReference: group.variablesReference,
+    });
+    const match = members.variables.find((v) => v.name === registerName);
+    if (match) return match.value;
+  }
+  return undefined;
+}
+
+/** setVariable targets a *group's* variablesReference (the container), not an individual
+ * register's own — the register being set doesn't have to already be a listed row in that
+ * specific group (setRegister validates the name against REGISTER_WIDTH_BITS directly, not
+ * against whatever this group happens to enumerate), it just has to be a real container kind. */
+async function getRegisterGroupRef(client: DapClient, registersRef: number, groupLabel: string): Promise<number> {
+  const groups = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', {
+    variablesReference: registersRef,
+  });
+  const group = groups.variables.find((v) => v.name === groupLabel);
+  if (!group) throw new Error(`no "${groupLabel}" register group in this Registers scope`);
+  return group.variablesReference;
+}
+
 describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real fasm2 binary)', function () {
   let dir: string;
   let asmPath: string;
@@ -188,11 +221,8 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       const registersScope = scopes.scopes.find((s) => s.name === 'Registers')!;
       assert.ok(registersScope);
 
-      const variables = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
-        variablesReference: registersScope.variablesReference,
-      });
-      const eax = variables.variables.find((v) => v.name === 'rax');
-      assert.ok(eax && /\b1\b/.test(eax.value), `expected rax to read back as 1 before "add eax,ebx" executes, got: ${eax?.value}`);
+      const rax = await findRegisterValue(client, registersScope.variablesReference, 'rax');
+      assert.ok(rax && /\b1\b/.test(rax), `expected rax to read back as 1 before "add eax,ebx" executes, got: ${rax}`);
 
       const evalResult = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax', context: 'watch' });
       assert.match(evalResult.result, /\b1\b/);
@@ -280,13 +310,11 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       assert.match(compound.result, /^-?\d+$/);
 
       // The Registers scope panel gets the identical treatment, not just ad-hoc evaluate/hover —
-      // rax reads back zero-extended from the eax write (standard x86-64 semantics).
+      // rax reads back zero-extended from the eax write (standard x86-64 semantics). It lives in
+      // the "General Purpose" group, one level below the scope's own top-level reference.
       const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
-      const variables = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
-        variablesReference: scopes.scopes[0].variablesReference,
-      });
-      const rax = variables.variables.find((v) => v.name === 'rax');
-      assert.strictEqual(rax?.value, 'rax = 0x00000000ffffffff  4294967295  0b0000_0000_0000_0000_0000_0000_0000_0000_1111_1111_1111_1111_1111_1111_1111_1111');
+      const rax = await findRegisterValue(client, scopes.scopes[0].variablesReference, 'rax');
+      assert.strictEqual(rax, 'rax = 0x00000000ffffffff  4294967295  0b0000_0000_0000_0000_0000_0000_0000_0000_1111_1111_1111_1111_1111_1111_1111_1111');
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
@@ -317,7 +345,9 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
 
       const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
-      const registersRef = scopes.scopes[0].variablesReference;
+      // eax/ebx are both "General Purpose" registers — setVariable targets that group's own
+      // variablesReference, not the Registers scope's top-level one.
+      const registersRef = await getRegisterGroupRef(client, scopes.scopes[0].variablesReference, 'General Purpose');
 
       // setVariable (the Registers panel's in-place editor), plain decimal.
       const viaSetVariable = await client.sendRequest<{ value: string }>('setVariable', {
@@ -359,6 +389,215 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
+    }
+  });
+
+  it('shows real 32-bit registers (not "<unavailable>") and resolves a data label to its address+value, for a real 32-bit ELF target', async function () {
+    // The exact bug report this guards against: registers used to be hardcoded to x86-64 names
+    // only, so every single one read back "<unavailable>" against a 32-bit target (there's no
+    // "$rax" on an i386 process) — and there was no way at all to ask "what's the address/value
+    // of this label" for a plain data variable like "argc" (fasmg emits no symbol table for gdb
+    // to resolve that from). Uses the user's own real-world snippet almost verbatim: reading argc
+    // off the initial stack and storing it into a "argc dd ?" variable.
+    this.timeout(30000);
+
+    const argcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-argc32-'));
+    const argcAsmPath = path.join(argcDir, 'argc32.asm');
+    const argcProgramPath = path.join(argcDir, 'argc32');
+    const argcListingPath = path.join(argcDir, 'argc32.lst');
+    const ARGC32_SRC = [
+      'format ELF executable 3', // EM_386 — a genuine 32-bit target, not ELF64
+      'entry start',
+      '',
+      'segment readable executable',
+      '',
+      'start:',
+      '\tmov ecx, [esp]',
+      '\tmov [argc], ecx',
+      '\tnop',
+      '\tmov eax, 1',
+      '\tmov ebx, 0',
+      '\tint 0x80',
+      '',
+      'segment readable writeable',
+      '',
+      'argc dd ?',
+      '',
+    ].join('\n');
+    fs.writeFileSync(argcAsmPath, ARGC32_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", argcAsmPath, argcProgramPath], { cwd: argcDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(argcProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: argcProgramPath, asmFile: argcAsmPath, listingFile: argcListingPath, cwd: argcDir });
+
+      const bpResponse = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: argcAsmPath },
+        breakpoints: [{ line: 9 }], // "nop", right after "mov [argc], ecx" has executed
+      });
+      assert.strictEqual(bpResponse.breakpoints[0].verified, true);
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const registersRef = scopes.scopes[0].variablesReference;
+
+      // The bug: eax used to be entirely absent (only rax/rbx/... were ever queried), so every
+      // register on a 32-bit target read back "<unavailable>".
+      const eax = await findRegisterValue(client, registersRef, 'eax');
+      assert.ok(eax, 'expected "eax" to be a real register on a 32-bit target');
+      assert.ok(!eax!.includes('unavailable'), `expected eax to have a real value, got: ${eax}`);
+      assert.match(eax!, /^eax = 0x[0-9a-f]{8}  \d+  0b[01_]+$/);
+
+      // rax must NOT appear at all for a 32-bit target — it doesn't exist on this architecture.
+      const rax = await findRegisterValue(client, registersRef, 'rax');
+      assert.strictEqual(rax, undefined, 'expected no "rax" register to be reported for a 32-bit (i386) target');
+
+      // Segment registers are real, gdb-reported values too, not just a curated GP set.
+      const cs = await findRegisterValue(client, registersRef, 'cs');
+      assert.ok(cs && /^cs = 0x[0-9a-f]{4}/.test(cs), `expected a real "cs" segment register value, got: ${cs}`);
+
+      // Flags decode into individual named bits, not just a raw eflags number.
+      const flagsGroupRef = await getRegisterGroupRef(client, registersRef, 'Flags');
+      const flagsMembers = await client.sendRequest<{ variables: Array<{ name: string; value: string; type?: string }> }>('variables', {
+        variablesReference: flagsGroupRef,
+      });
+      const ifFlag = flagsMembers.variables.find((v) => v.name === 'IF');
+      assert.ok(ifFlag, 'expected an "IF" flag entry in the Flags group');
+      assert.strictEqual(ifFlag!.value, '1', 'expected the Interrupt Enable flag to read as 1 in a normal running process');
+      assert.ok(ifFlag!.type && ifFlag!.type.length > 10, 'expected a real explanatory description on the flag, not a bare name');
+
+      // The actual feature request: hovering/watching "argc" (a label with no gdb symbol at all)
+      // shows both its address and, since "dd" makes its size unambiguous, its current value —
+      // clearly labeled as distinct things, not just a bare number that could be either.
+      const argcHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'argc', context: 'hover' });
+      assert.match(argcHover.result, /^argc {2}\(label, address 0x[0-9a-f]+\)\nvalue = 0x00000001 {2}1 {2}0b[01_]+$/);
+
+      // A plain code label (no declared size) shows only the address — never a guessed-at value.
+      const startHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'start', context: 'hover' });
+      assert.match(startHover.result, /^start {2}\(label, address 0x[0-9a-f]+\)$/);
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(argcDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shows arrays and strings for data labels, in both detailed (hover) and compact (watch/Data Labels scope) form', async function () {
+    this.timeout(30000);
+
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-data-'));
+    const dataAsmPath = path.join(dataDir, 'data.asm');
+    const dataProgramPath = path.join(dataDir, 'data');
+    const dataListingPath = path.join(dataDir, 'data.lst');
+    const DATA_SRC = [
+      'format ELF executable 3',
+      'entry start',
+      '',
+      'segment readable executable',
+      '',
+      'start:',
+      '\tnop',
+      '\tmov eax, 1',
+      '\tmov ebx, 0',
+      '\tint 0x80',
+      '',
+      'segment readable writeable',
+      '',
+      'table dd 10, 20, 30, 40',
+      "msg db 'Hi there', 0",
+      '',
+    ].join('\n');
+    fs.writeFileSync(dataAsmPath, DATA_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", dataAsmPath, dataProgramPath], { cwd: dataDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(dataProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: dataProgramPath, asmFile: dataAsmPath, listingFile: dataListingPath, cwd: dataDir });
+
+      const bpResponse = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: dataAsmPath },
+        breakpoints: [{ line: 7 }], // "nop" — table/msg are statically initialized, already correct here
+      });
+      assert.strictEqual(bpResponse.breakpoints[0].verified, true);
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      // Array: detailed (hover) shows every element with its declared type; compact (watch) is a
+      // terser bracketed list — both real reads of the actual initialized data, not guesses.
+      const tableHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'table', context: 'hover' });
+      assert.match(tableHover.result, /^table {2}\(label, address 0x[0-9a-f]+\)\n4 × dword: \[0xa, 0x14, 0x1e, 0x28\]$/);
+      const tableWatch = await client.sendRequest<{ result: string }>('evaluate', { expression: 'table', context: 'watch' });
+      assert.strictEqual(tableWatch.result, '[10, 20, 30, 40]');
+
+      // String: detailed shows the byte count and null-terminated note; compact is just the quoted
+      // text, ready to read at a glance without cluttering a Watch/inline-value row.
+      const msgHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'msg', context: 'hover' });
+      assert.match(msgHover.result, /^msg {2}\(label, address 0x[0-9a-f]+\)\nstring\[9\] = "Hi there"  \(null-terminated\)$/);
+      const msgWatch = await client.sendRequest<{ result: string }>('evaluate', { expression: 'msg', context: 'watch' });
+      assert.strictEqual(msgWatch.result, '"Hi there"');
+
+      // The Data Labels scope: lists table/msg (real data) but not "start" (a plain code label —
+      // deliberately out of scope for this panel, see session.ts). table is expandable into
+      // per-index children; msg (a string) is not.
+      const scopes = await client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('scopes', { frameId: 1 });
+      const labelsScope = scopes.scopes.find((s) => s.name === 'Data Labels');
+      assert.ok(labelsScope, 'expected a "Data Labels" scope');
+      const labelsVars = await client.sendRequest<{ variables: Array<{ name: string; value: string; variablesReference: number }> }>('variables', {
+        variablesReference: labelsScope!.variablesReference,
+      });
+      assert.strictEqual(labelsVars.variables.find((v) => v.name === 'start'), undefined, 'expected no code label in Data Labels');
+
+      const tableRow = labelsVars.variables.find((v) => v.name === 'table');
+      assert.ok(tableRow);
+      assert.strictEqual(tableRow!.value, '[10, 20, 30, 40]');
+      assert.ok(tableRow!.variablesReference > 0, 'expected "table" to be expandable into its elements');
+
+      const msgRow = labelsVars.variables.find((v) => v.name === 'msg');
+      assert.ok(msgRow);
+      assert.strictEqual(msgRow!.value, '"Hi there"');
+      assert.strictEqual(msgRow!.variablesReference, 0, 'expected a string label to not be expandable');
+
+      const tableElements = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: tableRow!.variablesReference,
+      });
+      assert.deepStrictEqual(
+        tableElements.variables.map((v) => v.name),
+        ['[0]', '[1]', '[2]', '[3]'],
+      );
+      assert.strictEqual(tableElements.variables[2].value, 'value = 0x0000001e  30  0b0000_0000_0000_0000_0000_0000_0001_1110');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });

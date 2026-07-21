@@ -4,6 +4,7 @@ import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } f
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
+import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
 import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
@@ -147,6 +148,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(() => client)),
     vscode.debug.registerDebugAdapterDescriptorFactory(FASM_DEBUG_TYPE, new FasmDebugAdapterDescriptorFactory(context)),
+    vscode.languages.registerInlineValuesProvider({ language: 'fasm' }, new FasmInlineValuesProvider()),
   );
 
   context.subscriptions.push(
