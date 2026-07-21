@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 jobs:
   publish:
@@ -22,7 +23,17 @@ jobs:
 
       - name: Publish to Open VSX
         working-directory: extension
-        run: npx ovsx publish --no-dependencies -p "$OVSX_PAT"
+        # Open VSX (like npm) rejects republishing a version that already succeeded — treat that
+        # specific case as a no-op instead of failing the whole run, so a retry (e.g. after the
+        # Marketplace step below times out) doesn't get stuck unable to ever reach it again.
+        run: |
+          set +e
+          output=$(npx ovsx publish --no-dependencies -p "$OVSX_PAT" 2>&1)
+          status=$?
+          echo "$output"
+          if [ $status -ne 0 ] && ! echo "$output" | grep -qi "already published"; then
+            exit $status
+          fi
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
