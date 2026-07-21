@@ -119,7 +119,10 @@ const DATA_DIRECTIVE_TO_SIZE: Record<string, string> = {
 /** A handful of directives are really CALM (the low-level code-emission language used inside a
  * "calminstruction" block) sub-commands rather than ordinary top-level directives — a more
  * specific, more useful tag than "directive" for exactly these. */
-const CALM_COMMANDS: ReadonlySet<string> = new Set(['match', 'assemble', 'arrange', 'compute', 'check', 'emit']);
+const CALM_COMMANDS: ReadonlySet<string> = new Set([
+  'match', 'assemble', 'arrange', 'compute', 'check', 'emit',
+  'jump', 'jyes', 'jno', 'exit', 'publish', 'transform', 'stringify', 'take', 'taketext', 'call', 'initsym',
+]);
 
 /** Converts a completion snippet's tabstop syntax ("${1:name}", "$0") into plain placeholder text
  * readable in a hover — a hover isn't editable, so the tabstop markers themselves are just noise.

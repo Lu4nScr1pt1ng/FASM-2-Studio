@@ -33,6 +33,11 @@ describe('FASM2 Studio extension (real VS Code host)', () => {
     assert.strictEqual(doc.languageId, 'fasm');
   });
 
+  it('assigns the "fasm" language mode to .alm files (real fasmg source files, e.g. packages/x86-2/iev.alm)', async () => {
+    const doc = await openFixture('anonymous.alm');
+    assert.strictEqual(doc.languageId, 'fasm');
+  });
+
   it('reports document symbols for known labels via the language server', async function () {
     this.timeout(15000);
     const doc = await openFixture('tetros.asm');

@@ -1,0 +1,6 @@
+; A minimal fasmg .alm fixture — .alm is a real extension used by fasmg's own source tree
+; (e.g. packages/x86-2/iev.alm), previously not recognized as the "fasm" language at all.
+
+macro ? line&
+	line
+end macro
