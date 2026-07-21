@@ -8,6 +8,7 @@
     { "include": "#numbers" },
     { "include": "#include-directive" },
     { "include": "#label-definition" },
+    { "include": "#struct-body" },
     { "include": "#macro-struct-definition" },
     { "include": "#constant-definition" },
     { "include": "#directives" },
@@ -83,6 +84,25 @@
         "1": { "name": "keyword.control.directive.fasm" },
         "2": { "name": "entity.name.function.fasm" }
       }
+    },
+    "struct-body": {
+      "comment": "A struct's own field names are plain member identifiers, not keywords — without this as its own block, a field named e.g. \"segment\" or \"offset\" (both real field names in fasmg's own packages/x86/projects/challenger/challenger.asm) would be wrongly highlighted as the unrelated \"segment\" format directive, since the generic #directives pattern otherwise matches that word anywhere.",
+      "begin": "\\b(struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.directive.fasm" },
+        "2": { "name": "entity.name.function.fasm" }
+      },
+      "end": "\\b(ends)\\b",
+      "endCaptures": { "1": { "name": "keyword.control.directive.fasm" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)", "captures": { "1": { "name": "variable.other.member.fasm" } } },
+        { "include": "#size-specifiers" },
+        { "include": "#directives" },
+        { "include": "#operators" }
+      ]
     },
     "constant-definition": {
       "patterns": [

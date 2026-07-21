@@ -9,15 +9,15 @@ describe('detectDialect (extension copy)', () => {
     assert.strictEqual(detectDialect('macro foo\nend macro\n', 'fasm1'), 'fasm2');
   });
 
-  it('detects fasm1 from use16/use32/use64, rept, and endp', () => {
-    assert.strictEqual(detectDialect('use16\nmov ax, 1\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('rept 4 { nop }\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('proc foo\nendp\n', 'fasm2'), 'fasm1');
+  it('does not treat use16/use32/use64, rept, or endp as fasm1 markers (they are legitimate macro names in fasmg\'s own official packages)', () => {
+    assert.strictEqual(detectDialect('use16\nmov ax, 1\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('rept 4 { nop }\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('proc foo\nendp\n', 'fasm2'), 'fasm2');
   });
 
-  it('falls back to the given default when no markers are present, or when both are', () => {
+  it('falls back to the given default when no markers are present', () => {
     assert.strictEqual(detectDialect('mov eax, 1\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('use16\nend macro\n', 'fasm1'), 'fasm1');
+    assert.strictEqual(detectDialect('use16\nend macro\n', 'fasm1'), 'fasm2');
   });
 
   it('does not false-positive on markers appearing as a substring of a longer identifier', () => {

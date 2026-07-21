@@ -16,16 +16,41 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Programming Languages", "Snippets", "Linters", "Debuggers"],
-  "keywords": ["fasm", "fasm2", "fasmg", "assembly", "x86", "assembler"],
-  "activationEvents": ["onLanguage:fasm"],
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Linters",
+    "Debuggers"
+  ],
+  "keywords": [
+    "fasm",
+    "fasm2",
+    "fasmg",
+    "assembly",
+    "x86",
+    "assembler"
+  ],
+  "activationEvents": [
+    "onLanguage:fasm"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "fasm",
-        "aliases": ["FASM", "FASM2", "fasmg", "FASM1"],
-        "extensions": [".asm", ".inc", ".fasm", ".fas", ".alm"],
+        "aliases": [
+          "FASM",
+          "FASM2",
+          "fasmg",
+          "FASM1"
+        ],
+        "extensions": [
+          ".asm",
+          ".inc",
+          ".fasm",
+          ".fas",
+          ".alm"
+        ],
         "configuration": "./language-configuration/fasm.language-configuration.json"
       }
     ],
@@ -47,7 +72,10 @@
       "properties": {
         "fasm2Studio.defaultDialect": {
           "type": "string",
-          "enum": ["fasm2", "fasm1"],
+          "enum": [
+            "fasm2",
+            "fasm1"
+          ],
           "default": "fasm2",
           "description": "Dialect assumed for source files where the dialect cannot be auto-detected from their contents."
         },
@@ -90,41 +118,113 @@
       }
     },
     "commands": [
-      { "command": "fasm2Studio.build", "title": "FASM: Build", "category": "FASM" },
-      { "command": "fasm2Studio.buildAndRun", "title": "FASM: Build and Run", "category": "FASM" },
-      { "command": "fasm2Studio.run", "title": "FASM: Run", "category": "FASM" },
-      { "command": "fasm2Studio.debug", "title": "FASM: Debug", "category": "FASM" },
-      { "command": "fasm2Studio.selectCompiler", "title": "FASM: Select Compiler", "category": "FASM" }
+      {
+        "command": "fasm2Studio.build",
+        "title": "FASM: Build",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.buildAndRun",
+        "title": "FASM: Build and Run",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.run",
+        "title": "FASM: Run",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.debug",
+        "title": "FASM: Debug",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.selectCompiler",
+        "title": "FASM: Select Compiler",
+        "category": "FASM"
+      }
     ],
     "taskDefinitions": [
       {
         "type": "fasm",
-        "required": ["file"],
+        "required": [
+          "file"
+        ],
         "properties": {
-          "file": { "type": "string", "description": "Source file to assemble, relative to the workspace or absolute." },
-          "output": { "type": "string", "description": "Output file path. Defaults to the source file name with its extension stripped." },
-          "dialect": { "type": "string", "enum": ["fasm2", "fasm1"], "description": "Overrides auto-detected dialect for this task." },
-          "extraArgs": { "type": "array", "items": { "type": "string" }, "description": "Additional command-line arguments passed to the compiler." },
-          "debugBuild": { "type": "boolean", "description": "Injects the bundled listing macro (fasm2 only) so the FASM debugger can map addresses back to source lines." }
+          "file": {
+            "type": "string",
+            "description": "Source file to assemble, relative to the workspace or absolute."
+          },
+          "output": {
+            "type": "string",
+            "description": "Output file path. Defaults to the source file name with its extension stripped."
+          },
+          "dialect": {
+            "type": "string",
+            "enum": [
+              "fasm2",
+              "fasm1"
+            ],
+            "description": "Overrides auto-detected dialect for this task."
+          },
+          "extraArgs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional command-line arguments passed to the compiler."
+          },
+          "debugBuild": {
+            "type": "boolean",
+            "description": "Injects the bundled listing macro (fasm2 only) so the FASM debugger can map addresses back to source lines."
+          }
         }
       }
     ],
-    "breakpoints": [{ "language": "fasm" }],
+    "breakpoints": [
+      {
+        "language": "fasm"
+      }
+    ],
     "debuggers": [
       {
         "type": "fasm",
         "label": "FASM",
-        "languages": ["fasm"],
+        "languages": [
+          "fasm"
+        ],
         "configurationAttributes": {
           "launch": {
-            "required": ["asmFile"],
+            "required": [
+              "asmFile"
+            ],
             "properties": {
-              "asmFile": { "type": "string", "description": "The .asm source file to debug.", "default": "${file}" },
-              "program": { "type": "string", "description": "Path to the assembled executable. Defaults to the source file name with its extension stripped." },
-              "listingFile": { "type": "string", "description": "Path to the .lst listing produced by a debug build. Defaults to \"<program>.lst\"." },
-              "gdbPath": { "type": "string", "description": "Path to gdb. Leave unset to use \"gdb\" from PATH." },
-              "cwd": { "type": "string", "description": "Working directory for the debugged program." },
-              "stopOnEntry": { "type": "boolean", "description": "Stop at the program's first instruction.", "default": true }
+              "asmFile": {
+                "type": "string",
+                "description": "The .asm source file to debug.",
+                "default": "${file}"
+              },
+              "program": {
+                "type": "string",
+                "description": "Path to the assembled executable. Defaults to the source file name with its extension stripped."
+              },
+              "listingFile": {
+                "type": "string",
+                "description": "Path to the .lst listing produced by a debug build. Defaults to \"<program>.lst\"."
+              },
+              "gdbPath": {
+                "type": "string",
+                "description": "Path to gdb. Leave unset to use \"gdb\" from PATH."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for the debugged program."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the program's first instruction.",
+                "default": true
+              }
             }
           }
         },
@@ -177,6 +277,8 @@
     "mocha": "^11.7.6",
     "ovsx": "^1.0.2",
     "tsx": "^4.23.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }
