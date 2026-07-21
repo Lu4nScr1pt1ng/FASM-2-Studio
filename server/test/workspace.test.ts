@@ -160,6 +160,15 @@ describe('Workspace indexing', () => {
     assert.strictEqual(ws.findWorkspaceSymbols('THIRD').length, 1);
   });
 
+  it('excludes `local`-scoped macro variables from workspace-wide symbol search (they are private to one macro, not globally meaningful)', async () => {
+    const uriA = await writeFile('macros.inc', 'macro AJMP addr\n\tlocal value\n\tvalue = 1111h\nend macro\n');
+    const ws = new Workspace();
+    await ws.indexWorkspace([uriA], dialectAlwaysFasm2);
+
+    assert.strictEqual(ws.findWorkspaceSymbols('value').length, 0);
+    assert.strictEqual(ws.findSymbolAnywhere('value').length, 0);
+  });
+
   it('never throws when given a mix of missing, unreadable and valid files', async () => {
     const uriValid = await writeFile('ok.asm', 'OK = 1\n');
     const uriMissing = URI.file(path.join(tmpDir, 'does-not-exist.asm')).toString();

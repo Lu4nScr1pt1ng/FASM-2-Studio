@@ -67,6 +67,15 @@ function baseName(name: string): string {
   return name.length > 1 && name.endsWith('?') ? name.slice(0, -1) : name;
 }
 
+/** Tracks one open `macro ... end macro` block, so a name declared `local` inside it can be told
+ * apart from the same name declared `local` in a completely unrelated macro elsewhere in the same
+ * file (see SymbolDefinition.localScope). */
+interface MacroFrame {
+  startLine: number;
+  localNames: Set<string>;
+  pendingSymbols: SymbolDefinition[];
+}
+
 export function parseDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
   const symbols: SymbolDefinition[] = [];
   const references: SymbolReference[] = [];
@@ -76,7 +85,17 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   let inImportList = false;
 
   const blockStack: string[] = [];
+  const macroFrames: MacroFrame[] = [];
   let lastGlobalLabel: string | undefined;
+
+  /** If `name` was declared `local` in a currently-open macro, returns that macro's frame
+   * (innermost first — a name can only sensibly be local to one enclosing macro at a time). */
+  function enclosingLocalFrame(name: string): MacroFrame | undefined {
+    for (let i = macroFrames.length - 1; i >= 0; i--) {
+      if (macroFrames[i].localNames.has(name)) return macroFrames[i];
+    }
+    return undefined;
+  }
 
   try {
     const lines = tokenizeDocument(text);
@@ -94,6 +113,14 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         const top = blockStack[blockStack.length - 1];
         if (top && (what === top || (top !== 'struct' && what === BLOCK_END_KEYWORDS[top]))) {
           blockStack.pop();
+          if (top === 'macro') {
+            const frame = macroFrames.pop();
+            if (frame) {
+              for (const sym of frame.pendingSymbols) {
+                sym.localScope = { startLine: frame.startLine, startChar: 0, endLine: t0.line, endChar: Number.MAX_SAFE_INTEGER };
+              }
+            }
+          }
         }
         continue;
       }
@@ -130,7 +157,16 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       // scanning for NAME,'string' pairs on the "import" line (after its library-nickname operand)
       // and on every subsequent line for as long as the previous one ended with "\".
       if (kw0 === 'import' || inImportList) {
-        const startIdx = kw0 === 'import' ? 2 : 0; // skip "import" itself and its library-nickname operand
+        // "import" has two real shapes: the PE/Windows one (a library nickname operand, then
+        // NAME,'string' pairs — possibly starting on this same line, possibly only on later
+        // continued lines) and the Mach-O/ELF one (no nickname at all, e.g.
+        // `import printf,'_printf'`, straight from packages/x86/examples/mach-o/demo_dynamic64.asm).
+        // Telling them apart: right after "import", a direct NAME,'string' pair has a string as
+        // its *third* token; a nickname operand is instead followed by another name (same-line
+        // list) or a line-continuing "\" (list starts on the next line).
+        const looksLikeDirectPair =
+          kw0 === 'import' && tokens[1]?.type === TokenType.Ident && tokens[2]?.type === TokenType.Punct && tokens[2].text === ',' && tokens[3]?.type === TokenType.String;
+        const startIdx = kw0 === 'import' ? (looksLikeDirectPair ? 1 : 2) : 0; // skip "import" itself and its library-nickname operand, if any
         for (let i = startIdx; i + 2 < tokens.length; i++) {
           const nameTok = tokens[i];
           const commaTok = tokens[i + 1];
@@ -169,6 +205,16 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           uri,
         });
         blockStack.push('macro');
+        macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
+        continue;
+      }
+
+      // --- local NAME1, NAME2, ... (inside a macro body) ---
+      if (kw0 === 'local' && macroFrames.length > 0) {
+        const frame = macroFrames[macroFrames.length - 1];
+        for (const t of tokens.slice(1)) {
+          if (t.type === TokenType.Ident) frame.localNames.add(t.text);
+        }
         continue;
       }
 
@@ -211,7 +257,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
 
       // --- NAME = EXPR ---
       if (t0.type === TokenType.Ident && tokens[1] && tokens[1].type === TokenType.Punct && tokens[1].text === '=') {
-        symbols.push({
+        const sym: SymbolDefinition = {
           name: t0.text,
           kind: SymbolKind.Constant,
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
@@ -219,13 +265,15 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           value: tokens.slice(2).map((t) => t.text).join(' '),
           definedVia: '=',
           uri,
-        });
+        };
+        symbols.push(sym);
+        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
         continue;
       }
 
       // --- NAME equ EXPR ---
       if (t0.type === TokenType.Ident && lower(tokens[1]) === 'equ') {
-        symbols.push({
+        const sym: SymbolDefinition = {
           name: t0.text,
           kind: SymbolKind.Constant,
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
@@ -233,7 +281,9 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           value: tokens.slice(2).map((t) => t.text).join(' '),
           definedVia: 'equ',
           uri,
-        });
+        };
+        symbols.push(sym);
+        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
         continue;
       }
 

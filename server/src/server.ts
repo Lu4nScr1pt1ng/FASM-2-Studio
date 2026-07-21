@@ -389,7 +389,7 @@ connection.onHover((params: HoverParams): Hover | undefined => {
     if (!doc) return undefined;
     const word = getWordAtPosition(doc, params.position);
     if (!word) return undefined;
-    return getHover(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word);
+    return getHover(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word, params.position.line);
   } catch (err) {
     logHandlerError('onHover', err);
     return undefined;

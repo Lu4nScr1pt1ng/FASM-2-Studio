@@ -83,6 +83,18 @@ describe('symbolIndex', () => {
     assert.strictEqual(byName('MessageBoxW').length, 1);
   });
 
+  it('indexes the Mach-O/ELF "import NAME,\'string\'" shape too, which has no library-nickname operand', () => {
+    // Mirrors fasmg's own packages/x86/examples/mach-o/demo_dynamic64.asm: `import printf,'_printf'`
+    // — unlike the PE/Windows shape (a nickname first, then NAME,'string' pairs), the name to
+    // import comes right after "import" itself.
+    const src = ["import printf,'_printf'", "import exit,'_exit'"].join('\n');
+    const doc = parseDocument('file:///demo_dynamic64.asm', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('printf').length, 1);
+    assert.strictEqual(byName('exit').length, 1);
+  });
+
   it('parses the real tetros.asm example without throwing and finds its known labels', () => {
     const src = fs.readFileSync(path.join(FIXTURES, 'tetros.asm'), 'utf8');
     const doc = parseDocument('file:///tetros.asm', 1, src, 'fasm2');

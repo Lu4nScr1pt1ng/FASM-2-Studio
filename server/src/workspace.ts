@@ -364,6 +364,12 @@ export class Workspace {
     const refNames = new Set<string>();
 
     for (const sym of doc.symbols) {
+      // A `local` name is a fresh, hygienic variable private to its one enclosing macro (see
+      // SymbolDefinition.localScope) — cross-file/global lookups (workspace symbol search,
+      // "defined elsewhere" hover fallback) would otherwise surface an arbitrary, unrelated
+      // same-named local from a completely different macro. It's still fully searchable via
+      // walkIncludeGraph-based lookups scoped to the position that declared it.
+      if (sym.localScope) continue;
       let bucket = this.symbolsByName.get(sym.name);
       if (!bucket) {
         bucket = [];
@@ -441,4 +447,20 @@ export class Workspace {
     }
     return results;
   }
+}
+
+/**
+ * Picks the one `candidates` entry actually visible at `uri`/`line`: a `local`-scoped candidate
+ * (see SymbolDefinition.localScope) only counts when the query is inside the very macro body that
+ * declared it (locals from a different, same-named macro elsewhere aren't visible here at all,
+ * even in the same file) — otherwise the first non-local (globally visible) candidate, if any.
+ * Returns undefined rather than an out-of-scope local when that's genuinely the only thing found,
+ * since showing it would misattribute an unrelated macro's private variable.
+ */
+export function pickInScopeSymbol(candidates: SymbolDefinition[], uri: string, line: number): SymbolDefinition | undefined {
+  const inScope = candidates.find(
+    (s) => s.localScope && s.uri === uri && line >= s.localScope.startLine && line <= s.localScope.endLine,
+  );
+  if (inScope) return inScope;
+  return candidates.find((s) => !s.localScope);
 }

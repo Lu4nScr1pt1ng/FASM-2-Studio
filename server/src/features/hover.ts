@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { Hover, MarkupKind } from 'vscode-languageserver/node';
 import { Dialect, SymbolKind } from '../types';
-import { Workspace } from '../workspace';
+import { pickInScopeSymbol, Workspace } from '../workspace';
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
@@ -17,8 +17,21 @@ const registerFamilies = registerFamiliesData as RegisterFamilyEntry[];
 const formatKeywords = formatKeywordsData as FormatKeywordEntry[];
 const sizeSpecifiers = sizeSpecifiersData as SizeSpecifierEntry[];
 
-export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string): Hover | undefined {
+export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string, line = 0): Hover | undefined {
   const lower = word.toLowerCase();
+
+  // An in-scope `local` variable is an unambiguous match tied to exactly this query position —
+  // check it before anything context-free like an instruction mnemonic. fasmg's own parser
+  // disambiguates a name that's both a mnemonic and a local by syntax position (e.g. "local neg"
+  // then later "neg = mode" uses neg as a value, not the NEG instruction, as in fasmg's own
+  // packages/x86/include/macro/if.inc), but this lightweight parser doesn't track that context —
+  // without this check first, such a local's own hover would be permanently shadowed by the
+  // mnemonic's, no matter where you hover it.
+  const currentDoc = workspace.getDocument(uri);
+  const localHere = currentDoc?.symbols.find(
+    (s) => s.name === word && s.localScope && line >= s.localScope.startLine && line <= s.localScope.endLine,
+  );
+  if (localHere) return markdown(renderSymbol(localHere, uri, false));
 
   const ins = instructions.filter((i) => i.mnemonic.toLowerCase() === lower);
   if (ins.length > 0) return markdown(renderInstructions(ins));
@@ -36,7 +49,8 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   if (fmt) return markdown(renderTagged(fmt.name, fmt.category, fmt.summary));
 
   for (const parsed of workspace.walkIncludeGraph(uri, dialect)) {
-    const sym = parsed.symbols.find((s) => s.name === word);
+    const candidates = parsed.symbols.filter((s) => s.name === word);
+    const sym = pickInScopeSymbol(candidates, uri, line);
     if (sym) return markdown(renderSymbol(sym, uri, false));
   }
 

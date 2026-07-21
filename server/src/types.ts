@@ -32,6 +32,16 @@ export interface SymbolDefinition {
    * (the expression is re-substituted, unevaluated, at every place the name is used). Undefined
    * for non-constant symbol kinds. */
   definedVia?: '=' | 'equ';
+  /**
+   * Set when this symbol was declared via `local` inside a macro body — fasmg gives every macro
+   * invocation a fresh, hygienic instance of each `local` name, so e.g. `value` declared this way
+   * in one macro is a completely different, private variable from `value` declared the same way
+   * in another macro (a very common idiom — 8051.inc alone declares "value" as a macro-local in
+   * 40 different, unrelated macros). This is the line range of the enclosing `macro ... end
+   * macro` block, used to resolve a reference to the *one* local actually in scope at the query
+   * position instead of an arbitrary same-named local from a different macro entirely.
+   */
+  localScope?: Range;
   /** URI of the document this symbol was defined in. */
   uri: string;
 }

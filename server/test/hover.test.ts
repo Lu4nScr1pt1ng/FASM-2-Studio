@@ -229,6 +229,52 @@ describe('getHover', () => {
       assert.match(loopHover, /Scoped to `start`/);
     });
 
+    it('resolves a `local` variable to the one enclosing macro actually in scope, not an unrelated macro that happens to declare the same name', async () => {
+      // Mirrors a real bug found in fasmg's own core/examples/8051/8051.inc: dozens of unrelated
+      // macros each declare their own private "value"/"offset" via `local` — before scoping this,
+      // hovering any of them always resolved to whichever macro happened to come first in the
+      // file, regardless of which macro you were actually looking at.
+      const src = [
+        'format binary',
+        'macro AJMP addr',
+        '\tlocal value',
+        '\tvalue = 1111h',
+        'end macro',
+        'macro LJMP addr',
+        '\tlocal value',
+        '\tvalue = 2222h',
+        'end macro',
+      ].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      // Line 3 (0-based) is AJMP's own "value = 1111h"; line 7 is LJMP's own "value = 2222h".
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'value', 3)), /1111h/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'value', 7)), /2222h/);
+    });
+
+    it('prefers an in-scope `local` variable over an identically-named instruction mnemonic', async () => {
+      // Mirrors a real bug found in fasmg's own packages/x86/include/macro/if.inc: `local neg,conj`
+      // then later `neg = mode` uses "neg" purely as a value, never as the NEG instruction — but
+      // hovering it always showed the NEG instruction's description, since that check ran first
+      // and never even looked at whether a local variable of the same name was actually in scope.
+      const src = ['format binary', 'macro doif condition', '\tlocal neg,conj', '\tneg = 1', '\tconj = 0', 'end macro'].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      // Line 3 (0-based) is "neg = 1", inside doif's own macro body.
+      const v = value(getHover(local, mainUri, 'fasm2', 'neg', 3));
+      assert.match(v, /neg = 1/);
+      assert.doesNotMatch(v, /two's-complement negation/i);
+
+      // Outside any macro body (or without position info at all), the instruction still wins —
+      // this fix is specifically about the in-scope case, not a blanket symbol-over-instruction
+      // priority change.
+      assert.match(value(getHover(local, mainUri, 'fasm2', 'neg')), /x86 instruction/);
+    });
+
     it('renders an "equ" constant with equ syntax and a note that it\'s textual substitution, not "="', async () => {
       const src = 'format binary\nBACKGROUND equ 0\n';
       const mainUri = await writeFile('main.asm', src);
