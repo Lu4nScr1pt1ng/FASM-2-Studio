@@ -25,7 +25,7 @@
       {
         "id": "fasm",
         "aliases": ["FASM", "FASM2", "fasmg", "FASM1"],
-        "extensions": [".asm", ".inc", ".fasm", ".fas"],
+        "extensions": [".asm", ".inc", ".fasm", ".fas", ".alm"],
         "configuration": "./language-configuration/fasm.language-configuration.json"
       }
     ],

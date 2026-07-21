@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
 
-export const FASM_FILE_GLOB = '**/*.{asm,inc,fasm,fas}';
+export const FASM_FILE_GLOB = '**/*.{asm,inc,fasm,fas,alm}';
 
 export function createFasmFileWatcher(): vscode.FileSystemWatcher {
   return vscode.workspace.createFileSystemWatcher(FASM_FILE_GLOB);

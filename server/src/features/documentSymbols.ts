@@ -22,6 +22,11 @@ export function getDocumentSymbols(doc: ParsedDocument): DocumentSymbol[] {
   const byGlobalName = new Map<string, DocumentSymbol>();
 
   for (const sym of doc.symbols) {
+    // VS Code's own DocumentSymbol validation throws ("name must not be falsy") and fails the
+    // whole request over a single bad entry — defense in depth against a parser edge case
+    // producing an empty name, on top of the parser itself never doing so intentionally.
+    if (!sym.name) continue;
+
     const lspSym: DocumentSymbol = {
       name: sym.name,
       kind: KIND_MAP[sym.kind],

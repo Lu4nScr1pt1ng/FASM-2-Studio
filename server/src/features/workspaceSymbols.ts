@@ -19,10 +19,15 @@ function toLspRange(r: { startLine: number; startChar: number; endLine: number; 
 }
 
 export function getWorkspaceSymbols(workspace: Workspace, query: string): SymbolInformation[] {
-  return workspace.findWorkspaceSymbols(query).map((sym) => ({
-    name: sym.name,
-    kind: KIND_MAP[sym.kind],
-    location: { uri: sym.uri, range: toLspRange(sym.nameRange) },
-    containerName: sym.parentLabel,
-  }));
+  // Same defensive filter as documentSymbols.ts — VS Code's client-side validation rejects a
+  // falsy name outright and fails the whole request over a single bad entry.
+  return workspace
+    .findWorkspaceSymbols(query)
+    .filter((sym) => sym.name)
+    .map((sym) => ({
+      name: sym.name,
+      kind: KIND_MAP[sym.kind],
+      location: { uri: sym.uri, range: toLspRange(sym.nameRange) },
+      containerName: sym.parentLabel,
+    }));
 }

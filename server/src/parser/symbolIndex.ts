@@ -58,9 +58,13 @@ function lower(t: Token | undefined): string {
   return t ? t.text.toLowerCase() : '';
 }
 
-/** Strips a trailing "?" used by fasmg to mark a macro name as overridable/weak. */
+/** Strips a trailing "?" used by fasmg to mark a macro name as overridable/weak (e.g. "foo?" ->
+ * "foo"). A bare "?" is different: it's fasmg's syntax for an anonymous macro, and the name IS
+ * "?" — stripping it here would turn it into an empty string, which every consumer downstream
+ * (hover, completion, document symbols) treats as "no symbol", and which VS Code's own
+ * DocumentSymbol validation rejects outright ("name must not be falsy"). */
 function baseName(name: string): string {
-  return name.endsWith('?') ? name.slice(0, -1) : name;
+  return name.length > 1 && name.endsWith('?') ? name.slice(0, -1) : name;
 }
 
 export function parseDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {

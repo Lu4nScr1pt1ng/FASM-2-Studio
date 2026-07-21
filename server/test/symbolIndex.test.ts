@@ -128,6 +128,19 @@ describe('symbolIndex', () => {
     assert.strictEqual(struct?.params, undefined);
   });
 
+  it('keeps a bare "?" macro name intact instead of stripping it down to an empty string', () => {
+    // fasmg's own idiom for an anonymous macro is literally "macro ? args" (real examples:
+    // packages/utility/struct.inc, packages/x86-2/x86-2.inc). baseName() strips a *trailing* "?"
+    // used to mark an ordinary name overridable/weak (e.g. "foo?" -> "foo") — applying that same
+    // rule to a name that IS just "?" turned it into "", which every consumer downstream treats
+    // as "no symbol", and which VS Code's own DocumentSymbol validation rejects outright with
+    // "name must not be falsy", crashing the whole textDocument/documentSymbol request.
+    const src = ['macro ? line&', '\tline', 'end macro'].join('\n');
+    const doc = parseDocument('file:///anonymous-macro.asm', 1, src, 'fasm2');
+    const macro = doc.symbols.find((s) => s.kind === SymbolKind.Macro);
+    assert.strictEqual(macro?.name, '?');
+  });
+
   it('drops the inline "{" from params when a macro/struct body opens on the same line', () => {
     const src = ['macro push_all reg1, reg2 {', '\tpush reg1', '\tpush reg2', '}'].join('\n');
     const doc = parseDocument('file:///inlinebrace.asm', 1, src, 'fasm2');
