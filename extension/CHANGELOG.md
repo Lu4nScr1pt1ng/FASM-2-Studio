@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0
+
+- Fixed `local` variables inside macros being tracked as one shared global constant instead of a
+  fresh, private variable per macro — found via fasmg's own `core/examples/8051/8051.inc`, where
+  40 different macros each declare their own `local value`. Hover and go-to-definition on such a
+  name now resolve to the one macro actually in scope at the query position, instead of always
+  the first same-named local anywhere in the file.
+- Fixed hover always preferring an instruction mnemonic's description over an in-scope `local`
+  variable of the same name (e.g. `local neg` in fasmg's own `packages/x86/include/macro/if.inc`
+  permanently shadowed by the NEG instruction's hover).
+- Fixed the `import` macro pattern not being recognized for its Mach-O/ELF shape
+  (`import printf,'_printf'`, no library-nickname operand) — only the PE/Windows shape
+  (`import kernel32,\ Name,'Name', ...`) was handled before.
+- Fixed the extension's own copy of the fasm1/fasm2 dialect-detection heuristic, which still had
+  the bug already fixed server-side in 0.8.0 (`endp`/`use16`/`use32`/`use64`/`rept` wrongly treated
+  as fasm1-only markers) — this copy is what `FASM: Build`/`Run`/`Debug` uses to pick a compiler,
+  so real fasmg files using those could still get built with the wrong compiler/dialect.
+- Fixed struct field names being syntax-highlighted as the unrelated directive/keyword they
+  happen to spell (e.g. a field literally named `segment` or `offset`, as in fasmg's own
+  `packages/x86/projects/challenger/challenger.asm`).
+- Refined syntax-highlight scope naming for better compatibility with color themes: CALM
+  sub-language commands (`match`/`check`/`emit`/`jyes`/`exit`/...) now get their own scope instead
+  of being lumped in with ordinary directives; data-declaring directives (`db`/`dw`/`dd`/...) now
+  share the same `storage.type` family as size specifiers; instruction mnemonics moved to the
+  properly-conventioned `keyword.other.mnemonic` scope.
+
 ## 0.9.0
 
 - Fixed hover and go-to-definition for imported OS/kernel functions (e.g. Windows API calls via
