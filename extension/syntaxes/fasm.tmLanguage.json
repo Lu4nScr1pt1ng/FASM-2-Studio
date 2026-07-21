@@ -18,6 +18,7 @@
     { "include": "#size-specifiers" },
     { "include": "#registers" },
     { "include": "#mnemonics" },
+    { "include": "#special-symbols" },
     { "include": "#operators" }
   ],
   "repository": {
@@ -45,6 +46,7 @@
       "patterns": [
         { "name": "constant.numeric.float.fasm", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9]+)?\\b" },
         { "name": "constant.numeric.hex.fasm", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.hex.fasm", "match": "\\$[0-9A-Fa-f_]+\\b" },
         { "name": "constant.numeric.hex.fasm", "match": "\\b[0-9][0-9A-Fa-f_]*[hH]\\b" },
         { "name": "constant.numeric.binary.fasm", "match": "\\b[01][01_]*[bB]\\b" },
         { "name": "constant.numeric.octal.fasm", "match": "\\b[0-7][0-7_]*[oOqQ]\\b" },
@@ -108,16 +110,31 @@
       ]
     },
     "constant-definition": {
+      "comment": "\":=\" (defined exactly once, forward-reference-safe) and \"=:\" (preserves the previous value, restorable with `restore`) must be checked before the plain \"=\" pattern -- fasmg requires no space between the two characters (confirmed against the real compiler: \"X : = 1\" fails to assemble, parsed as a label \"X:\" followed by an invalid \"= 1\"), so unlike \"equ\"/\"reequ\" this isn't a separate keyword the plain \"=\" pattern could otherwise be taught to skip over.",
       "patterns": [
         {
-          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(=)(?!=)",
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(:=)",
           "captures": {
             "1": { "name": "variable.other.constant.fasm" },
             "2": { "name": "keyword.operator.assignment.fasm" }
           }
         },
         {
-          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s+(equ)\\b",
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(=:)",
+          "captures": {
+            "1": { "name": "variable.other.constant.fasm" },
+            "2": { "name": "keyword.operator.assignment.fasm" }
+          }
+        },
+        {
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(=)(?![=:])",
+          "captures": {
+            "1": { "name": "variable.other.constant.fasm" },
+            "2": { "name": "keyword.operator.assignment.fasm" }
+          }
+        },
+        {
+          "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s+(equ|reequ)\\b",
           "captures": {
             "1": { "name": "variable.other.constant.fasm" },
             "2": { "name": "keyword.control.directive.fasm" }
@@ -137,7 +154,7 @@
     },
     "directives": {
       "name": "keyword.control.directive.fasm",
-      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|at|label)\\b"
+      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|reequ|define|redefine|restore|align|times|at|label)\\b"
     },
     "size-specifiers": {
       "name": "storage.type.fasm",
@@ -155,9 +172,14 @@
       "name": "keyword.other.mnemonic.fasm",
       "match": "(?i)\\b(cmpxchg16b|vzeroupper|cmpxchg8b|sysenter|syscall|cmpxchg|vmovaps|movsxd|popcnt|loopne|cmovne|movaps|movups|movapd|movdqa|movdqu|movzx|movsx|pushf|lzcnt|tzcnt|jecxz|jrcxz|loope|setne|cmove|cmovg|cmovl|cpuid|rdtsc|movsb|movsw|movsd|movsq|stosb|stosw|stosd|stosq|repne|leave|enter|movss|addss|addps|subss|mulss|divss|wrmsr|rdmsr|xchg|push|popf|imul|idiv|test|shld|shrd|call|retn|retf|jcxz|loop|sete|setg|setl|seta|setb|int3|movs|cmps|scas|stos|lods|repe|lock|xadd|cwde|cdqe|wait|fstp|fadd|fsub|fmul|fdiv|pxor|pand|mov|lea|pop|add|adc|sub|sbb|inc|dec|neg|mul|div|cmp|and|xor|not|shl|sal|shr|sar|rol|ror|rcl|rcr|bts|btr|btc|bsf|bsr|jmp|ret|jne|jnz|jge|jle|jae|jbe|jnc|jno|jns|jnp|nop|hlt|int|cld|std|clc|stc|cmc|cli|sti|rep|cbw|cwd|cdq|cqo|fld|fst|por|out|or|bt|je|jz|jg|jl|ja|jb|jc|jo|js|jp|in)\\b"
     },
+    "special-symbols": {
+      "comment": "fasmg's built-in, never-user-defined pseudo-variables: \"$\"/\"$$\"/\"$@\" (current address / current addressing-space base / current reserved-data-block base) and \"%\"/\"%%\" (current repetition number / total planned repetitions, inside repeat-while-iterate) — kept as their own scope (matching hover's distinct \"Built-in symbol\" tag) rather than falling through to the generic operator class, since e.g. \"if % = %%\" (a real, common check inside fasmg's own prologue/epilogue macros) is easy to misread as an operator soup without this. Checked after #numbers, which already claims a \"$\" immediately followed by a hex digit (fasmg's \"$1A\"-style hex literal) — a bare \"$\"/\"$$\"/\"$@\" is never one of those.",
+      "name": "variable.language.special.fasm",
+      "match": "\\$\\$|\\$@|\\$|%%|%"
+    },
     "operators": {
       "name": "keyword.operator.fasm",
-      "match": "(?i)\\b(and|or|xor|not|shl|shr|mod|ptr|dup)\\b|[+\\-*/%<>=!&|~]"
+      "match": "(?i)\\b(and|or|xor|not|shl|shr|mod|ptr|dup)\\b|[+\\-*/<>=!&|~]"
     }
   }
 }

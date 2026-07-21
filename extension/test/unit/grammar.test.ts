@@ -117,4 +117,38 @@ describe('fasm TextMate grammar', () => {
     const jnoScopes = scopesOf(lines[1], 'jno');
     assert.strictEqual(jnoScopes[jnoScopes.length - 1], 'keyword.other.mnemonic.fasm', `expected "jno" to stay a mnemonic, got: ${jnoScopes}`);
   });
+
+  it('tags ":=", "=:", and "reequ" as constant-defining operators/directives, distinct from plain "="', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines('size := fastcall\nold =: 5\nc reequ 3\n');
+
+    const colonEqualsScopes = scopesOf(lines[0], ':=');
+    assert.strictEqual(colonEqualsScopes[colonEqualsScopes.length - 1], 'keyword.operator.assignment.fasm');
+    assert.ok(scopesOf(lines[0], 'size').some((s) => s.startsWith('variable.other.constant')));
+
+    const equalsColonScopes = scopesOf(lines[1], '=:');
+    assert.strictEqual(equalsColonScopes[equalsColonScopes.length - 1], 'keyword.operator.assignment.fasm');
+
+    const reequScopes = scopesOf(lines[2], 'reequ');
+    assert.ok(reequScopes.some((s) => s.includes('directive')), `expected "reequ" to be a directive, got: ${reequScopes}`);
+  });
+
+  it('tags the built-in "$"/"$$"/"$@"/"%"/"%%" pseudo-variables distinctly, without misreading them as generic operators', async function () {
+    // Mirrors a real snippet from fasmg's own proc64.inc (prologuedef): "if % = %% / fill :=
+    // 8*(% and 1)" — easy to misread as operator soup without dedicated tagging.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['if % = %%', 'fill := 8*(% and 1)', 'size = $ - $$', 'base = $@'].join('\n'));
+
+    for (const [lineIdx, word] of [[0, '%'], [0, '%%'], [1, '%'], [2, '$'], [2, '$$'], [3, '$@']] as const) {
+      const scopes = scopesOf(lines[lineIdx], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'variable.language.special.fasm', `expected "${word}" to be a built-in special symbol, got: ${scopes}`);
+    }
+  });
+
+  it('does not mistake fasmg\'s "$1A"-style dollar-prefixed hex literal for the "$" current-address symbol', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines('n = $1A\n');
+    const scopes = scopesOf(lines[0], '$1A');
+    assert.strictEqual(scopes[scopes.length - 1], 'constant.numeric.hex.fasm', `expected "$1A" to be a hex number, got: ${scopes}`);
+  });
 });
