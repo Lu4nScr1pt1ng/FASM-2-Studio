@@ -14,17 +14,22 @@ describe('detectDialect', () => {
     assert.strictEqual(detectDialect('irpv param, var\nend irpv\n', 'fasm1'), 'fasm2');
   });
 
-  it('detects fasm1 from use16/use32/use64, rept, and endp', () => {
-    assert.strictEqual(detectDialect('use16\nmov ax, 1\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('use32\nmov eax, 1\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('use64\nmov rax, 1\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('rept 4 { nop }\n', 'fasm2'), 'fasm1');
-    assert.strictEqual(detectDialect('proc foo\nendp\n', 'fasm2'), 'fasm1');
+  it('does not treat use16/use32/use64, rept, or endp as fasm1 markers (they are legitimate macro names in fasmg\'s own official packages)', () => {
+    // Confirmed against fasmg's own real example tree: 80386.inc/x64.inc define use16/use32/use64
+    // as macros, and packages/x86/examples/windows/*.asm define proc/endp the same way fasm1's
+    // win32 package does — so these previously caused real fasmg files to be misdetected as
+    // fasm1. With no marker present, this correctly falls back to the caller's default instead of
+    // guessing fasm1.
+    assert.strictEqual(detectDialect('use16\nmov ax, 1\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('use32\nmov eax, 1\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('use64\nmov rax, 1\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('rept 4 { nop }\n', 'fasm2'), 'fasm2');
+    assert.strictEqual(detectDialect('proc foo\nendp\n', 'fasm2'), 'fasm2');
   });
 
   it('is case-insensitive', () => {
     assert.strictEqual(detectDialect('END MACRO', 'fasm1'), 'fasm2');
-    assert.strictEqual(detectDialect('USE16', 'fasm2'), 'fasm1');
+    assert.strictEqual(detectDialect('CALMINSTRUCTION', 'fasm1'), 'fasm2');
   });
 
   it('falls back to the given default when no markers are present', () => {
@@ -33,26 +38,14 @@ describe('detectDialect', () => {
     assert.strictEqual(detectDialect('', 'fasm2'), 'fasm2');
   });
 
-  it('falls back to the default when both dialects\' markers are present (ambiguous)', () => {
-    assert.strictEqual(detectDialect('use16\nend macro\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('use16\nend macro\n', 'fasm1'), 'fasm1');
+  it('detects fasm2 even alongside old-style tokens like use16/endp that used to be treated as fasm1-only', () => {
+    assert.strictEqual(detectDialect('use16\nend macro\n', 'fasm1'), 'fasm2');
   });
 
-  it('does not false-positive on markers appearing as a substring of a longer identifier', () => {
-    // A label named "endpoint" contains "endp" but must not be mistaken for the fasm1 "endp"
-    // procedure-end marker; "reptile" contains "rept" but isn't the "rept" directive, etc.
-    assert.strictEqual(detectDialect('mov eax, endpoint\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('mov eax, endpoint\n', 'fasm1'), 'fasm1');
-    assert.strictEqual(detectDialect('reptile_count = 5\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('call iterated_function\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('mov eax, irpx_value\n', 'fasm2'), 'fasm2');
-  });
-
-  it('does not treat fasm2\'s bare "use" directive as a fasm1 marker', () => {
-    // fasm2 activates a CPU/mode module with "use i386"/"use x64" (no digits glued to "use");
-    // fasm1's markers specifically require use16/use32/use64. Neither heuristic fires here, so
-    // this correctly falls back to the caller's default rather than guessing fasm1.
-    assert.strictEqual(detectDialect('use i386\nmov eax, 1\n', 'fasm2'), 'fasm2');
-    assert.strictEqual(detectDialect('use i386\nmov eax, 1\n', 'fasm1'), 'fasm1');
+  it('does not false-positive on a marker appearing as a substring of a longer identifier', () => {
+    // "iterated_function"/"irpx_value" contain "iterate"/"irp" as substrings but aren't the
+    // directives themselves — proven by falling back to 'fasm1' here instead of firing fasm2.
+    assert.strictEqual(detectDialect('call iterated_function\n', 'fasm1'), 'fasm1');
+    assert.strictEqual(detectDialect('mov eax, irpx_value\n', 'fasm1'), 'fasm1');
   });
 });
