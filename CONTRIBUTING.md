@@ -32,6 +32,27 @@ To try your change in a real VS Code window: `npm run build`, then in `extension
 VS Code (or `code --extensionDevelopmentPath=<repo>/extension`) launches an Extension Development
 Host with your build loaded.
 
+## Installing a local build as a real extension
+
+`F5` is the fast loop for actively working on the extension itself, but it's a temporary
+Extension Development Host — a second VS Code window that only exists for that session. To
+actually test a change end to end in your normal, everyday VS Code (e.g. against a real project),
+package and install it like any other extension instead:
+
+```sh
+npm run package                                    # builds all three packages, then extension/*.vsix
+code --install-extension extension/*.vsix --force  # --force overwrites an existing install, marketplace or not
+```
+
+Then run `Developer: Reload Window` (or fully restart VS Code) so the new build actually loads —
+just reinstalling doesn't reload an already-running extension host.
+
+Installing from a `.vsix` this way pins that version locally; VS Code won't silently overwrite it
+with a Marketplace update later. After each change you want to test, repeat the two commands above
+and reload again. To go back to the published version, reinstall from the Marketplace: open the
+Extensions view, find FASM2 Studio, and use "Install Another Version" (or uninstall and reinstall
+it fresh).
+
 ## Where things live
 
 - `server/` is the language server. It's a lightweight, hand-written tokenizer and symbol index —
