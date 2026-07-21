@@ -116,6 +116,12 @@ connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: st
     .indexWorkspace(params.uris ?? [], resolveDialect)
     .then(({ indexed, skipped }) => {
       connection.console.info(`fasm2-studio: indexed ${indexed} workspace file(s), skipped ${skipped}.`);
+      // A document already open (and diagnosed) before indexing finished may have compiled
+      // standalone instead of via its real entry point (findEntryFile needs the index to walk
+      // the include graph) — now that the index is populated, redo it for every open document.
+      for (const doc of documents.all()) {
+        scheduleDiagnostics(doc.uri);
+      }
     })
     .catch((err) => logHandlerError('indexWorkspaceFiles', err));
 });
@@ -198,6 +204,10 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   const compilerPath = configuredPath || (await resolveCompilerOnPath(dialect));
 
   if (!compilerPath) {
+    connection.console.warn(
+      `fasm2-studio: diagnostics unavailable for ${uri}: no ${dialect} compiler found on PATH ` +
+        `(set fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'} or install it).`,
+    );
     connection.sendDiagnostics({ uri, diagnostics: [] });
     return;
   }

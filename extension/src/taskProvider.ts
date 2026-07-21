@@ -92,6 +92,34 @@ export function getDefaultOutputPath(sourceFsPath: string): string {
 
 export const DEBUG_BUILD_TASK_NAME = 'Debug build (active file)';
 
+/**
+ * Builds and runs a task directly via the task-execution API rather than through VS Code's
+ * preLaunchTask label lookup — which asks every TaskProvider for tasks and matches by label, so
+ * it only ever finds FasmTaskProvider's dynamic tasks when the active editor happens to be a fasm
+ * file at that exact moment (see FasmTaskProvider.provideTasks below). Debug launches (which may
+ * start from the Run and Debug panel, not the editor) need this more direct, reliable path.
+ */
+export async function runBuildTask(file: string, debugBuild = false): Promise<number | undefined> {
+  const def: FasmTaskDefinition = { type: FASM_TASK_TYPE, file, debugBuild };
+  let task: vscode.Task;
+  try {
+    task = await buildTask(def, debugBuild ? DEBUG_BUILD_TASK_NAME : 'Build active file');
+  } catch (err) {
+    void vscode.window.showErrorMessage((err as Error).message);
+    return undefined;
+  }
+
+  const execution = await vscode.tasks.executeTask(task);
+  return new Promise<number | undefined>((resolve) => {
+    const disposable = vscode.tasks.onDidEndTaskProcess((e) => {
+      if (e.execution === execution) {
+        disposable.dispose();
+        resolve(e.exitCode);
+      }
+    });
+  });
+}
+
 export class FasmTaskProvider implements vscode.TaskProvider {
   async provideTasks(): Promise<vscode.Task[]> {
     const editor = vscode.window.activeTextEditor;

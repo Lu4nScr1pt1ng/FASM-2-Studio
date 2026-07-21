@@ -5,7 +5,7 @@ import { invalidateCompilerCache } from './compilerDiscovery';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
-import { buildTask, FASM_TASK_TYPE, FasmTaskDefinition, FasmTaskProvider, getDefaultOutputPath, getListingPath } from './taskProvider';
+import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
 import { Dialect } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
 
@@ -18,27 +18,6 @@ function activeFasmFile(): string | undefined {
     return undefined;
   }
   return editor.document.uri.fsPath;
-}
-
-async function runBuildTask(file: string, debugBuild = false): Promise<number | undefined> {
-  const def: FasmTaskDefinition = { type: FASM_TASK_TYPE, file, debugBuild };
-  let task: vscode.Task;
-  try {
-    task = await buildTask(def, debugBuild ? 'Debug build (active file)' : 'Build active file');
-  } catch (err) {
-    void vscode.window.showErrorMessage((err as Error).message);
-    return undefined;
-  }
-
-  const execution = await vscode.tasks.executeTask(task);
-  return new Promise<number | undefined>((resolve) => {
-    const disposable = vscode.tasks.onDidEndTaskProcess((e) => {
-      if (e.execution === execution) {
-        disposable.dispose();
-        resolve(e.exitCode);
-      }
-    });
-  });
 }
 
 function registerCommands(context: vscode.ExtensionContext): void {

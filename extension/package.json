@@ -129,7 +129,6 @@
             "request": "launch",
             "name": "Debug FASM program",
             "asmFile": "${file}",
-            "preLaunchTask": "fasm: Debug build (active file)",
             "stopOnEntry": true
           }
         ],
@@ -142,7 +141,6 @@
               "request": "launch",
               "name": "Debug FASM program",
               "asmFile": "^\"\\${file}\"",
-              "preLaunchTask": "fasm: Debug build (active file)",
               "stopOnEntry": true
             }
           }
