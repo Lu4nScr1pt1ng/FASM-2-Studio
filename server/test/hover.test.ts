@@ -5,6 +5,8 @@ import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { getHover } from '../src/features/hover';
 import { Workspace } from '../src/workspace';
+import directivesData from '../src/data/directives.json';
+import instructionsData from '../src/data/instructions.json';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -20,6 +22,23 @@ describe('getHover', () => {
 
   it('returns undefined for a word that matches nothing', () => {
     assert.strictEqual(getHover(ws, uri, 'fasm2', 'not_a_real_anything'), undefined);
+  });
+
+  it('never renders an unescaped, unbalanced backtick in any directive/mnemonic summary (would open a dangling markdown code span)', () => {
+    // Found a real bug this way: directives.json's own "stringify" entry described "the "`"
+    // preprocessing operator" with a single bare backtick meant to display literally -- an odd
+    // count of *unescaped* backticks, which starts a markdown code span that never closes,
+    // potentially mangling the rest of the tooltip's rendering. Fixed by escaping it ("\`").
+    const directives = directivesData as Array<{ name: string }>;
+    const failures: string[] = [];
+    for (const dir of [...directives.map((d) => d.name).filter((n) => !n.includes(' ')), ...instructionsData.map((i) => i.mnemonic)]) {
+      const h = getHover(ws, uri, 'fasm2', dir);
+      if (!h) continue;
+      const text = value(h);
+      const unescaped = (text.match(/(?<!\\)`/g) ?? []).length;
+      if (unescaped % 2 !== 0) failures.push(dir);
+    }
+    assert.strictEqual(failures.length, 0, `unbalanced backticks in hover for: ${failures.join(', ')}`);
   });
 
   describe('instructions', () => {

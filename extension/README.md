@@ -54,6 +54,7 @@ To use the debugger:
 | `fasm2Studio.defaultDialect` | Dialect assumed when it can't be auto-detected from a file's contents. |
 | `fasm2Studio.fasm2CompilerPath` | Path to fasm2/fasmg. Leave empty to auto-detect on PATH. |
 | `fasm2Studio.fasm1CompilerPath` | Path to fasm1. Leave empty to auto-detect on PATH. |
+| `fasm2Studio.includePath` | Semicolon-separated extra directories to search for a bare `include 'foo.inc'` not found next to the including file (passed as the compiler's `INCLUDE` environment variable). Many real fasmg projects need this to build at all. |
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
@@ -67,5 +68,8 @@ reports, feature requests, and contributions welcome; see `CONTRIBUTING.md` in t
 ## Licensing
 
 This extension is MIT-licensed. flat assembler itself is a separate project with its own license,
-held by its author, Tomasz Grysztar; this extension doesn't redistribute it and just invokes
-whatever copy you have installed.
+held by its author, Tomasz Grysztar; the compiler and debugger are never shipped or redistributed
+— this extension just invokes whatever copy you have installed. The one exception is a small,
+unmodified fasmg macro file redistributed under its own BSD-style license and injected during
+`FASM: Debug` builds to generate the listing used for source-line mapping (see this repository's
+`debug/debug-support/NOTICE.md`).

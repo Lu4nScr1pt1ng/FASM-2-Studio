@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.15.0
+
+- Fixed a real dialect-detection bug: `end repeat`, `irp`, and `irpv` were treated as unambiguous
+  fasm2 markers, but flat assembler 1 has its own native `repeat ... end repeat` and `irp`/`irpv`
+  directives too (confirmed against fasm1's own manual) — so an ordinary fasm1 file using any of
+  them was silently misclassified as fasm2, serving the wrong hover/directive content. Only
+  `end macro`, `calminstruction`, `iterate`, and `namespace` remain as markers.
+- Added several core directives that had no hover documentation at all, found on a line-by-line
+  pass through manual.txt: `dup` (the `db`/`dw`/... value-repeat keyword), `reequ` (the
+  overwriting counterpart to `equ`, mirroring how `redefine` relates to `define`),
+  `retaincomments`/`removecomments` and `isolatelines`/`combinelines` (comment/line-splicing
+  control), `else if`, and `end match`.
+- Corrected and completed several existing directive summaries that were subtly wrong or missing
+  a documented form: `equ`/`define` didn't explain the one thing that actually distinguishes them
+  (whether symbolic variables in the assigned text get evaluated); `restore` only mentioned
+  undoing `=:`, not `equ`/`define`; `label`'s syntax implied `at expr` was mandatory when it's
+  optional; `virtual` was missing its third form (reopening an existing area by label); `file` was
+  missing its `:offset,length` partial-copy form; `load`/`store` were missing their third
+  "raw output-file offset" form (`from :`/`at :`); `match` didn't mention its fasm1 form, the
+  `else match` chaining, or its CALM-only third argument; `outscope` overstated what it redirects
+  (only parameter-definition context, not general command execution); `local` didn't document its
+  distinct CALM-instruction-definition-time meaning; `emit` conflated its base-directive `dbx`
+  synonym with the unrelated, synonym-less CALM command; `publish` was missing its `:` stack/
+  constant modifiers; `transform` was missing its optional namespace argument; `call` overstated
+  itself as "the only way" to invoke another CALM instruction.
+- Extension grammar: added the four new comment/line-splicing directives above to the core
+  keyword list.
+
 ## 0.14.0
 
 - Fixed a real, potentially file-wide corruption bug: a number using a single quote as a digit

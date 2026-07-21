@@ -6,12 +6,20 @@ describe('detectDialect', () => {
     assert.strictEqual(detectDialect('macro foo\nend macro\n', 'fasm1'), 'fasm2');
   });
 
-  it('detects fasm2 from calminstruction/iterate/namespace/irp', () => {
+  it('detects fasm2 from calminstruction/iterate/namespace', () => {
     assert.strictEqual(detectDialect('calminstruction foo\nend calminstruction\n', 'fasm1'), 'fasm2');
     assert.strictEqual(detectDialect('iterate x, 1, 2\nend iterate\n', 'fasm1'), 'fasm2');
     assert.strictEqual(detectDialect('namespace foo\nend namespace\n', 'fasm1'), 'fasm2');
-    assert.strictEqual(detectDialect('irp x, 1, 2\nend irp\n', 'fasm1'), 'fasm2');
-    assert.strictEqual(detectDialect('irpv param, var\nend irpv\n', 'fasm1'), 'fasm2');
+  });
+
+  it('does not treat "end repeat", "irp", or "irpv" as fasm2 markers (they are native fasm1 directives too)', () => {
+    // flat assembler 1.73 manual, 2.3.5 "Repeating blocks of instructions" and 2.3.7 "Symbolic
+    // variables": fasm1 has its own native "repeat ... end repeat" and "irp"/"irpv" directives, so
+    // treating them as fasm2-exclusive misclassified real fasm1 source using them as fasm2, which
+    // then hid fasm1-specific hover content and directive completions for those files.
+    assert.strictEqual(detectDialect('repeat 4\n\tnop\nend repeat\n', 'fasm1'), 'fasm1');
+    assert.strictEqual(detectDialect('irp x, 1, 2\n\tdb x\nend irp\n', 'fasm1'), 'fasm1');
+    assert.strictEqual(detectDialect('irpv param, var\n\tdb param\nend irpv\n', 'fasm1'), 'fasm1');
   });
 
   it('does not treat use16/use32/use64, rept, or endp as fasm1 markers (they are legitimate macro names in fasmg\'s own official packages)', () => {

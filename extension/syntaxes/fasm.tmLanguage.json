@@ -202,7 +202,7 @@
     },
     "directives": {
       "name": "keyword.control.directive.fasm",
-      "match": "(?i)\\b(use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|reequ|define|redefine|restore|purge|load|store|from|align|times|at|label|break|indx|sizeof|outscope|restartout|eval|mvmacro|mvstruc|restruc|esc)\\b"
+      "match": "(?i)\\b(use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|reequ|define|redefine|restore|purge|load|store|from|align|times|at|label|break|indx|sizeof|outscope|restartout|eval|mvmacro|mvstruc|restruc|esc|retaincomments|removecomments|isolatelines|combinelines)\\b"
     },
     "size-specifiers": {
       "name": "storage.type.fasm",
