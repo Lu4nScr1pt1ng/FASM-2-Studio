@@ -88,11 +88,17 @@ export interface DirectiveEntry {
 /** A sub-keyword of "format"/"segment"/"section" (e.g. ELF64, executable, readable, DLL). */
 export interface FormatKeywordEntry {
   name: string;
+  /** What this keyword actually is, e.g. "output format", "PE subsystem", "ELF segment attribute" —
+   * shown as the hover's tag instead of one generic label for all 30-odd keywords in this file. */
+  category: string;
   summary: string;
 }
 
 /** An operand-size or addressing qualifier (e.g. byte, dword, ptr, near). */
 export interface SizeSpecifierEntry {
   name: string;
+  /** "size" for byte/word/dword/... vs "addressing" for ptr/near/far/short — two genuinely
+   * different concepts this file groups together under one type. */
+  kind: 'size' | 'addressing';
   summary: string;
 }

@@ -72,11 +72,11 @@
   { "name": "end calminstruction", "summary": "Closes a \"calminstruction\" block.", "dialect": "fasm2" },
   { "name": "postpone", "summary": "Defers assembly of a block until after all following source text is processed. Close with \"end postpone\". Multiple postponed blocks assemble in reverse declaration order.", "dialect": "fasm2" },
   { "name": "end postpone", "summary": "Closes a \"postpone\" block.", "dialect": "fasm2" },
-  { "name": "match", "summary": "Pattern-matches macro arguments (CALM).", "dialect": "fasm2" },
-  { "name": "assemble", "summary": "CALM command: passes the text held by a symbolic variable directly to the assembler, unpreprocessed.", "dialect": "fasm2" },
-  { "name": "arrange", "summary": "CALM command: the inverse of \"match\" — builds up a text value from a pattern and stores it in a symbolic variable.", "dialect": "fasm2" },
-  { "name": "compute", "summary": "CALM command: evaluates an expression and assigns the numeric result to a variable.", "dialect": "fasm2" },
-  { "name": "check", "summary": "CALM command: analogous to \"if\" — evaluates a condition and sets the result flag tested by \"jyes\"/\"jno\".", "dialect": "fasm2" },
-  { "name": "emit", "summary": "CALM command (synonym \"dbx\"): generates data of a given size directly into the output being assembled.", "dialect": "fasm2" },
+  { "name": "match", "summary": "Pattern-matches macro arguments.", "dialect": "fasm2" },
+  { "name": "assemble", "summary": "Passes the text held by a symbolic variable directly to the assembler, unpreprocessed.", "dialect": "fasm2" },
+  { "name": "arrange", "summary": "The inverse of \"match\" — builds up a text value from a pattern and stores it in a symbolic variable.", "dialect": "fasm2" },
+  { "name": "compute", "summary": "Evaluates an expression and assigns the numeric result to a variable.", "dialect": "fasm2" },
+  { "name": "check", "summary": "Analogous to \"if\" — evaluates a condition and sets the result flag tested by \"jyes\"/\"jno\".", "dialect": "fasm2" },
+  { "name": "emit", "summary": "Synonym \"dbx\": generates data of a given size directly into the output being assembled.", "dialect": "fasm2" },
   { "name": "element", "summary": "Defines a special symbol representing one term of an expression; used with the \"element\"/\"scale\"/\"metadataof\" operators.", "dialect": "fasm2" }
 ]

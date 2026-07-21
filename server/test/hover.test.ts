@@ -97,6 +97,27 @@ describe('getHover', () => {
     assert.match(v, /segment.*pages as executable/s);
   });
 
+  it('tags a CALM sub-command distinctly from an ordinary directive', () => {
+    assert.match(value(getHover(ws, uri, 'fasm2', 'match')), /\*\*match\*\* — \*CALM command\*/);
+  });
+
+  it('renders a directive\'s completion snippet as a plain-text fenced example, tabstops stripped', () => {
+    const v = value(getHover(ws, uri, 'fasm2', 'include'));
+    assert.match(v, /```fasm\ninclude 'file\.inc'\n```/);
+    assert.ok(!v.includes('${1'), 'tabstop syntax must not leak into the rendered example');
+  });
+
+  it('tags a format keyword with its specific category, not one generic label for all of them', () => {
+    assert.match(value(getHover(ws, uri, 'fasm2', 'ELF64')), /\*\*ELF64\*\* — \*output format\*/);
+    assert.match(value(getHover(ws, uri, 'fasm2', 'console')), /\*\*console\*\* — \*PE subsystem\*/);
+    assert.match(value(getHover(ws, uri, 'fasm2', 'readable')), /\*\*readable\*\* — \*segment\/section attribute\*/);
+  });
+
+  it('distinguishes a size specifier from an addressing qualifier', () => {
+    assert.match(value(getHover(ws, uri, 'fasm2', 'dword')), /\*\*dword\*\* — \*size specifier\*/);
+    assert.match(value(getHover(ws, uri, 'fasm2', 'ptr')), /\*\*ptr\*\* — \*addressing qualifier\*/);
+  });
+
   describe('user symbols', () => {
     let tmpDir: string;
 

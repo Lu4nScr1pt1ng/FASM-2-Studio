@@ -27,13 +27,13 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   if (reg) return markdown(renderRegister(reg));
 
   const size = sizeSpecifiers.find((s) => s.name.toLowerCase() === lower);
-  if (size) return markdown(renderTagged(size.name, 'size specifier', size.summary));
+  if (size) return markdown(renderTagged(size.name, SIZE_KIND_LABELS[size.kind], size.summary));
 
   const dir = directives.find((d) => d.name.toLowerCase() === lower && (d.dialect === 'both' || d.dialect === dialect));
-  if (dir) return markdown(renderTagged(dir.name, `${dir.dialect === 'both' ? 'directive' : `${dir.dialect} directive`}`, dir.summary));
+  if (dir) return markdown(renderDirective(dir));
 
   const fmt = formatKeywords.find((f) => f.name.toLowerCase() === lower);
-  if (fmt) return markdown(renderTagged(fmt.name, 'format/section keyword', fmt.summary));
+  if (fmt) return markdown(renderTagged(fmt.name, fmt.category, fmt.summary));
 
   for (const parsed of workspace.walkIncludeGraph(uri, dialect)) {
     const sym = parsed.symbols.find((s) => s.name === word);
@@ -70,6 +70,36 @@ function renderInstructions(entries: InstructionEntry[]): string {
 
 function renderTagged(name: string, tag: string, summary: string): string {
   return [`**${name}** — *${tag}*`, '', summary].join('\n');
+}
+
+const SIZE_KIND_LABELS: Record<SizeSpecifierEntry['kind'], string> = {
+  size: 'size specifier',
+  addressing: 'addressing qualifier',
+};
+
+/** A handful of directives are really CALM (the low-level code-emission language used inside a
+ * "calminstruction" block) sub-commands rather than ordinary top-level directives — a more
+ * specific, more useful tag than "directive" for exactly these. */
+const CALM_COMMANDS: ReadonlySet<string> = new Set(['match', 'assemble', 'arrange', 'compute', 'check', 'emit']);
+
+/** Converts a completion snippet's tabstop syntax ("${1:name}", "$0") into plain placeholder text
+ * readable in a hover — a hover isn't editable, so the tabstop markers themselves are just noise.
+ * Also trims now-trailing-blank lines left where a "$0" was the only thing on its line. */
+function snippetToExample(snippet: string): string {
+  return snippet
+    .replace(/\$\{\d+:([^}]*)\}/g, '$1')
+    .replace(/\$\{\d+\}/g, '')
+    .replace(/\$\d+/g, '')
+    .split('\n')
+    .map((line) => line.replace(/\s+$/, ''))
+    .join('\n');
+}
+
+function renderDirective(dir: DirectiveEntry): string {
+  const tag = CALM_COMMANDS.has(dir.name) ? 'CALM command' : dir.dialect === 'both' ? 'directive' : `${dir.dialect} directive`;
+  const lines = [`**${dir.name}** — *${tag}*`, '', dir.summary];
+  if (dir.snippet) lines.push('', fasmCode(snippetToExample(dir.snippet)));
+  return lines.join('\n');
 }
 
 const GROUP_LABELS: Record<string, string> = {
