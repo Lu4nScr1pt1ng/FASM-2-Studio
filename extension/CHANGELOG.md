@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0
+
+- Massively expanded instruction coverage for hover/completion: from 197 to 1,273 entries,
+  now spanning the entire x86 instruction set fasmg can assemble — AVX, AVX2, BMI1/BMI2, FMA,
+  AES, ADX, F16C, RDRAND/RDSEED/RDTSCP, XSAVE, FSGSBASE, CET-SS, GFNI, VAES/VPCLMULQDQ,
+  MOVDIRI/MOVDIR64B, PTWRITE, INVPCID, MPX, HLE, RTM, SMX, VMX, the full AVX-512 family
+  (F/BW/DQ/CD/VL/ER/PF/VNNI/VBMI/VBMI2/IFMA/BITALG/VPOPCNTDQ/4VNNIW), and the legacy AMD
+  3DNow! set. Also fixed a few real gaps found along the way: a missing `sqrtsd`, a missing
+  `endbr32`/`vptest`, and a duplicate-mnemonic mixup where `vcmpsd`'s hover showed the
+  unrelated string-compare instruction's description instead of its own.
+- Fixed: `FASM: Build`/`Run`/`Debug` and the entry-point listing didn't recognize a file as its
+  own entry point unless it had a `format` directive — but fasmg doesn't require one at all for
+  flat-binary output (`org 100h` alone is a complete, directly-assemblable program, as in
+  fasmg's own `hello.asm`/`life.asm`/`mandel.asm` examples). A top-level `org`/`section` now
+  counts too, but only when nothing else `include`s that file, so a fragment that merely uses
+  `org` internally as an implementation detail (e.g. a hand-written executable-format
+  definition library meant only for inclusion) isn't mistaken for a standalone program.
+- Validated multi-project workspace isolation against fasmg's own real compiler source tree
+  (354 files, 9 platform-specific entry points sharing common fragments): confirmed shared
+  fragments correctly resolve to every project that reaches them, with no cross-contamination
+  from unrelated projects elsewhere in the same workspace.
+
 ## 0.6.0
 
 - `FASM: Build`/`Run`/`Debug` now resolve the real entry point instead of always compiling
