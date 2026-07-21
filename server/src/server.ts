@@ -187,7 +187,11 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
   }
 });
 
-const WORD_CHAR = /[A-Za-z0-9_.@$?]/;
+// "%" isn't part of the static parser's own identifier charset (tokenizer.ts's IDENT_START) — it's
+// only ever a special built-in ("%"/"%%", the repetition-count pseudo-variables inside
+// repeat/while/iterate, see hover.ts's SPECIAL_SYMBOLS), never a real cross-file symbol worth
+// indexing — but it still needs to be a word character here so hovering it resolves to anything.
+const WORD_CHAR = /[A-Za-z0-9_.@$?%]/;
 
 function getWordRangeAtPosition(doc: TextDocument, position: { line: number; character: number }): Range | undefined {
   const text = doc.getText({ start: { line: position.line, character: 0 }, end: { line: position.line + 1, character: 0 } });

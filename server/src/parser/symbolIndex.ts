@@ -27,12 +27,15 @@ function paramsFromTokens(tokens: Token[]): string | undefined {
   return relevant.map((t) => t.text).join('').trim() || undefined;
 }
 
-const BLOCK_END_KEYWORDS: Record<string, string> = {
-  macro: 'end',
-  struct: 'ends',
-  virtual: 'end',
-  namespace: 'end',
-};
+/** A macro name directly (no space) followed by "!" marks it "unconditional" — evaluated even
+ * inside a suspended/false conditional block or another macro's own definition, e.g. fasmg's own
+ * `macro endp?!` (packages/x86/include/macro/proc64.inc) so an "endp" can close out an "if"/"macro"
+ * left open by "proc" without a literal "end if"/"end macro" appearing at that point. The "!"
+ * isn't a parameter — skip it so it isn't mistaken for the start of one. */
+function paramsAfterMacroName(nameTok: Token, tokens: Token[]): Token[] {
+  const next = tokens[2];
+  return next && next.type === TokenType.Punct && next.text === '!' && next.startChar === nameTok.endChar ? tokens.slice(3) : tokens.slice(2);
+}
 
 // Bare identifiers that are instructions, registers, or directives aren't user symbols — they can
 // never be defined, renamed, or meaningfully "found" as a reference, and collecting them anyway
@@ -110,14 +113,24 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       // --- block end tracking (end macro / ends / end virtual / end namespace) ---
       if (kw0 === 'end' && tokens[1]) {
         const what = lower(tokens[1]);
-        const top = blockStack[blockStack.length - 1];
-        if (top && (what === top || (top !== 'struct' && what === BLOCK_END_KEYWORDS[top]))) {
-          blockStack.pop();
-          if (top === 'macro') {
-            const frame = macroFrames.pop();
-            if (frame) {
-              for (const sym of frame.pendingSymbols) {
-                sym.localScope = { startLine: frame.startLine, startChar: 0, endLine: t0.line, endChar: Number.MAX_SAFE_INTEGER };
+        // Normally `what` matches the stack top directly. It can legitimately not: fasmg's own
+        // packages/x86/include/macro/proc64.inc has a macro ("initlocal") that opens a `virtual
+        // at` block it *deliberately* leaves open across macro invocations — only a later,
+        // separate macro ("endl?") ever closes it — a deferred-execution trick this parser (which
+        // never expands or invokes macros) can't understand. Search down from the top for the
+        // nearest block this end keyword actually matches, and treat anything above it as
+        // implicitly closed, rather than let one such stray block desync every block after it for
+        // the rest of the file.
+        const idx = blockStack.lastIndexOf(what);
+        if (idx !== -1) {
+          while (blockStack.length > idx) {
+            const popped = blockStack.pop();
+            if (popped === 'macro') {
+              const frame = macroFrames.pop();
+              if (frame) {
+                for (const sym of frame.pendingSymbols) {
+                  sym.localScope = { startLine: frame.startLine, startChar: 0, endLine: t0.line, endChar: Number.MAX_SAFE_INTEGER };
+                }
               }
             }
           }
@@ -201,7 +214,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           kind: SymbolKind.Macro,
           range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(nameTok),
-          params: paramsFromTokens(tokens.slice(2)),
+          params: paramsFromTokens(paramsAfterMacroName(nameTok, tokens)),
           uri,
         });
         blockStack.push('macro');
@@ -255,35 +268,48 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
-      // --- NAME = EXPR ---
-      if (t0.type === TokenType.Ident && tokens[1] && tokens[1].type === TokenType.Punct && tokens[1].text === '=') {
+      // --- NAME = EXPR / NAME := EXPR / NAME =: EXPR / NAME equ EXPR / NAME reequ EXPR ---
+      // ":=" and "=:" are two punctuation tokens each (the tokenizer never merges multi-char
+      // operators), so they only count as one when written with no space between them, matching
+      // how fasmg itself requires no space in these operators.
+      const isColonEquals = tokens[1]?.type === TokenType.Punct && tokens[1].text === ':' && tokens[2]?.type === TokenType.Punct && tokens[2].text === '=' && tokens[1].endChar === tokens[2].startChar;
+      const isEqualsColon = tokens[1]?.type === TokenType.Punct && tokens[1].text === '=' && tokens[2]?.type === TokenType.Punct && tokens[2].text === ':' && tokens[1].endChar === tokens[2].startChar;
+      const isPlainEquals = tokens[1]?.type === TokenType.Punct && tokens[1].text === '=' && !isEqualsColon;
+      const isEqu = lower(tokens[1]) === 'equ';
+      const isReequ = lower(tokens[1]) === 'reequ';
+      if (t0.type === TokenType.Ident && (isColonEquals || isEqualsColon || isPlainEquals || isEqu || isReequ)) {
+        const definedVia = isColonEquals ? ':=' : isEqualsColon ? '=:' : isEqu ? 'equ' : isReequ ? 'reequ' : '=';
+        const valueStart = isColonEquals || isEqualsColon ? 3 : 2;
+        const name = baseName(t0.text);
         const sym: SymbolDefinition = {
-          name: t0.text,
+          name,
           kind: SymbolKind.Constant,
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(t0),
-          value: tokens.slice(2).map((t) => t.text).join(' '),
-          definedVia: '=',
+          value: tokens.slice(valueStart).map((t) => t.text).join(' '),
+          definedVia,
           uri,
         };
         symbols.push(sym);
-        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
+        enclosingLocalFrame(name)?.pendingSymbols.push(sym);
         continue;
       }
 
-      // --- NAME equ EXPR ---
-      if (t0.type === TokenType.Ident && lower(tokens[1]) === 'equ') {
+      // --- define/redefine NAME EXPR ---
+      if ((kw0 === 'define' || kw0 === 'redefine') && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        const name = baseName(nameTok.text);
         const sym: SymbolDefinition = {
-          name: t0.text,
+          name,
           kind: SymbolKind.Constant,
           range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
-          nameRange: tokenRange(t0),
-          value: tokens.slice(2).map((t) => t.text).join(' '),
-          definedVia: 'equ',
+          nameRange: tokenRange(nameTok),
+          value: tokens.slice(2).map((t) => t.text).join(' ') || undefined,
+          definedVia: kw0,
           uri,
         };
         symbols.push(sym);
-        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
+        enclosingLocalFrame(name)?.pendingSymbols.push(sym);
         continue;
       }
 

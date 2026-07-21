@@ -17,8 +17,21 @@ const registerFamilies = registerFamiliesData as RegisterFamilyEntry[];
 const formatKeywords = formatKeywordsData as FormatKeywordEntry[];
 const sizeSpecifiers = sizeSpecifiersData as SizeSpecifierEntry[];
 
+// Built-in pseudo-variables of the "expression" symbol class — never user-defined, so they have no
+// SymbolDefinition anywhere to look up; just a fixed, small set worth documenting directly.
+const SPECIAL_SYMBOLS: Record<string, string> = {
+  $: 'The current address (position in the output). `NAME = $` is equivalent to placing a label at this exact point.',
+  '$$': 'The base address of the current addressing space (the `org`/`section` argument). `$ - $$` gives the current offset from the start of the area.',
+  '$@': 'The base address of the current block of uninitialized (reserved) data. Equals `$` when there\'s no such pending block, or `$` minus that block\'s length otherwise.',
+  '%': 'Inside `repeat`/`while`/`iterate`, the current repetition number (starting from 1) — substituted as plain text before the line is processed, e.g. `f#%` builds identifiers like `f1`, `f2`, ...',
+  '%%': 'Inside `repeat`, the total number of repetitions planned (undefined inside `while`). `db %%-%` produces a descending byte sequence.',
+};
+
 export function getHover(workspace: Workspace, uri: string, dialect: Dialect, word: string, line = 0): Hover | undefined {
   const lower = word.toLowerCase();
+
+  const special = SPECIAL_SYMBOLS[word];
+  if (special) return markdown(renderTagged(word, 'Built-in symbol', special));
 
   // An in-scope `local` variable is an unambiguous match tied to exactly this query position —
   // check it before anything context-free like an instruction mnemonic. fasmg's own parser
@@ -248,6 +261,21 @@ const SYMBOL_KIND_LABELS: Record<string, string> = {
   [SymbolKind.Section]: 'Section',
 };
 
+// How each constant-definition operator/directive renders its syntax, plus a note on how its
+// semantics differ from the plain "=" a reader would otherwise assume — genuinely different
+// behaviors (evaluated vs. textual, discarded vs. preserved, once vs. reassignable) that are easy
+// to conflate, especially since fasmg's own real code (e.g. proc64.inc) uses several of these side
+// by side for exactly that reason.
+const DEFINED_VIA_RENDER: Record<NonNullable<SymbolDefinition['definedVia']>, { syntax: (name: string, value: string) => string; note?: string }> = {
+  '=': { syntax: (n, v) => `${n} = ${v}` },
+  ':=': { syntax: (n, v) => `${n} := ${v}`, note: 'Must be defined exactly once — safe to forward-reference, but reassigning it is an error (unlike "=").' },
+  '=:': { syntax: (n, v) => `${n} =: ${v}`, note: 'Preserves the previous value instead of discarding it (unlike "="), restorable later with `restore`.' },
+  equ: { syntax: (n, v) => `${n} equ ${v}`, note: 'Textual substitution — re-substituted unevaluated wherever it\'s used, not a stored value.' },
+  reequ: { syntax: (n, v) => `${n} reequ ${v}`, note: 'Textual substitution like `equ`, but discards the previous value instead of preserving it.' },
+  define: { syntax: (n, v) => `define ${n} ${v}`, note: 'Textual substitution like `equ`, but does not evaluate symbolic variables in the text; preserves the previous value.' },
+  redefine: { syntax: (n, v) => `redefine ${n} ${v}`, note: 'Like `define`, but discards the previous value instead of preserving it.' },
+};
+
 function renderSymbol(sym: SymbolDefinition, hoverUri: string, notIncluded: boolean): string {
   const kindLabel = SYMBOL_KIND_LABELS[sym.kind] ?? sym.kind;
   const lines: string[] = [];
@@ -255,12 +283,9 @@ function renderSymbol(sym: SymbolDefinition, hoverUri: string, notIncluded: bool
   if (sym.kind === SymbolKind.Macro || sym.kind === SymbolKind.Struct) {
     lines.push(fasmCode(sym.params ? `${sym.name} ${sym.params}` : sym.name), '', `*${kindLabel}*`);
   } else if (sym.kind === SymbolKind.Constant && sym.value) {
-    const isEqu = sym.definedVia === 'equ';
-    lines.push(fasmCode(isEqu ? `${sym.name} equ ${sym.value}` : `${sym.name} = ${sym.value}`), '', `*${kindLabel}*`);
-    // equ is textual substitution, re-expanded unevaluated at every use — genuinely different
-    // from "=" (a stored, evaluated value) and a common source of surprise for anyone assuming
-    // it behaves like an assignment.
-    if (isEqu) lines.push('', '*Textual substitution — re-substituted unevaluated wherever it\'s used, not a stored value.*');
+    const render = DEFINED_VIA_RENDER[sym.definedVia ?? '='];
+    lines.push(fasmCode(render.syntax(sym.name, sym.value)), '', `*${kindLabel}*`);
+    if (render.note) lines.push('', `*${render.note}*`);
   } else {
     lines.push(`**${sym.name}** — *${kindLabel}*`);
     if (sym.parentLabel) lines.push('', `Scoped to \`${sym.parentLabel}\``);

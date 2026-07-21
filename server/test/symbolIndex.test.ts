@@ -203,6 +203,85 @@ describe('symbolIndex', () => {
     assert.strictEqual(sizeDefs[1].value, '2');
   });
 
+  it('recognizes ":=" and "=:" as constant-defining operators, distinct from plain "="', () => {
+    // Mirrors real usage in fasmg's own packages/x86/include/macro/proc64.inc: "size :=
+    // fastcall?.frame" (constant, exactly-once) and "fastcall?.frame =: 0" (preserves the
+    // previous value, restorable with `restore`) sit right next to plain "=" assignments.
+    const src = ['CONST := 1', 'VAR =: 2'].join('\n');
+    const doc = parseDocument('file:///colonequals.asm', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('CONST')[0].definedVia, ':=');
+    assert.strictEqual(byName('CONST')[0].value, '1');
+    assert.strictEqual(byName('VAR')[0].definedVia, '=:');
+    assert.strictEqual(byName('VAR')[0].value, '2');
+  });
+
+  it('requires ":=" to have no space between the two characters, matching real fasmg (confirmed against the real compiler: "X : = 5" actually fails to assemble, parsed as label X then an invalid "= 5")', () => {
+    const src = ['start:', 'X : = 1'].join('\n');
+    const doc = parseDocument('file:///notcolonequals.asm', 1, src, 'fasm2');
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'start')?.kind, SymbolKind.Label);
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'X')?.kind, SymbolKind.Label);
+  });
+
+  it('recognizes "reequ" (discards the previous value, unlike "equ") as a constant definition', () => {
+    const src = 'NAME reequ value';
+    const doc = parseDocument('file:///reequ.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'NAME');
+    assert.strictEqual(sym?.definedVia, 'reequ');
+    assert.strictEqual(sym?.value, 'value');
+  });
+
+  it('recognizes "define"/"redefine NAME EXPR" as constant definitions, extracting NAME (not the keyword) as the symbol', () => {
+    // Mirrors fasmg's own proc64.inc: "define fastcall? fastcall" at the very top of the file.
+    const src = ['define fastcall? fastcall', 'redefine var data'].join('\n');
+    const doc = parseDocument('file:///define.asm', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('fastcall').length, 1, 'expected the "?" suffix to be stripped, same as macro names');
+    assert.strictEqual(byName('fastcall')[0].definedVia, 'define');
+    assert.strictEqual(byName('fastcall')[0].value, 'fastcall');
+    assert.strictEqual(byName('var')[0].definedVia, 'redefine');
+  });
+
+  it('strips a trailing "?" from a constant name defined via any operator, not just macro/struct names', () => {
+    // The manual's own example: "xor?.mask? := 10101010b" — the same weak/overridable "?" suffix
+    // convention macro names use also applies to symbolic constants.
+    const src = 'xor?.mask? := 10101010b';
+    const doc = parseDocument('file:///weakconst.asm', 1, src, 'fasm2');
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'xor?.mask')?.definedVia, ':=');
+  });
+
+  it('does not mistake a macro\'s "!" (unconditional-instruction marker) for a parameter', () => {
+    // Mirrors fasmg's own proc64.inc: "macro endp?!" — endp is both weak ("?") and unconditional
+    // ("!", evaluated even inside a suspended conditional block or another macro's definition,
+    // per the manual's own "macro endp!" example). Neither suffix is a parameter.
+    const src = 'macro endp?!\nend macro\n';
+    const doc = parseDocument('file:///unconditional.asm', 1, src, 'fasm2');
+    const macro = doc.symbols.find((s) => s.name === 'endp');
+    assert.ok(macro, 'expected "endp" (not "endp?" or "endp?!") to be the indexed macro name');
+    assert.strictEqual(macro?.params, undefined);
+  });
+
+  it('recovers from a macro that deliberately leaves a block open across invocations, instead of desyncing scope tracking for the rest of the file', () => {
+    // Mirrors a real, confirmed pattern in fasmg's own proc64.inc: "initlocal" opens a `virtual
+    // at` block it *deliberately* leaves unclosed (a later, separate macro closes it) — a
+    // deferred-execution trick this parser can't understand, but it must not corrupt local-macro
+    // scope tracking for everything that follows in the file.
+    const src = [
+      'macro initlocal',
+      '\tvirtual at 0', // deliberately left open, closed by a *different* macro at invocation time
+      'end macro',
+      'macro locals',
+      '\tlocal pointer',
+      '\tpointer = 1',
+      'end macro',
+    ].join('\n');
+    const doc = parseDocument('file:///deferredclose.asm', 1, src, 'fasm2');
+    const pointerSym = doc.symbols.find((s) => s.name === 'pointer');
+    assert.ok(pointerSym?.localScope, 'expected "pointer" to still get a localScope despite the stray unclosed virtual block before it');
+  });
+
   it('never throws on malformed or pathological input', () => {
     const pathological = [
       'macro',

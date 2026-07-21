@@ -286,6 +286,46 @@ describe('getHover', () => {
       assert.match(v, /Textual substitution/);
     });
 
+    it('renders ":=", "=:", "reequ", "define", and "redefine" with their own syntax and a note on how each differs from "="', async () => {
+      const src = ['format binary', 'A := 1', 'B =: 2', 'C reequ 3', 'define D 4', 'redefine E 5'].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const a = value(getHover(local, mainUri, 'fasm2', 'A'));
+      assert.match(a, /```fasm\nA := 1\n```/);
+      assert.match(a, /exactly once/);
+
+      const b = value(getHover(local, mainUri, 'fasm2', 'B'));
+      assert.match(b, /```fasm\nB =: 2\n```/);
+      assert.match(b, /Preserves the previous value/);
+
+      const c = value(getHover(local, mainUri, 'fasm2', 'C'));
+      assert.match(c, /```fasm\nC reequ 3\n```/);
+      assert.match(c, /discards the previous value/);
+
+      const d = value(getHover(local, mainUri, 'fasm2', 'D'));
+      assert.match(d, /```fasm\ndefine D 4\n```/);
+      assert.match(d, /does not evaluate symbolic variables/);
+
+      const e = value(getHover(local, mainUri, 'fasm2', 'E'));
+      assert.match(e, /```fasm\nredefine E 5\n```/);
+      assert.match(e, /Like `define`/);
+    });
+
+    it('documents the built-in "$"/"$$"/"$@"/"%"/"%%" pseudo-variables', async () => {
+      const src = 'format binary\nrepeat 4\n\tdb %\nend repeat\n';
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      assert.match(value(getHover(local, mainUri, 'fasm2', '$')), /current address/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '$$')), /base address of the current addressing space/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '$@')), /block of uninitialized/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '%')), /current repetition number/);
+      assert.match(value(getHover(local, mainUri, 'fasm2', '%%')), /total number of repetitions/);
+    });
+
     it('does not show the equ note for an ordinary "=" constant', async () => {
       const src = 'format binary\nCAP = 65536\n';
       const mainUri = await writeFile('main.asm', src);

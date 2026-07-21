@@ -26,12 +26,22 @@ export interface SymbolDefinition {
   params?: string;
   /** Parent global label for local labels (dot-prefixed). */
   parentLabel?: string;
-  /** Raw value expression for constants (right-hand side of = or equ). */
+  /** Raw value expression for constants (right-hand side of the operator/directive in definedVia). */
   value?: string;
-  /** How a constant was defined — "=" is a stored, evaluated value; "equ" is textual substitution
-   * (the expression is re-substituted, unevaluated, at every place the name is used). Undefined
-   * for non-constant symbol kinds. */
-  definedVia?: '=' | 'equ';
+  /**
+   * How a constant was defined:
+   * - "="        stored, evaluated value; discards any previous value.
+   * - ":="       like "=", but the symbol must be defined exactly once (safe to forward-reference).
+   * - "=:"       like "=", but preserves the previous value, restorable with `restore`.
+   * - "equ"      textual substitution, re-substituted unevaluated at every use; preserves the
+   *              previous value like "=:".
+   * - "reequ"    like "equ", but discards the previous value like "=".
+   * - "define"   textual substitution like "equ", but does not evaluate symbolic variables in the
+   *              text; preserves the previous value.
+   * - "redefine" like "define", but discards the previous value like "reequ"/"=".
+   * Undefined for non-constant symbol kinds.
+   */
+  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine';
   /**
    * Set when this symbol was declared via `local` inside a macro body — fasmg gives every macro
    * invocation a fresh, hygienic instance of each `local` name, so e.g. `value` declared this way
