@@ -170,6 +170,48 @@ describe('Workspace indexing', () => {
     assert.strictEqual(skipped, 1);
   });
 
+  describe('include path resolution', () => {
+    it('normalizes backslash path separators, as fasmg itself does regardless of host OS', async () => {
+      // Mirrors fasmg's own packages/x86/examples/windows/template.asm, which does
+      // `include 'api\kernel32.inc'` — Windows-authored, but the real fasmg compiler resolves it
+      // fine on Linux/macOS too ("the format of the path may depend on the operating system", per
+      // its manual). Node's own path module does not: on POSIX it treats a backslash as a literal
+      // filename character, not a separator.
+      const uriMain = await writeFile('main.asm', "format binary\ninclude 'api\\\\kernel32.inc'\n");
+      await fs.mkdir(path.join(tmpDir, 'api'));
+      const uriTarget = await writeFile('api/kernel32.inc', 'ExitProcess = 1\n');
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain, uriTarget], dialectAlwaysFasm2);
+
+      const symbols = ws.getDocument(uriMain)?.includes;
+      assert.strictEqual(symbols?.length, 1);
+      assert.strictEqual(ws.resolveIncludeUri(uriMain, symbols![0].path), uriTarget);
+    });
+
+    it('falls back to a configured include search path when the include is not found next to the including file', async () => {
+      // Mirrors the real, standard way fasmg's own bundled make.bat scripts build any project
+      // sharing a package directory: `set include=..\..\include` before compiling, since a bare
+      // `include 'shared.inc'` that isn't next to the including file relies on the INCLUDE
+      // environment variable as a search path.
+      const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-ws-test-pkg-'));
+      await fs.writeFile(path.join(packageDir, 'shared.inc'), 'SHARED_CONST = 1\n', 'utf8');
+      const uriTarget = URI.file(path.join(packageDir, 'shared.inc')).toString();
+      const uriMain = await writeFile('main.asm', "format binary\ninclude 'shared.inc'\n");
+
+      try {
+        const ws = new Workspace();
+        await ws.indexWorkspace([uriMain], dialectAlwaysFasm2);
+        assert.strictEqual(ws.resolveIncludeUri(uriMain, 'shared.inc'), undefined, 'expected no resolution before includeSearchPaths is configured');
+
+        ws.setIncludeSearchPaths([packageDir]);
+        assert.strictEqual(ws.resolveIncludeUri(uriMain, 'shared.inc'), uriTarget);
+      } finally {
+        await fs.rm(packageDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('findEntryFile', () => {
     it('walks back through `include` to find the entry point for a fragment with no format directive', async () => {
       const uriMain = await writeFile('cc.asm', "format ELF64 executable 3\n\ninclude 'lexer.asm'\n");

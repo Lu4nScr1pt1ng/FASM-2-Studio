@@ -175,6 +175,12 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
     const incoming = (change.settings?.fasm2Studio ?? {}) as Partial<FasmSettings>;
     settings = { ...DEFAULT_SETTINGS, ...incoming };
     invalidateCompilerCache();
+    workspace.setIncludeSearchPaths(
+      settings.includePath
+        .split(';')
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0),
+    );
     // Dialect defaults may have changed; re-resolved lazily on next parse rather than eagerly here.
   } catch (err) {
     logHandlerError('onDidChangeConfiguration', err);

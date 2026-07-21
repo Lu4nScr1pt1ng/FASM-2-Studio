@@ -49,6 +49,40 @@ describe('symbolIndex', () => {
     assert.strictEqual(doc.formatDirective, 'binary');
   });
 
+  it('indexes names declared via the "import" macro pattern (fasmg\'s api/kernel32.inc-style Windows imports), across a multi-line backslash-continued list', () => {
+    // Mirrors the real, standard shape of fasmg's own packages/x86/include/api/kernel32.inc and
+    // api/user32.inc: every imported OS function is declared this way rather than as a label, so
+    // without recognizing this pattern a program that calls e.g. ExitProcess would have no known
+    // definition at all — no hover, no go-to-definition — despite compiling perfectly.
+    const src = [
+      'import kernel32,\\',
+      "       AddAtomA,'AddAtomA',\\",
+      "       ExitProcess,'ExitProcess',\\",
+      "       CreateWindowExA,'CreateWindowExA'",
+      '',
+      'invoke ExitProcess, 0',
+    ].join('\n');
+
+    const doc = parseDocument('file:///kernel32.inc', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('AddAtomA').length, 1);
+    assert.strictEqual(byName('AddAtomA')[0].kind, SymbolKind.Constant);
+    assert.strictEqual(byName('ExitProcess').length, 1);
+    assert.strictEqual(byName('CreateWindowExA').length, 1);
+    // The library nickname operand right after "import" is not itself an imported function.
+    assert.strictEqual(byName('kernel32').length, 0);
+  });
+
+  it('does not require a trailing backslash on the "import" line itself when the whole list fits on one line', () => {
+    const src = "import user32,MessageBoxA,'MessageBoxA',MessageBoxW,'MessageBoxW'";
+    const doc = parseDocument('file:///user32.inc', 1, src, 'fasm2');
+    const byName = (name: string) => doc.symbols.filter((s) => s.name === name);
+
+    assert.strictEqual(byName('MessageBoxA').length, 1);
+    assert.strictEqual(byName('MessageBoxW').length, 1);
+  });
+
   it('parses the real tetros.asm example without throwing and finds its known labels', () => {
     const src = fs.readFileSync(path.join(FIXTURES, 'tetros.asm'), 'utf8');
     const doc = parseDocument('file:///tetros.asm', 1, src, 'fasm2');

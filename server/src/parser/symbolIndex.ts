@@ -73,6 +73,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   const includes: IncludeDirective[] = [];
   let formatDirective: string | undefined;
   let hasTopLevelOrg = false;
+  let inImportList = false;
 
   const blockStack: string[] = [];
   let lastGlobalLabel: string | undefined;
@@ -116,6 +117,43 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       // complete, directly assemblable program in fasmg, e.g. a flat "org 100h" .com file) ---
       if ((kw0 === 'org' || kw0 === 'section') && blockStack.length === 0) {
         hasTopLevelOrg = true;
+      }
+
+      // --- import <library nickname>, NAME,'exported name', NAME,'exported name', ... ---
+      // fasmg's Windows/PE packages (e.g. api/kernel32.inc, api/user32.inc — the standard way any
+      // real fasmg project imports OS/kernel functions) declare every imported function this way
+      // rather than as a label, so without this the name a program actually calls (e.g.
+      // `invoke ExitProcess, ...`) would have no known definition at all: no hover, no
+      // go-to-definition, despite compiling perfectly fine. The list is typically continued across
+      // many physical lines via a trailing "\", which the tokenizer (line-oriented, no macro
+      // expansion) never joins into one logical line — so this tracks that continuation itself,
+      // scanning for NAME,'string' pairs on the "import" line (after its library-nickname operand)
+      // and on every subsequent line for as long as the previous one ended with "\".
+      if (kw0 === 'import' || inImportList) {
+        const startIdx = kw0 === 'import' ? 2 : 0; // skip "import" itself and its library-nickname operand
+        for (let i = startIdx; i + 2 < tokens.length; i++) {
+          const nameTok = tokens[i];
+          const commaTok = tokens[i + 1];
+          const strTok = tokens[i + 2];
+          if (
+            nameTok.type === TokenType.Ident &&
+            commaTok.type === TokenType.Punct &&
+            commaTok.text === ',' &&
+            strTok.type === TokenType.String
+          ) {
+            symbols.push({
+              name: nameTok.text,
+              kind: SymbolKind.Constant,
+              range: lineRange(nameTok.line, nameTok.startChar, strTok.endChar),
+              nameRange: tokenRange(nameTok),
+              value: `imported as ${strTok.text}`,
+              uri,
+            });
+          }
+        }
+        const lastToken = tokens[tokens.length - 1];
+        inImportList = lastToken.type === TokenType.Punct && lastToken.text === '\\';
+        continue;
       }
 
       // --- macro NAME params... ---

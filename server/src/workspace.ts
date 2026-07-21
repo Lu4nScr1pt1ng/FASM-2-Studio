@@ -44,6 +44,17 @@ export class Workspace {
   private readonly referencesByName = new Map<string, SymbolReference[]>();
   private readonly contributions = new Map<string, Contribution>();
 
+  /** fasm2Studio.includePath, mirrored here so hover/completion/go-to-definition/entry-point
+   * detection can follow the same `include`s the real compiler would via the INCLUDE environment
+   * variable (see resolveIncludePath) — without this, a project relying on it (fasmg's own
+   * bundled Windows examples, among many others) has an effectively empty include graph as far as
+   * static analysis can see, even though it builds and runs perfectly correctly. */
+  private includeSearchPaths: string[] = [];
+
+  setIncludeSearchPaths(paths: string[]): void {
+    this.includeSearchPaths = paths;
+  }
+
   updateDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
     const parsed = parseDocument(uri, version, text, dialect);
     this.openDocuments.set(uri, parsed);
@@ -120,12 +131,28 @@ export class Workspace {
     }
   }
 
-  /** Resolves an `include '...'` path relative to the including file's directory. */
+  /**
+   * Resolves an `include '...'` path the same way fasmg itself does: relative to the including
+   * file's directory first, then falling back to each configured include search path in turn
+   * (fasmg's own INCLUDE environment variable equivalent — see setIncludeSearchPaths).
+   * fasmg accepts either path separator regardless of host OS ("the format of the path may depend
+   * on the operating system", per its manual) — Windows-authored sources like fasmg's own
+   * packages/x86/examples/windows/template.asm write `include 'api\kernel32.inc'`, which Node's
+   * own path module on Linux/macOS would otherwise treat as one literal filename containing a
+   * backslash rather than a subdirectory separator.
+   */
   private resolveIncludePath(fromUri: string, includePath: string): string | undefined {
     try {
+      const normalized = includePath.replace(/\\/g, '/');
       const fromFsPath = URI.parse(fromUri).fsPath;
-      const candidate = path.resolve(path.dirname(fromFsPath), includePath);
-      return fsSync.existsSync(candidate) ? candidate : undefined;
+      const candidate = path.resolve(path.dirname(fromFsPath), normalized);
+      if (fsSync.existsSync(candidate)) return candidate;
+
+      for (const searchDir of this.includeSearchPaths) {
+        const fromSearchDir = path.resolve(searchDir, normalized);
+        if (fsSync.existsSync(fromSearchDir)) return fromSearchDir;
+      }
+      return undefined;
     } catch {
       return undefined;
     }
