@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
+import { resolveEntryPointFsPath } from './entryPointResolver';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
 import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
@@ -20,44 +21,66 @@ function activeFasmFile(): string | undefined {
   return editor.document.uri.fsPath;
 }
 
+/**
+ * The active file may be a fragment (no "format" directive of its own, meant only to be
+ * `include`d) — resolves to the real entry point that should actually be built/run/debugged,
+ * auto-resolving when unambiguous and prompting when a workspace has several independent
+ * projects and this fragment's real target genuinely can't be guessed.
+ */
+async function resolveActiveEntryFile(file: string): Promise<string | undefined> {
+  if (!client) {
+    void vscode.window.showErrorMessage('FASM2 Studio: the language server is not ready yet — try again in a moment.');
+    return undefined;
+  }
+  return resolveEntryPointFsPath(client, file);
+}
+
 function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('fasm2Studio.build', async () => {
       const file = activeFasmFile();
-      if (file) await runBuildTask(file);
+      if (!file) return;
+      const entryFile = await resolveActiveEntryFile(file);
+      if (entryFile) await runBuildTask(entryFile);
     }),
 
     vscode.commands.registerCommand('fasm2Studio.buildAndRun', async () => {
       const file = activeFasmFile();
       if (!file) return;
-      const exitCode = await runBuildTask(file);
+      const entryFile = await resolveActiveEntryFile(file);
+      if (!entryFile) return;
+      const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
-        await runOutputBinary(getDefaultOutputPath(file));
+        await runOutputBinary(getDefaultOutputPath(entryFile));
       }
     }),
 
     vscode.commands.registerCommand('fasm2Studio.run', async () => {
       const file = activeFasmFile();
       if (!file) return;
-      await runOutputBinary(getDefaultOutputPath(file));
+      const entryFile = await resolveActiveEntryFile(file);
+      if (!entryFile) return;
+      await runOutputBinary(getDefaultOutputPath(entryFile));
     }),
 
     vscode.commands.registerCommand('fasm2Studio.debug', async () => {
       const file = activeFasmFile();
       if (!file) return;
+      const entryFile = await resolveActiveEntryFile(file);
+      if (!entryFile) return;
 
-      const exitCode = await runBuildTask(file, true);
+      const exitCode = await runBuildTask(entryFile, true);
       if (exitCode !== 0) return;
 
-      const program = getDefaultOutputPath(file);
-      await vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file)), {
+      const program = getDefaultOutputPath(entryFile);
+      await vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(entryFile)), {
         type: FASM_DEBUG_TYPE,
         request: 'launch',
         name: 'Debug FASM program',
-        asmFile: file,
+        asmFile: entryFile,
         program,
         listingFile: getListingPath(program),
-        cwd: path.dirname(file),
+        cwd: path.dirname(entryFile),
         stopOnEntry: true,
       });
     }),
@@ -122,7 +145,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 
   context.subscriptions.push(
-    vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider()),
+    vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(() => client)),
     vscode.debug.registerDebugAdapterDescriptorFactory(FASM_DEBUG_TYPE, new FasmDebugAdapterDescriptorFactory(context)),
   );
 

@@ -208,4 +208,64 @@ describe('Workspace indexing', () => {
       assert.strictEqual(ws.findEntryFile(uriLeaf), uriMain);
     });
   });
+
+  describe('listEntryPoints', () => {
+    it('lists every file with its own format directive, across multiple unrelated projects, and nothing else', async () => {
+      // Mirrors a real scenario found in fasmg's own example tree: several independent example
+      // programs (each its own entry point) sitting alongside shared fragments and each other,
+      // none including one another.
+      const uriA = await writeFile('projectA.asm', 'format binary\nstart:\n\tnop\n');
+      const uriB = await writeFile('projectB.asm', 'format binary\nstart:\n\tnop\n');
+      const uriFragment = await writeFile('shared-util.inc', 'HELPER = 1\n');
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriA, uriB, uriFragment], dialectAlwaysFasm2);
+
+      const entryPoints = ws.listEntryPoints();
+      assert.deepStrictEqual([...entryPoints].sort(), [uriA, uriB].sort());
+    });
+
+    it('returns an empty list when no known document has a format directive', async () => {
+      const uriFragment = await writeFile('orphan.inc', 'X = 1\n');
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriFragment], dialectAlwaysFasm2);
+
+      assert.deepStrictEqual(ws.listEntryPoints(), []);
+    });
+  });
+
+  describe('findReachableEntryPoints', () => {
+    it('finds the single entry point for a normal, unambiguous fragment', async () => {
+      const uriMain = await writeFile('cc.asm', "format ELF64 executable 3\ninclude 'lexer.asm'\n");
+      const uriFragment = await writeFile('lexer.asm', 'lex_source:\n\tnop\n');
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriMain, uriFragment], dialectAlwaysFasm2);
+
+      assert.deepStrictEqual(ws.findReachableEntryPoints(uriFragment), [uriMain]);
+    });
+
+    it('finds every unrelated entry point when a fragment is shared by more than one project (unlike findEntryFile, which silently picks just one)', async () => {
+      const uriShared = await writeFile('shared.inc', 'SHARED_CONST = 1\n');
+      const uriA = await writeFile('projectA.asm', "format binary\ninclude 'shared.inc'\n");
+      const uriB = await writeFile('projectB.asm', "format binary\ninclude 'shared.inc'\n");
+
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriShared, uriA, uriB], dialectAlwaysFasm2);
+
+      assert.deepStrictEqual(ws.findReachableEntryPoints(uriShared), [uriA, uriB].sort());
+      // findEntryFile still silently returns just one of them — the right choice for diagnostics
+      // (any reachable entry compiles the same fragment code the same way), but not for
+      // build/run/debug, which actually produces output and needs to know when that's ambiguous.
+      assert.ok([uriA, uriB].includes(ws.findEntryFile(uriShared)!));
+    });
+
+    it('returns an empty list for a genuinely orphaned fragment', async () => {
+      const uriOrphan = await writeFile('orphan.inc', 'X = 1\n');
+      const ws = new Workspace();
+      await ws.indexWorkspace([uriOrphan], dialectAlwaysFasm2);
+
+      assert.deepStrictEqual(ws.findReachableEntryPoints(uriOrphan), []);
+    });
+  });
 });

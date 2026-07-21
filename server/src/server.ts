@@ -126,6 +126,31 @@ connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: st
     .catch((err) => logHandlerError('indexWorkspaceFiles', err));
 });
 
+/**
+ * Lets the client resolve which real entry point (a file with its own top-level `format`
+ * directive) a given file's build/run/debug should actually target — the same resolution
+ * findEntryFile already does for diagnostics, exposed here so Build/Run/Debug can compile the
+ * entry point instead of a fragment that can't be compiled standalone.
+ */
+connection.onRequest(
+  'fasm2Studio/resolveEntryPoint',
+  (params: { uri: string }): { entryUri?: string; ambiguousEntryUris?: string[] } => {
+    const candidates = workspace.findReachableEntryPoints(params.uri);
+    if (candidates.length === 1) return { entryUri: candidates[0] };
+    if (candidates.length === 0) return {};
+    return { ambiguousEntryUris: candidates };
+  },
+);
+
+/**
+ * Every known entry point in the workspace, for when resolveEntryPoint comes back empty (an
+ * orphaned fragment, or one reachable from more than one unrelated project) — the client can
+ * offer this list and let the user pick instead of guessing which project they meant.
+ */
+connection.onRequest('fasm2Studio/listEntryPoints', (): { entryUris: string[] } => {
+  return { entryUris: workspace.listEntryPoints() };
+});
+
 // Standard LSP file-watcher notification, forwarded automatically by vscode-languageclient from
 // the client's vscode.workspace.createFileSystemWatcher (see clientOptions.synchronize.fileEvents
 // in extension.ts) — keeps the index in sync with files nobody has opened as an editor tab.

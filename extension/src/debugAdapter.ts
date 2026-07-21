@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { LanguageClient } from 'vscode-languageclient/node';
+import { resolveEntryPointFsPath } from './entryPointResolver';
 import { dialectFor, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
 
 export const FASM_DEBUG_TYPE = 'fasm';
@@ -30,6 +32,10 @@ export class FasmDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
 }
 
 export class FasmDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
+  /** A getter, not the client itself: the language client isn't started yet when this provider
+   * is constructed during activation, so the current value has to be looked up at call time. */
+  constructor(private readonly getClient: () => LanguageClient | undefined) {}
+
   provideDebugConfigurations(): vscode.DebugConfiguration[] {
     return [
       {
@@ -57,10 +63,21 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       config.asmFile = editor.document.uri.fsPath;
     }
 
-    const asmFile = config.asmFile as string;
+    let asmFile = config.asmFile as string;
     if (!asmFile) {
       void vscode.window.showErrorMessage('FASM debug: no source file specified (set "asmFile" in launch.json).');
       return undefined;
+    }
+
+    // asmFile may be a fragment (no "format" directive of its own) — resolve to the real entry
+    // point it should actually build/debug as, same as the FASM: Build/Run/Debug commands. If the
+    // language server isn't up yet, fall back to asmFile as-is rather than blocking the launch.
+    const client = this.getClient();
+    if (client) {
+      const entryFile = await resolveEntryPointFsPath(client, asmFile);
+      if (!entryFile) return undefined;
+      asmFile = entryFile;
+      config.asmFile = entryFile;
     }
 
     const dialect = await dialectFor(asmFile);

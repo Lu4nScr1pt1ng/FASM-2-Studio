@@ -172,6 +172,51 @@ export class Workspace {
    * Returns undefined if no reachable ancestor with a `format` directive is known (e.g. an
    * orphaned fragment, or the including file hasn't been indexed/opened yet).
    */
+  /**
+   * Every known document with its own top-level `format` directive — i.e. every file that's a
+   * real, independently-compilable entry point rather than a fragment meant only to be
+   * `include`d. Used when a file's own entry point can't be resolved unambiguously (an orphaned
+   * fragment reachable from more than one unrelated project, or from none at all) — instead of
+   * guessing, the caller can offer this list and let the user pick.
+   */
+  listEntryPoints(): string[] {
+    return this.allKnownDocuments()
+      .filter((doc) => doc.formatDirective !== undefined)
+      .map((doc) => doc.uri)
+      .sort();
+  }
+
+  /**
+   * Every entry point (file with its own top-level `format` directive) reachable from `uri` by
+   * walking `include` edges backward — usually exactly one, but a fragment shared by more than
+   * one unrelated project (each with its own entry point, neither including the other) can have
+   * several, and a genuinely orphaned fragment (or one whose includer isn't indexed/opened) can
+   * have none. Unlike `findEntryFile`, this doesn't stop at the first one found — callers that
+   * need to know about (or let the user resolve) ambiguity use this instead.
+   */
+  findReachableEntryPoints(uri: string): string[] {
+    const visited = new Set<string>();
+    const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
+    const found = new Set<string>();
+
+    while (queue.length > 0) {
+      const { uri: currentUri, depth } = queue.shift()!;
+      if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
+      visited.add(currentUri);
+
+      const doc = this.openDocuments.get(currentUri) ?? this.indexedDocuments.get(currentUri) ?? this.externalDiskCache.get(currentUri) ?? undefined;
+      if (doc?.formatDirective !== undefined) {
+        found.add(currentUri);
+        continue; // an entry point's own includers (if any) are a separate, unrelated concern
+      }
+
+      for (const includer of this.findIncluders(currentUri)) {
+        queue.push({ uri: includer, depth: depth + 1 });
+      }
+    }
+    return [...found].sort();
+  }
+
   findEntryFile(uri: string): string | undefined {
     const visited = new Set<string>();
     const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
