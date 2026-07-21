@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.18.0
+
+- Large performance pass over the language server's hot paths, each change verified with
+  before/after benchmarks on a 300-file synthetic workspace:
+  - Hover, completion, go-to-definition and signature help no longer re-scan every known document
+    (with a filesystem existence check per `include`) at every step of the entry-point walk —
+    include resolution is memoized (invalidated on watcher/setting changes) and backed by a
+    reverse-include index rebuilt lazily after edits. With 10-deep include chains: ~12 ms →
+    ~0.05 ms per request, and the full edit+hover cycle ~12 ms → ~0.6 ms.
+  - The tokenizer classifies characters with integer comparisons instead of per-character regex
+    tests — it re-runs over the whole document on every keystroke: ~3.1 ms → ~1.3 ms on a
+    5000-line file.
+  - Hover/signature-help lookups against the static data (instructions, registers, directives,
+    format keywords, size specifiers) are Map lookups now, not linear scans over the ~1300-entry
+    instruction list on every request.
+  - The live-buffer shadow tree that diagnostics compile from is built with concurrent symlink
+    creation instead of one-at-a-time awaits: ~26 ms → ~14 ms per diagnostics pass on a large
+    directory tree.
+- Fixed a real parser bug: `end struc` never popped the struc's macro frame, so after any
+  `struc ... end struc` the parser kept attributing later definitions to the dead frame — a
+  `local` name declared inside the struc could wrongly scope-capture an unrelated same-named
+  constant defined after it, and the struc's own locals never got their scope recorded at all.
+  Found while unifying the three near-identical `macro`/`calminstruction`/`struc` parsing blocks
+  into one (which is also what fixed it, since all three now share the same frame handling).
+
 ## 0.17.0
 
 - Symbolic constants (e.g. `FD_STDERR = 2`, `FD_STDOUT equ 1`, `define`/`redefine`, `:=`/`=:`) now

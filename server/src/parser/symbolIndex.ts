@@ -156,7 +156,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         if (idx !== -1) {
           while (blockStack.length > idx) {
             const popped = blockStack.pop();
-            if (popped === 'macro' || popped === 'calminstruction') {
+            if (popped === 'macro' || popped === 'calminstruction' || popped === 'struc') {
               const frame = macroFrames.pop();
               if (frame) {
                 for (const sym of frame.pendingSymbols) {
@@ -236,10 +236,26 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
-      // --- macro NAME params... ---
-      if (kw0 === 'macro' && tokens[1] && tokens[1].type === TokenType.Ident) {
+      // --- macro/calminstruction/struc NAME params... — the three macro-like block definitions,
+      // identical in shape (name with optional "?" weak / "!" unconditional markers, parameter
+      // list, body closed by "end <same keyword>"), all indexed as SymbolKind.Macro:
+      //   - "calminstruction": fasmg implements virtually every real x86 instruction this way
+      //     (e.g. the "fld?"/"fadd"-family/"xcall") — without this, none of them had any
+      //     SymbolDefinition at all, so hover/go-to-definition found nothing unless the name
+      //     happened to already be hardcoded in this extension's own static instructions.json.
+      //     A command-namespaced name ("calminstruction?.xcall?") additionally reduces to the
+      //     bare command name real call sites use (see calmCommandBareName).
+      //   - "struc": the core "labeled macroinstruction" directive that fasmg's own "struct"
+      //     convenience macro is itself built on top of (manual.txt section 9) — defined exactly
+      //     like "macro", just invoked as "label struc-name args" instead of a plain instruction.
+      //     Real code writes raw "struc" directly often enough (e.g. fasmg's own
+      //     packages/x86/include/format/pe.inc) that leaving it unrecognized would mean no
+      //     hover/go-to-definition for every one of those, unlike the "struct" wrapper macro
+      //     which already gets its own SymbolDefinition below.
+      if ((kw0 === 'macro' || kw0 === 'calminstruction' || kw0 === 'struc') && tokens[1] && tokens[1].type === TokenType.Ident) {
         const nameTok = tokens[1];
-        const name = baseName(nameTok.text);
+        const cleaned = baseName(nameTok.text);
+        const name = kw0 === 'calminstruction' ? (calmCommandBareName(cleaned) ?? cleaned) : cleaned;
         const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
         const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
         const sym: SymbolDefinition = {
@@ -259,64 +275,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         // localScope mechanism as `local` variables so it doesn't shadow, or get shadowed by, an
         // unrelated same-named instruction or macro elsewhere in the file.
         if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
-        blockStack.push('macro');
-        macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
-        continue;
-      }
-
-      // --- calminstruction NAME params... (fasmg implements virtually every real x86
-      // instruction this way, e.g. this very file's own "fld?"/"fadd"-family/"xcall" — without
-      // this, none of them had any SymbolDefinition at all, so hover/go-to-definition on a
-      // calminstruction-defined name found nothing unless it happened to already be hardcoded in
-      // this extension's own static instructions.json) ---
-      if (kw0 === 'calminstruction' && tokens[1] && tokens[1].type === TokenType.Ident) {
-        const nameTok = tokens[1];
-        const cleaned = baseName(nameTok.text);
-        const name = calmCommandBareName(cleaned) ?? cleaned;
-        const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
-        const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
-        const sym: SymbolDefinition = {
-          name,
-          kind: SymbolKind.Macro,
-          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
-          nameRange: tokenRange(nameTok),
-          params: paramsFromTokens(paramTokens),
-          isWeak,
-          isUnconditional,
-          uri,
-        };
-        symbols.push(sym);
-        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
-        blockStack.push('calminstruction');
-        macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
-        continue;
-      }
-
-      // --- struc NAME params... (the core "labeled macroinstruction" directive that fasmg's own
-      // "struct" convenience macro is itself built on top of, per manual.txt section 9 -- defined
-      // exactly like "macro", just invoked as "label struc-name args" instead of a plain
-      // instruction. Real code writes raw "struc" directly often enough (e.g. fasmg's own
-      // packages/x86/include/format/pe.inc) that leaving it unrecognized would mean no hover/
-      // go-to-definition for every one of those, unlike the "struct" wrapper macro which already
-      // gets its own SymbolDefinition above) ---
-      if (kw0 === 'struc' && tokens[1] && tokens[1].type === TokenType.Ident) {
-        const nameTok = tokens[1];
-        const name = baseName(nameTok.text);
-        const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
-        const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
-        const sym: SymbolDefinition = {
-          name,
-          kind: SymbolKind.Macro,
-          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
-          nameRange: tokenRange(nameTok),
-          params: paramsFromTokens(paramTokens),
-          isWeak,
-          isUnconditional,
-          uri,
-        };
-        symbols.push(sym);
-        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
-        blockStack.push('struc');
+        blockStack.push(kw0);
         macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
         continue;
       }

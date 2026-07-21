@@ -5,6 +5,15 @@ import { Workspace } from '../workspace';
 
 const instructions = instructionsData as InstructionEntry[];
 
+// Signature help re-fires on every typed character of an argument list — look mnemonics up by Map
+// instead of re-scanning the ~1300-entry instruction array each time. First entry per mnemonic
+// wins, matching the Array.find this replaces.
+const instructionByMnemonic = new Map<string, InstructionEntry>();
+for (const ins of instructions) {
+  const key = ins.mnemonic.toLowerCase();
+  if (!instructionByMnemonic.has(key)) instructionByMnemonic.set(key, ins);
+}
+
 const IDENT_RE = /[A-Za-z_.@$?][A-Za-z0-9_.@$?]*/;
 
 /**
@@ -93,7 +102,7 @@ export function getSignatureHelp(workspace: Workspace, uri: string, dialect: Dia
       return { signatures: [signature], activeSignature: 0, activeParameter };
     }
 
-    const ins = instructions.find((i) => i.mnemonic.toLowerCase() === callee.name.toLowerCase());
+    const ins = instructionByMnemonic.get(callee.name.toLowerCase());
     if (ins && ins.operands) {
       const paramLabels = ins.operands.split(',').map((p) => p.trim());
       const signature: SignatureInformation = {

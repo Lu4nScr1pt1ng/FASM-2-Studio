@@ -51,8 +51,28 @@ export class Workspace {
    * static analysis can see, even though it builds and runs perfectly correctly. */
   private includeSearchPaths: string[] = [];
 
+  /** Memoizes resolveIncludePath — the raw version costs one existsSync per candidate directory,
+   * and the include-graph walks below re-resolve the same (file, include) pairs on every
+   * hover/completion/diagnostic. Keyed by `fromDir\0includePath`; a null entry caches a failed
+   * resolution (those are the expensive ones to keep retrying). Cleared whenever on-disk reality
+   * may have changed: a watcher-driven create/change/delete, or new include search paths. */
+  private readonly includeResolutionCache = new Map<string, string | null>();
+
+  /** uri -> dirname(fsPath) memo for resolveIncludePath's cache key. A uri string's directory
+   * never changes, so this needs no invalidation — it just spares a URI.parse + path.dirname per
+   * include edge on the reverse-index rebuild that follows every edit. */
+  private readonly dirnameByUri = new Map<string, string>();
+
+  /** Reverse of every known document's `include` edges (resolved target uri -> including uris),
+   * so findIncluders is a Map lookup instead of a full scan over every document. Rebuilt lazily on
+   * the first query after any document changes (null = stale) — one O(docs × includes) pass over
+   * memoized resolutions, instead of that same pass per BFS node per request. */
+  private includersByTarget: Map<string, string[]> | null = null;
+
   setIncludeSearchPaths(paths: string[]): void {
     this.includeSearchPaths = paths;
+    this.includeResolutionCache.clear();
+    this.includersByTarget = null;
   }
 
   updateDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
@@ -105,6 +125,9 @@ export class Workspace {
 
   /** Re-indexes a single file from disk — used to react to workspace/didChangeWatchedFiles. */
   async reindexFile(uri: string, resolveDialect: DialectResolver): Promise<void> {
+    // A watcher event means a file appeared or changed — a previously-failed include resolution
+    // may now succeed, so cached resolutions can't be trusted anymore.
+    this.includeResolutionCache.clear();
     if (this.openDocuments.has(uri)) return;
     if (!(await this.readAndIndex(uri, resolveDialect))) {
       this.indexedDocuments.delete(uri);
@@ -113,6 +136,8 @@ export class Workspace {
   }
 
   removeIndexedFile(uri: string): void {
+    // The file is gone from disk — any cached resolution pointing at it is now wrong.
+    this.includeResolutionCache.clear();
     this.indexedDocuments.delete(uri);
     this.syncGlobalIndex(uri);
   }
@@ -144,15 +169,30 @@ export class Workspace {
   private resolveIncludePath(fromUri: string, includePath: string): string | undefined {
     try {
       const normalized = includePath.replace(/\\/g, '/');
-      const fromFsPath = URI.parse(fromUri).fsPath;
-      const candidate = path.resolve(path.dirname(fromFsPath), normalized);
-      if (fsSync.existsSync(candidate)) return candidate;
-
-      for (const searchDir of this.includeSearchPaths) {
-        const fromSearchDir = path.resolve(searchDir, normalized);
-        if (fsSync.existsSync(fromSearchDir)) return fromSearchDir;
+      let fromDir = this.dirnameByUri.get(fromUri);
+      if (fromDir === undefined) {
+        fromDir = path.dirname(URI.parse(fromUri).fsPath);
+        this.dirnameByUri.set(fromUri, fromDir);
       }
-      return undefined;
+      const cacheKey = `${fromDir}\0${normalized}`;
+      const cached = this.includeResolutionCache.get(cacheKey);
+      if (cached !== undefined) return cached ?? undefined;
+
+      let resolved: string | null = null;
+      const candidate = path.resolve(fromDir, normalized);
+      if (fsSync.existsSync(candidate)) {
+        resolved = candidate;
+      } else {
+        for (const searchDir of this.includeSearchPaths) {
+          const fromSearchDir = path.resolve(searchDir, normalized);
+          if (fsSync.existsSync(fromSearchDir)) {
+            resolved = fromSearchDir;
+            break;
+          }
+        }
+      }
+      this.includeResolutionCache.set(cacheKey, resolved);
+      return resolved ?? undefined;
     } catch {
       return undefined;
     }
@@ -176,16 +216,25 @@ export class Workspace {
 
   /** Every known document whose `include` resolves to `targetUri` — the reverse of `includes`. */
   private findIncluders(targetUri: string): string[] {
-    const includers: string[] = [];
-    for (const doc of this.allKnownDocuments()) {
-      for (const inc of doc.includes) {
-        if (this.resolveIncludeUri(doc.uri, inc.path) === targetUri) {
-          includers.push(doc.uri);
-          break;
+    if (!this.includersByTarget) {
+      const index = new Map<string, string[]>();
+      for (const doc of this.allKnownDocuments()) {
+        const seenTargets = new Set<string>();
+        for (const inc of doc.includes) {
+          const resolved = this.resolveIncludeUri(doc.uri, inc.path);
+          if (!resolved || seenTargets.has(resolved)) continue;
+          seenTargets.add(resolved);
+          let bucket = index.get(resolved);
+          if (!bucket) {
+            bucket = [];
+            index.set(resolved, bucket);
+          }
+          bucket.push(doc.uri);
         }
       }
+      this.includersByTarget = index;
     }
-    return includers;
+    return this.includersByTarget.get(targetUri) ?? [];
   }
 
   /**
@@ -241,8 +290,8 @@ export class Workspace {
     const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
     const found = new Set<string>();
 
-    while (queue.length > 0) {
-      const { uri: currentUri, depth } = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const { uri: currentUri, depth } = queue[head];
       if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
       visited.add(currentUri);
 
@@ -263,8 +312,8 @@ export class Workspace {
     const visited = new Set<string>();
     const queue: Array<{ uri: string; depth: number }> = [{ uri, depth: 0 }];
 
-    while (queue.length > 0) {
-      const { uri: currentUri, depth } = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const { uri: currentUri, depth } = queue[head];
       if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
       visited.add(currentUri);
 
@@ -315,8 +364,8 @@ export class Workspace {
     const visited = new Set<string>();
     const queue: Array<{ uri: string; depth: number }> = [{ uri: startUri, depth: 0 }];
 
-    while (queue.length > 0) {
-      const { uri: currentUri, depth } = queue.shift()!;
+    for (let head = 0; head < queue.length; head++) {
+      const { uri: currentUri, depth } = queue[head];
       if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
       visited.add(currentUri);
 
@@ -354,6 +403,9 @@ export class Workspace {
    * for it (open buffer > indexed-from-disk > external-disk-cache), retracting the previous
    * contribution first. O(that document's own symbol/reference count), never the whole workspace. */
   private syncGlobalIndex(uri: string): void {
+    // Every document mutation (open/edit/index/close/remove/external-load) flows through here —
+    // the one choke point where the reverse-include index can go stale.
+    this.includersByTarget = null;
     this.retractFromGlobalIndex(uri);
     const doc = this.openDocuments.get(uri) ?? this.indexedDocuments.get(uri) ?? this.externalDiskCache.get(uri) ?? undefined;
     if (doc) this.addToGlobalIndex(doc);

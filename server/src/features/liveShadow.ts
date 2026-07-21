@@ -74,12 +74,18 @@ async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promi
   for (const segment of segments) {
     await fs.promises.mkdir(shadowDir, { recursive: true });
     const entries = await fs.promises.readdir(realDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name === segment) continue;
-      await fs.promises
-        .symlink(path.join(realDir, entry.name), path.join(shadowDir, entry.name), entry.isDirectory() ? 'dir' : 'file')
-        .catch(() => undefined);
-    }
+    // Symlinks within one directory are independent — created concurrently, since this runs on
+    // every debounced diagnostics pass and an ancestor directory can easily hold hundreds of
+    // entries (each level mirrors all of that ancestor's siblings).
+    await Promise.all(
+      entries
+        .filter((entry) => entry.name !== segment)
+        .map((entry) =>
+          fs.promises
+            .symlink(path.join(realDir, entry.name), path.join(shadowDir, entry.name), entry.isDirectory() ? 'dir' : 'file')
+            .catch(() => undefined),
+        ),
+    );
     realDir = path.join(realDir, segment);
     shadowDir = path.join(shadowDir, segment);
   }
@@ -91,16 +97,20 @@ async function mirrorWithOverride(realDir: string, shadowDir: string, overrideRe
   const entries = await fs.promises.readdir(realDir, { withFileTypes: true });
   const [next, ...rest] = overrideRelParts;
 
-  for (const entry of entries) {
-    const shadowPath = path.join(shadowDir, entry.name);
-    if (entry.name !== next) {
-      await fs.promises.symlink(path.join(realDir, entry.name), shadowPath, entry.isDirectory() ? 'dir' : 'file');
-      continue;
-    }
-    if (rest.length === 0) {
-      await fs.promises.writeFile(shadowPath, overrideContent, 'utf8');
-    } else {
-      await mirrorWithOverride(path.join(realDir, entry.name), shadowPath, rest, overrideContent);
-    }
-  }
+  // Every entry is written to a distinct shadow path, so they can all proceed concurrently.
+  // A symlink failure still rejects the whole mirror (unlike mirrorAncestorChain's best-effort
+  // links) — a missing sibling here could silently change which file an `include` resolves to,
+  // so the caller's fall-back-to-real-file path is the safe answer.
+  await Promise.all(
+    entries.map((entry) => {
+      const shadowPath = path.join(shadowDir, entry.name);
+      if (entry.name !== next) {
+        return fs.promises.symlink(path.join(realDir, entry.name), shadowPath, entry.isDirectory() ? 'dir' : 'file');
+      }
+      if (rest.length === 0) {
+        return fs.promises.writeFile(shadowPath, overrideContent, 'utf8');
+      }
+      return mirrorWithOverride(path.join(realDir, entry.name), shadowPath, rest, overrideContent);
+    }),
+  );
 }

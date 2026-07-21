@@ -29,16 +29,40 @@ export interface Token {
 // tokenizer split it into Ident("BackupRead") + Punct("%"), so the "=" that should immediately
 // follow the identifier ends up in the wrong token slot and the whole line was silently never
 // recognized as a constant definition at all.
-const IDENT_START = /[A-Za-z_.@$?%]/;
-const IDENT_PART = /[A-Za-z0-9_.@$?%]/;
-const DIGIT = /[0-9]/;
-// manual.txt's "Fundamental syntax rules": "the numbers are also allowed to contain underscores or
-// single quotes to act as a separator or padding" (e.g. "1'000'000") — a number-only allowance,
-// not a general identifier one, since "'" is otherwise the string-quote character. Without this, a
-// quote embedded in an already-started number token fell through to the *outer* loop's quote
-// branch, which doesn't know it's mid-number and starts an unrelated string there instead —
-// mangling the rest of the number into Number("1") + String("'000'") + Number("000").
-const NUMBER_PART = /[A-Za-z0-9_.@$?%']/;
+// Char-code tests rather than regexes: this loop runs over the entire document on every keystroke,
+// and a per-character RegExp.test is several times slower than integer comparisons. The character
+// sets are: identifiers may contain [A-Za-z0-9_.@$?%] (and may not *start* with a digit); numbers
+// additionally allow "'" — per manual.txt's "Fundamental syntax rules", "the numbers are also
+// allowed to contain underscores or single quotes to act as a separator or padding" (e.g.
+// "1'000'000") — a number-only allowance, not a general identifier one, since "'" is otherwise the
+// string-quote character. Without it, a quote embedded in an already-started number token fell
+// through to the *outer* loop's quote branch, which doesn't know it's mid-number and starts an
+// unrelated string there instead — mangling the rest of the number into
+// Number("1") + String("'000'") + Number("000").
+function isDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39; // 0-9
+}
+
+function isIdentStart(code: number): boolean {
+  return (
+    (code >= 0x61 && code <= 0x7a) || // a-z
+    (code >= 0x41 && code <= 0x5a) || // A-Z
+    code === 0x5f || // _
+    code === 0x2e || // .
+    code === 0x40 || // @
+    code === 0x24 || // $
+    code === 0x3f || // ?
+    code === 0x25 // %
+  );
+}
+
+function isIdentPart(code: number): boolean {
+  return isIdentStart(code) || isDigit(code);
+}
+
+function isNumberPart(code: number): boolean {
+  return isIdentPart(code) || code === 0x27; // '
+}
 
 /** Tokenizes a single line. Strings and comments never span lines in fasm syntax. */
 export function tokenizeLine(text: string, line: number): Token[] {
@@ -79,16 +103,18 @@ export function tokenizeLine(text: string, line: number): Token[] {
       continue;
     }
 
-    if (DIGIT.test(ch)) {
+    const code = text.charCodeAt(i);
+
+    if (isDigit(code)) {
       const start = i;
-      while (i < len && NUMBER_PART.test(text[i])) i++;
+      while (i < len && isNumberPart(text.charCodeAt(i))) i++;
       tokens.push({ type: TokenType.Number, text: text.slice(start, i), line, startChar: start, endChar: i });
       continue;
     }
 
-    if (IDENT_START.test(ch)) {
+    if (isIdentStart(code)) {
       const start = i;
-      while (i < len && IDENT_PART.test(text[i])) i++;
+      while (i < len && isIdentPart(text.charCodeAt(i))) i++;
       tokens.push({ type: TokenType.Ident, text: text.slice(start, i), line, startChar: start, endChar: i });
       continue;
     }

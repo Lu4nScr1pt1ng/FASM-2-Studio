@@ -88,6 +88,21 @@ describe('symbolIndex', () => {
     assert.strictEqual(sym.params, 'arg');
   });
 
+  it('"end struc" closes the struc\'s macro frame, so a later top-level constant is not scoped to it', () => {
+    // "struc" opens the same kind of frame as "macro" (it can contain `local` declarations), but
+    // the end-of-block handler used to pop the frame only for "macro"/"calminstruction" — after
+    // any "end struc", every later definition in the file was silently attributed to the dead
+    // frame, so a `local`-declared name in the struc could wrongly scope-capture an unrelated
+    // same-named constant defined after it.
+    const src = ['struc holder val', '\tlocal size', '\tsize = val', 'end struc', 'size = 99'].join('\n');
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const after = doc.symbols.filter((s) => s.name === 'size' && s.range.startLine === 4);
+    assert.strictEqual(after.length, 1);
+    assert.strictEqual(after[0].localScope, undefined, 'a top-level constant after "end struc" must not inherit the struc\'s local scope');
+    const inside = doc.symbols.find((s) => s.name === 'size' && s.range.startLine === 2);
+    assert.ok(inside?.localScope, 'the `local` constant inside the struc body should still be scoped to it');
+  });
+
   it('indexes "proc NAME params" (the standard proc32.inc/proc64.inc package) as a real Label symbol', () => {
     // Mirrors real usage across virtually every fasmg Windows program, e.g. fasm2's own
     // source/ide/windows/fasmgw.asm: "proc MainWindow hwnd,wmsg,wparam,lparam". The "proc?" macro's

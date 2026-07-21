@@ -17,6 +17,27 @@ const registerFamilies = registerFamiliesData as RegisterFamilyEntry[];
 const formatKeywords = formatKeywordsData as FormatKeywordEntry[];
 const sizeSpecifiers = sizeSpecifiersData as SizeSpecifierEntry[];
 
+/** Groups `entries` by lowercased name — hover fires on every cursor rest, so each family is
+ * looked up by Map instead of re-scanning its whole array (instructions alone is ~1300 entries)
+ * on every request. Duplicate names (e.g. an instruction's several operand forms, a directive
+ * defined once per dialect) stay together in one bucket. */
+function byLowerName<T>(entries: T[], name: (entry: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const entry of entries) {
+    const key = name(entry).toLowerCase();
+    const bucket = map.get(key);
+    if (bucket) bucket.push(entry);
+    else map.set(key, [entry]);
+  }
+  return map;
+}
+
+const instructionsByMnemonic = byLowerName(instructions, (i) => i.mnemonic);
+const registersByName = byLowerName(registers, (r) => r.name);
+const sizeSpecifiersByName = byLowerName(sizeSpecifiers, (s) => s.name);
+const directivesByName = byLowerName(directives, (d) => d.name);
+const formatKeywordsByName = byLowerName(formatKeywords, (f) => f.name);
+
 // Built-in pseudo-variables of the "expression" symbol class — never user-defined, so they have no
 // SymbolDefinition anywhere to look up; just a fixed, small set worth documenting directly.
 const SPECIAL_SYMBOLS: Record<string, string> = {
@@ -132,19 +153,19 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   const structFieldHere = currentDoc?.symbols.find((s) => s.name === word && s.isStructField);
   if (structFieldHere) return markdown(renderSymbol(structFieldHere, uri, false));
 
-  const ins = instructions.filter((i) => i.mnemonic.toLowerCase() === lower);
-  if (ins.length > 0) return markdown(renderInstructions(ins));
+  const ins = instructionsByMnemonic.get(lower);
+  if (ins) return markdown(renderInstructions(ins));
 
-  const reg = registers.find((r) => r.name.toLowerCase() === lower);
+  const reg = registersByName.get(lower)?.[0];
   if (reg) return markdown(renderRegister(reg));
 
-  const size = sizeSpecifiers.find((s) => s.name.toLowerCase() === lower);
+  const size = sizeSpecifiersByName.get(lower)?.[0];
   if (size) return markdown(renderSizeSpecifier(size));
 
-  const dir = directives.find((d) => d.name.toLowerCase() === lower && (d.dialect === 'both' || d.dialect === dialect));
+  const dir = directivesByName.get(lower)?.find((d) => d.dialect === 'both' || d.dialect === dialect);
   if (dir) return markdown(renderDirective(dir));
 
-  const fmt = formatKeywords.find((f) => f.name.toLowerCase() === lower);
+  const fmt = formatKeywordsByName.get(lower)?.[0];
   if (fmt) return markdown(renderTagged(fmt.name, fmt.category, fmt.summary));
 
   for (const parsed of workspace.walkIncludeGraph(uri, dialect)) {
