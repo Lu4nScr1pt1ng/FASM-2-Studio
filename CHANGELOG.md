@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0
+
+- Fixed hover and go-to-definition for imported OS/kernel functions (e.g. Windows API calls via
+  `kernel32.inc`/`user32.inc`), found by validating against fasmg's own real Windows examples.
+  Three compounding gaps: the `import kernel32,\ Name,'Name', ...` macro pattern every one of
+  fasmg's own API packages uses wasn't recognized as a symbol definition at all; `include
+  'api\kernel32.inc'`-style Windows path separators never resolved on Linux/macOS, since Node's
+  own path module treats a backslash as a literal filename character there, not a separator (the
+  real compiler was unaffected, since it normalizes this itself); and static analysis had no
+  equivalent of the `fasm2Studio.includePath` fallback just added for the compiler invocation.
+  Together these meant hovering an imported API function showed nothing, or worse, the *wrong*
+  definition — pulled from some unrelated project that happens to declare a same-named symbol the
+  old-fashioned way. Verified end-to-end against several real examples: hover and go-to-definition
+  on `ExitProcess`/`DialogBoxParam`/`SwapBuffers`/`GetClientRect` now each resolve to exactly one,
+  correct location.
+
 ## 0.8.0
 
 - Added `fasm2Studio.includePath`, forwarded as the compiler's `INCLUDE` environment variable.
