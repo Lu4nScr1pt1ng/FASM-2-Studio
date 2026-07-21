@@ -74,9 +74,9 @@ describe('fasm TextMate grammar', () => {
     const offsetScopes = scopesOf(lines[2], 'offset');
     assert.ok(offsetScopes.some((s) => s.startsWith('variable.other.member')), `expected "offset" to be a struct member, got: ${offsetScopes}`);
 
-    // The size specifier after a field name is still recognized as such.
+    // The data directive after a field name is still recognized as one.
     const ddScopes = scopesOf(lines[1], 'dd');
-    assert.ok(ddScopes.some((s) => s.includes('directive')), `expected "dd" to still be tagged as a directive inside the struct body, got: ${ddScopes}`);
+    assert.ok(ddScopes.some((s) => s.startsWith('storage.type')), `expected "dd" to still be tagged as a data directive inside the struct body, got: ${ddScopes}`);
 
     const endsScopes = scopesOf(lines[4], 'ends');
     assert.ok(endsScopes.some((s) => s.startsWith('keyword.control')), `expected "ends" to be a keyword, got: ${endsScopes}`);
@@ -87,5 +87,34 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines("segment '.data' data readable writeable\n");
     const scopes = scopesOf(lines[0], 'segment');
     assert.ok(scopes.some((s) => s.includes('directive')), `expected "segment" outside a struct to still be a directive, got: ${scopes}`);
+  });
+
+  it('tags data-declaring directives (db/dw/dd/...) with the storage.type family, same as size specifiers', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines('msg db "hi",0\n');
+    const scopes = scopesOf(lines[0], 'db');
+    assert.ok(scopes.some((s) => s === 'storage.type.data.fasm'), `expected "db" to be storage.type.data.fasm, got: ${scopes}`);
+  });
+
+  it('tags CALM sub-language commands distinctly from ordinary directives and instructions', async function () {
+    // Mirrors fasmg's own real calminstruction bodies (e.g. packages/x86/include/cpu/x86.inc):
+    // match/check/emit/jyes/exit are CALM commands, a genuinely different sublanguage from both
+    // regular directives and x86 mnemonics — hover already tags them as "CALM command" distinctly;
+    // the grammar should color them distinctly too instead of lumping them in as generic keywords.
+    this.timeout(10000);
+    const lines = await tokenizeLines('calminstruction foo?\n\tmatch a,b\n\tcheck a eq b\n\tjyes done\n\temit 1\n\texit\n    done:\nend calminstruction\n');
+    for (const [lineIdx, word] of [[0, 'calminstruction'], [1, 'match'], [2, 'check'], [3, 'jyes'], [4, 'emit'], [5, 'exit']] as const) {
+      const scopes = scopesOf(lines[lineIdx], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.other.calm.fasm', `expected "${word}" to be a CALM command, got: ${scopes}`);
+    }
+  });
+
+  it('does not steal "call" or "jno" from the real x86 instructions of the same name, despite both also being CALM commands', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines('\tcall my_function\n\tjno .skip\n');
+    const callScopes = scopesOf(lines[0], 'call');
+    assert.strictEqual(callScopes[callScopes.length - 1], 'keyword.other.mnemonic.fasm', `expected "call" to stay a mnemonic, got: ${callScopes}`);
+    const jnoScopes = scopesOf(lines[1], 'jno');
+    assert.strictEqual(jnoScopes[jnoScopes.length - 1], 'keyword.other.mnemonic.fasm', `expected "jno" to stay a mnemonic, got: ${jnoScopes}`);
   });
 });

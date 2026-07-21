@@ -11,6 +11,8 @@
     { "include": "#struct-body" },
     { "include": "#macro-struct-definition" },
     { "include": "#constant-definition" },
+    { "include": "#calm-commands" },
+    { "include": "#data-directives" },
     { "include": "#directives" },
     { "include": "#format-keywords" },
     { "include": "#size-specifiers" },
@@ -100,6 +102,7 @@
         { "include": "#numbers" },
         { "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)", "captures": { "1": { "name": "variable.other.member.fasm" } } },
         { "include": "#size-specifiers" },
+        { "include": "#data-directives" },
         { "include": "#directives" },
         { "include": "#operators" }
       ]
@@ -122,9 +125,19 @@
         }
       ]
     },
+    "calm-commands": {
+      "comment": "fasmg's CALM (Compiled Assembly-Like Macro) sub-language, used inside calminstruction/postpone bodies — kept as its own scope (matching hover's distinct \"CALM command\" tag) rather than lumped in with ordinary directives, since it's a genuinely different sublanguage. \"call\" and \"jno\" are deliberately left out despite also being CALM commands: both are far more commonly the real x86 CALL/JNO instructions, and this grammar has no notion of \"inside a calminstruction body\" to disambiguate the two.",
+      "name": "keyword.other.calm.fasm",
+      "match": "(?i)\\b(calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|jump|jyes|exit|publish|transform|stringify|take|taketext|initsym)\\b"
+    },
+    "data-directives": {
+      "comment": "Directives that reserve/declare typed storage (db/dw/dd/... and their r-prefixed \"reserve\" counterparts) get the same storage.type family as #size-specifiers, since they're the same underlying concept (a type/width), just declaring storage instead of just naming a width.",
+      "name": "storage.type.data.fasm",
+      "match": "(?i)\\b(db|dw|dd|dp|df|dq|dt|ddq|dqq|ddqq|du|rb|rw|rd|rp|rf|rq|rt|rdq|rqq|rdqq|file)\\b"
+    },
     "directives": {
       "name": "keyword.control.directive.fasm",
-      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|at|db|dw|dd|dp|df|dq|dt|ddq|dqq|ddqq|du|rb|rw|rd|rp|rf|rq|rt|rdq|rqq|rdqq|file|label)\\b"
+      "match": "(?i)\\b(format|use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|define|redefine|restore|align|times|at|label)\\b"
     },
     "size-specifiers": {
       "name": "storage.type.fasm",
@@ -139,7 +152,7 @@
       "match": "(?i)\\b(xmm1[0-5]|xmm[0-9]|ymm[0-7]|zmm[0-3]|r1[0-5][dwb]?|r[89][dwb]?|spl|bpl|sil|dil|e[a-d]x|e[sb]p|e[sd]i|r[a-d]x|r[sb]p|r[sd]i|st[0-7]|mm[0-7]|cr[0-4]|cr8|dr[0-3]|dr[67]|k[0-7]|[a-d][lh]|[a-d]x|sp|bp|si|di|rip|eip|ip|cs|ds|es|fs|gs|ss)\\b"
     },
     "mnemonics": {
-      "name": "keyword.mnemonic.fasm",
+      "name": "keyword.other.mnemonic.fasm",
       "match": "(?i)\\b(cmpxchg16b|vzeroupper|cmpxchg8b|sysenter|syscall|cmpxchg|vmovaps|movsxd|popcnt|loopne|cmovne|movaps|movups|movapd|movdqa|movdqu|movzx|movsx|pushf|lzcnt|tzcnt|jecxz|jrcxz|loope|setne|cmove|cmovg|cmovl|cpuid|rdtsc|movsb|movsw|movsd|movsq|stosb|stosw|stosd|stosq|repne|leave|enter|movss|addss|addps|subss|mulss|divss|wrmsr|rdmsr|xchg|push|popf|imul|idiv|test|shld|shrd|call|retn|retf|jcxz|loop|sete|setg|setl|seta|setb|int3|movs|cmps|scas|stos|lods|repe|lock|xadd|cwde|cdqe|wait|fstp|fadd|fsub|fmul|fdiv|pxor|pand|mov|lea|pop|add|adc|sub|sbb|inc|dec|neg|mul|div|cmp|and|xor|not|shl|sal|shr|sar|rol|ror|rcl|rcr|bts|btr|btc|bsf|bsr|jmp|ret|jne|jnz|jge|jle|jae|jbe|jnc|jno|jns|jnp|nop|hlt|int|cld|std|clc|stc|cmc|cli|sti|rep|cbw|cwd|cdq|cqo|fld|fst|por|out|or|bt|je|jz|jg|jl|ja|jb|jc|jo|js|jp|in)\\b"
     },
     "operators": {
