@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, diagnostics, build tasks, and real gdb/lldb debugging for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",

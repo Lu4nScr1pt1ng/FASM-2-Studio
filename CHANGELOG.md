@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- Compiler auto-detection now also checks well-known install directories not on `PATH`
+  (`~/.local/bin` on Linux/macOS, plus Homebrew's paths on macOS and scoop/chocolatey's shim
+  directories on Windows), fixing diagnostics/build/debug silently not finding fasm2/fasm1 when
+  VS Code is launched in a way that doesn't inherit your shell's `PATH` additions.
+
 ## 0.2.3
 
 - Fixed: `FASM: Debug` could fail with "Could not find the task 'fasm: Debug build (active file)'"
