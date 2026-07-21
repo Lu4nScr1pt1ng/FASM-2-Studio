@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { parseDocument } from './parser/symbolIndex';
-import { Dialect, ParsedDocument, SymbolDefinition, SymbolReference } from './types';
+import { Dialect, ParsedDocument, SymbolDefinition, SymbolKind, SymbolReference } from './types';
 
 const MAX_INCLUDE_DEPTH = 8;
 const MAX_INDEXED_FILE_BYTES = 2 * 1024 * 1024; // guard against accidentally indexing huge/binary files
@@ -370,6 +370,13 @@ export class Workspace {
       // same-named local from a completely different macro. It's still fully searchable via
       // walkIncludeGraph-based lookups scoped to the position that declared it.
       if (sym.localScope) continue;
+      // fasmg's anonymous-macro name is the bare character "?" (see baseName's own doc comment)
+      // — always meant to be file-local in intent even without an explicit `local`, and never
+      // referenced by name across files. Bare "?" is also, unrelatedly, extremely common as the
+      // "reserve, uninitialized" value placeholder (e.g. "dd ?" in any struct/data declaration),
+      // so without this exclusion, hovering *that* placeholder anywhere in the entire workspace
+      // would surface some unrelated file's anonymous macro definition as if it were relevant.
+      if (sym.kind === SymbolKind.Macro && sym.name === '?') continue;
       let bucket = this.symbolsByName.get(sym.name);
       if (!bucket) {
         bucket = [];

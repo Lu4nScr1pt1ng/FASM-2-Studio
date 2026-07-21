@@ -244,6 +244,27 @@ describe('symbolIndex', () => {
     assert.strictEqual(byName('var')[0].definedVia, 'redefine');
   });
 
+  it('recognizes "load NAME[:size] from ADDRESS" as a constant definition', () => {
+    // Mirrors fasmg's own proc64.inc: "load value:byte from area:pointer" inside "initlocal".
+    const src = 'load value:byte from area:pointer';
+    const doc = parseDocument('file:///load.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'value');
+    assert.strictEqual(sym?.definedVia, 'load');
+    assert.match(sym!.value!, /area/);
+    assert.match(sym!.value!, /pointer/);
+  });
+
+  it('recognizes "NAME::" as a distinct area label, scoped like any other local when declared inside a macro', () => {
+    // Mirrors fasmg's own proc64.inc: "area::" inside "initlocal", used only to address `load`'s
+    // AREA:offset addressing mode.
+    const src = ['macro initlocal', '\tlocal area', '\tarea::', '\tdb 1', 'end macro'].join('\n');
+    const doc = parseDocument('file:///arealabel.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'area');
+    assert.strictEqual(sym?.kind, SymbolKind.Label);
+    assert.strictEqual(sym?.isAreaLabel, true);
+    assert.ok(sym?.localScope, 'expected "area" to be scoped to the enclosing macro like any other local');
+  });
+
   it('strips a trailing "?" from a constant name defined via any operator, not just macro/struct names', () => {
     // The manual's own example: "xor?.mask? := 10101010b" — the same weak/overridable "?" suffix
     // convention macro names use also applies to symbolic constants.

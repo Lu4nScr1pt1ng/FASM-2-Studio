@@ -325,6 +325,27 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
+      // --- load NAME[:size] from ADDRESS (defines NAME by reading bytes back out of an output
+      // area, e.g. fasmg's own packages/x86/include/macro/proc64.inc's
+      // "load value:byte from area:pointer") ---
+      if (kw0 === 'load' && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        const name = baseName(nameTok.text);
+        const fromIdx = tokens.findIndex((t) => lower(t) === 'from');
+        const sym: SymbolDefinition = {
+          name,
+          kind: SymbolKind.Constant,
+          range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
+          nameRange: tokenRange(nameTok),
+          value: fromIdx >= 0 ? tokens.slice(fromIdx + 1).map((t) => t.text).join(' ') : undefined,
+          definedVia: 'load',
+          uri,
+        };
+        symbols.push(sym);
+        enclosingLocalFrame(name)?.pendingSymbols.push(sym);
+        continue;
+      }
+
       // --- NAME db/dw/dd/dq/dt/du/rb/rw/rd/rq/file ... (implicit data-label, no colon) ---
       if (
         t0.type === TokenType.Ident &&
@@ -349,17 +370,50 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
+      // --- NAME:: (area label — only meaningful as the target of `load`'s AREA:offset
+      // addressing mode, e.g. fasmg's own packages/x86/include/macro/proc64.inc's "area::") ---
+      // Must be checked before the plain "NAME:" pattern below: that one only looks at the first
+      // ":" token, so "area::" would otherwise match it as an ordinary label and strand the
+      // second ":" unrecognized.
+      if (
+        t0.type === TokenType.Ident &&
+        tokens[1]?.type === TokenType.Punct &&
+        tokens[1].text === ':' &&
+        tokens[2]?.type === TokenType.Punct &&
+        tokens[2].text === ':' &&
+        tokens[1].endChar === tokens[2].startChar
+      ) {
+        const isLocal = t0.text.startsWith('.');
+        const sym: SymbolDefinition = {
+          name: t0.text,
+          kind: isLocal ? SymbolKind.LocalLabel : SymbolKind.Label,
+          range: lineRange(t0.line, t0.startChar, tokens[2].endChar),
+          nameRange: tokenRange(t0),
+          parentLabel: isLocal ? lastGlobalLabel : undefined,
+          isAreaLabel: true,
+          uri,
+        };
+        symbols.push(sym);
+        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
+        if (!isLocal) lastGlobalLabel = t0.text;
+
+        collectReferences(tokens.slice(3), uri, references);
+        continue;
+      }
+
       // --- NAME: (label, global or local) ---
       if (t0.type === TokenType.Ident && tokens[1] && tokens[1].type === TokenType.Punct && tokens[1].text === ':') {
         const isLocal = t0.text.startsWith('.');
-        symbols.push({
+        const sym: SymbolDefinition = {
           name: t0.text,
           kind: isLocal ? SymbolKind.LocalLabel : SymbolKind.Label,
           range: lineRange(t0.line, t0.startChar, tokens[1].endChar),
           nameRange: tokenRange(t0),
           parentLabel: isLocal ? lastGlobalLabel : undefined,
           uri,
-        });
+        };
+        symbols.push(sym);
+        enclosingLocalFrame(t0.text)?.pendingSymbols.push(sym);
         if (!isLocal) lastGlobalLabel = t0.text;
 
         // References may continue on the same line after the colon (e.g. "start: mov eax,1").

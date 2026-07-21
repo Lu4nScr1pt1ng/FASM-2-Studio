@@ -41,7 +41,15 @@ export interface SymbolDefinition {
    * - "redefine" like "define", but discards the previous value like "reequ"/"=".
    * Undefined for non-constant symbol kinds.
    */
-  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine';
+  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine' | 'load';
+  /**
+   * Set for a label declared with "::" instead of ":" — a special "area label" fasmg uses only to
+   * address `load`'s alternate addressing mode (`load NAME:size from AREA_LABEL:offset`), which
+   * can read bytes generated later in the very same area (unlike plain-address `load`, restricted
+   * to bytes already emitted). Its own value isn't meant to be used directly like an ordinary
+   * label's. Only meaningful for SymbolKind.Label.
+   */
+  isAreaLabel?: boolean;
   /**
    * Set when this symbol was declared via `local` inside a macro body — fasmg gives every macro
    * invocation a fresh, hygienic instance of each `local` name, so e.g. `value` declared this way

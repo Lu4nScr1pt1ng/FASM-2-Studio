@@ -380,6 +380,22 @@ describe('getHover', () => {
       assert.match(value(getHover(local, mainUri, 'fasm2', '%%')), /total number of repetitions/);
     });
 
+    it('explains the overloaded bare "?" directly instead of resolving it as a symbol, since it is virtually always the uninitialized-data placeholder, not the unrelated anonymous-macro name', async () => {
+      // Mirrors a real, confirmed bug: fasmg's own packages/x86/include/equates/user64.inc has a
+      // nameless "dd ?" field (WINDOWPOS), and hovering that placeholder "?" used to resolve to a
+      // completely unrelated anonymous macro ("macro ? line&") defined elsewhere in the same
+      // reachable include graph (e.g. packages/x86/include/macro/proc64.inc's own "locals?").
+      const src = ['format binary', 'macro ? line&', '\tline', 'end macro', 'struct POINT', '\tx dd ?', 'ends'].join('\n');
+      const mainUri = await writeFile('main.asm', src);
+      const local = new Workspace();
+      local.updateDocument(mainUri, 1, src, 'fasm2');
+
+      const v = value(getHover(local, mainUri, 'fasm2', '?'));
+      assert.match(v, /Overloaded token/);
+      assert.match(v, /uninitialized.*placeholder/i);
+      assert.doesNotMatch(v, /\*Macro\*/);
+    });
+
     it('documents "~"/"&"/"|" as logical-expression operators, distinct from macro-parameter "&" and arithmetic and/or/not', async () => {
       // Mirrors real usage in fasmg's own packages/x86/include/macro/com64.inc: "if ~ defined
       // Interface#.com.interface".
