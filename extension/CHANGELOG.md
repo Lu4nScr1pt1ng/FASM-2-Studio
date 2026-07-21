@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0
+
+- `FASM: Build`/`Run`/`Debug` now resolve the real entry point instead of always compiling
+  whatever file happens to be active. Editing a shared fragment (no `format` directive of its
+  own) auto-resolves to the one project that includes it; if it's genuinely reachable from more
+  than one unrelated project, or from none at all, you're prompted to pick which entry point you
+  meant instead of the wrong (or no) project silently getting built.
+- Added `.alm` to the recognized file extensions (a real fasmg source extension, e.g.
+  `packages/x86-2/iev.alm`, previously not treated as fasm at all).
+- Fixed a crash: fasmg's anonymous-macro idiom (`macro ? args`, used throughout fasmg's own
+  packages) made "Outline"/document symbols fail outright with "name must not be falsy".
+- Added missing instructions found against the real fasmg source tree: `vaddpd` and the rest of
+  its AVX arithmetic family, `loadall`, the full `lodsb`/`lodsw`/`lodsd`/`lodsq` and
+  `cmps`/`scas` byte-width families, and the full `setcc`/`cmovcc` condition-code sets (previously
+  incomplete compared to the already-complete `jcc` set).
+- Documented several core CALM commands that had zero coverage despite being extremely common in
+  real fasmg code (`jyes` alone appears thousands of times in fasmg's own source) — `jump`,
+  `jyes`, `jno`, `exit`, `publish`, `transform`, `stringify`, `take`, `taketext`, `call`,
+  `initsym`, plus `purge`/`restruc`/`mvmacro`/`mvstruc` and `load`/`store`.
+
 ## 0.5.0
 
 - Fixed: hover, completion, and signature help only ever looked at symbols reachable via the
