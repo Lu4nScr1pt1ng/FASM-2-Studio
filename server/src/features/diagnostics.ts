@@ -37,6 +37,14 @@ export interface RunCompilerOptions {
   /** The file diagnostics should be reported for, if different from `sourceFsPath` (compiling an
    * entry point on behalf of a fragment file it includes). Defaults to `sourceFsPath`. */
   reportForFsPath?: string;
+  /** fasm2Studio.includePath, forwarded as the compiler's INCLUDE environment variable — a
+   * semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that
+   * isn't found next to the including file (fasmg's own official examples rely on exactly this,
+   * e.g. packages/x86/examples/windows/make.bat does `set include=..\..\include` before building;
+   * without it, every `include` reaching outside its own directory fails with "source file not
+   * found" even though the project is entirely correct). Left unset, the compiler only gets
+   * whatever INCLUDE (if any) this extension's own host process already inherited. */
+  includePath?: string;
 }
 
 export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileResult> {
@@ -48,6 +56,7 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
       [opts.sourceFsPath, tmpOut, '-e', String(MAX_REPORTED_ERRORS)],
       opts.cwd,
       opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      opts.includePath,
     );
 
     if (spawnError) {
@@ -91,11 +100,16 @@ function execCompiler(
   args: string[],
   cwd: string,
   timeoutMs: number,
+  includePath?: string,
 ): Promise<{ stdout: string; timedOut: boolean; spawnError?: string }> {
   return new Promise((resolve) => {
     let child;
+    // Spread process.env rather than omitting `env` entirely: an explicit env object replaces
+    // the inherited environment wholesale, which would drop PATH and everything else the
+    // compiler needs, not just add INCLUDE to what's already there.
+    const env = includePath ? { ...process.env, INCLUDE: includePath } : process.env;
     try {
-      child = spawn(command, args, { cwd, windowsHide: true, detached: process.platform !== 'win32' });
+      child = spawn(command, args, { cwd, env, windowsHide: true, detached: process.platform !== 'win32' });
     } catch (err) {
       resolve({ stdout: '', timedOut: false, spawnError: (err as Error).message });
       return;

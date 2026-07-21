@@ -77,6 +77,11 @@
           "default": "",
           "description": "Output path for Build/Run/Debug, relative to the source file's directory (e.g. \"../bin/cc\" to keep build output out of the source tree). FASM: Debug's .lst listing is placed alongside it. Leave empty to use the source file name with its extension stripped, next to the source."
         },
+        "fasm2Studio.includePath": {
+          "type": "string",
+          "default": "",
+          "description": "Semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that isn't found next to the including file, passed as the compiler's INCLUDE environment variable. Many real fasmg projects need this to build at all (e.g. fasmg's own Windows examples require setting it to their \"include\" package directory, exactly as their bundled make.bat does with `set include=...`). Leave empty to only use whatever INCLUDE (if any) your system environment already provides."
+        },
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",

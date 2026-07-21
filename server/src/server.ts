@@ -52,6 +52,7 @@ interface FasmSettings {
   fasm1CompilerPath: string;
   diagnosticsEnabled: boolean;
   diagnosticsDebounceMs: number;
+  includePath: string;
 }
 
 // Empty compiler path settings mean "auto-detect on PATH", resolved lazily via
@@ -62,6 +63,7 @@ const DEFAULT_SETTINGS: FasmSettings = {
   fasm1CompilerPath: '',
   diagnosticsEnabled: true,
   diagnosticsDebounceMs: 400,
+  includePath: '',
 };
 
 const connection = createConnection(ProposedFeatures.all);
@@ -304,6 +306,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       sourceFsPath: compileFsPath!,
       cwd: cwd!,
       reportForFsPath,
+      includePath: settings.includePath || undefined,
     });
 
     // A newer edit (or diagnostics being disabled) arrived while the compiler was running; drop

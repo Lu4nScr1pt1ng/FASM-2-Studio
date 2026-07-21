@@ -34,6 +34,20 @@ function configuredOutputFor(sourceFsPath: string): string | undefined {
   return path.isAbsolute(configured) ? configured : path.resolve(path.dirname(sourceFsPath), configured);
 }
 
+/**
+ * fasm2Studio.includePath as a ShellExecutionOptions.env override, or undefined if unset (VS Code
+ * merges a provided env with the parent process' own, so this only needs to carry INCLUDE itself).
+ * Many real fasmg projects need this to build at all: a bare `include 'foo.inc'` that isn't found
+ * next to the including file falls back to the directory the assembly process was started from,
+ * then to the semicolon-separated paths in the INCLUDE environment variable — exactly the
+ * mechanism fasmg's own bundled make.bat scripts set up themselves (e.g.
+ * packages/x86/examples/windows/make.bat does `set include=..\..\include` before building).
+ */
+function configuredIncludePathEnv(): { [key: string]: string } | undefined {
+  const configured = vscode.workspace.getConfiguration('fasm2Studio').get<string>('includePath', '').trim();
+  return configured ? { INCLUDE: configured } : undefined;
+}
+
 export function getListingPath(outputFsPath: string): string {
   return `${outputFsPath}.lst`;
 }
@@ -98,7 +112,13 @@ export async function buildTask(def: FasmTaskDefinition, name: string): Promise<
     const listingPath = bundledListingIncPath().replace(/\\/g, '/').replace(/"/g, '""');
     args.push('-i', { value: `include "${listingPath}"`, quoting: vscode.ShellQuoting.Strong });
   }
-  const execution = new vscode.ShellExecution(compiler.path, args, { cwd: path.dirname(sourceFsPath) });
+  // fasm2Studio.includePath, forwarded as INCLUDE so a bare `include 'foo.inc'` not found next to
+  // the including file still resolves — many real fasmg projects need this to build at all (see
+  // configuredIncludePathEnv's doc comment).
+  const execution = new vscode.ShellExecution(compiler.path, args, {
+    cwd: path.dirname(sourceFsPath),
+    env: configuredIncludePathEnv(),
+  });
 
   const task = new vscode.Task(def, vscode.TaskScope.Workspace, name, 'fasm', execution);
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true };

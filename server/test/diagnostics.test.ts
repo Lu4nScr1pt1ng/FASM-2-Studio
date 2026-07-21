@@ -156,6 +156,38 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('resolves a bare `include` outside the source directory via includePath, exactly as fasmg\'s own official examples require', async function () {
+    // Mirrors a real, confirmed scenario in fasmg's own example tree: packages/x86/examples/windows
+    // uses `include 'win32w.inc'` (win32w.inc lives in a sibling packages/x86/include/ directory,
+    // not next to the .asm), and its bundled make.bat does `set include=..\..\include` before
+    // building — without an equivalent INCLUDE env var, this fails with "source file not found"
+    // even though the project is entirely correct.
+    this.timeout(15000);
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-project-'));
+    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-package-'));
+    const entryFile = path.join(projectDir, 'main.asm');
+    fs.writeFileSync(entryFile, "format binary\ninclude 'shared.inc'\nstart:\n\tmov eax, 1\n");
+    fs.writeFileSync(path.join(packageDir, 'shared.inc'), 'SHARED_CONST = 1\n');
+
+    try {
+      const withoutIncludePath = await runDiagnostics({ compilerPath, sourceFsPath: entryFile, cwd: projectDir });
+      assert.strictEqual(withoutIncludePath.toolError, undefined);
+      assert.ok(withoutIncludePath.diagnostics.length > 0, 'expected a "source file not found"-style error without includePath');
+
+      const withIncludePath = await runDiagnostics({
+        compilerPath,
+        sourceFsPath: entryFile,
+        cwd: projectDir,
+        includePath: packageDir,
+      });
+      assert.strictEqual(withIncludePath.toolError, undefined);
+      assert.deepStrictEqual(withIncludePath.diagnostics, []);
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+      fs.rmSync(packageDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runDiagnostics (reliability, against fake tools — no real fasm2 required)', () => {
