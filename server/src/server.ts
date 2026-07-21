@@ -38,6 +38,7 @@ import { getDefinitions } from './features/definition';
 import { getDocumentSymbols } from './features/documentSymbols';
 import { runDiagnostics } from './features/diagnostics';
 import { getHover } from './features/hover';
+import { buildLiveShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
 import { getRenameEdit, isRenameable } from './features/rename';
 import { getSignatureHelp } from './features/signatureHelp';
@@ -216,6 +217,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   const isRealFile = parsedUri.scheme === 'file';
   const fsPath = isRealFile ? parsedUri.fsPath : undefined;
   let tempDir: string | undefined;
+  let shadowCleanup: (() => Promise<void>) | undefined;
   let compileFsPath = fsPath;
   let cwd = fsPath ? path.dirname(fsPath) : undefined;
   let reportForFsPath: string | undefined;
@@ -225,16 +227,27 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   // would be missed. Compile the actual entry point instead, and filter the result back down to
   // this file.
   if (isRealFile) {
+    let targetFsPath = fsPath!;
     const entryUri = workspace.findEntryFile(uri);
     if (entryUri && entryUri !== uri) {
       try {
-        const entryFsPath = URI.parse(entryUri).fsPath;
-        reportForFsPath = fsPath;
-        compileFsPath = entryFsPath;
-        cwd = path.dirname(entryFsPath);
+        targetFsPath = URI.parse(entryUri).fsPath;
+        compileFsPath = targetFsPath;
+        cwd = path.dirname(targetFsPath);
       } catch {
         // Fall back to compiling the file itself.
       }
+    }
+    reportForFsPath = fsPath;
+
+    // Compile the live buffer, not whatever's last saved to disk: build a shadow directory shaped
+    // like the target's, with every sibling symlinked back to the real file except this document's
+    // own position, which gets its current text instead — see liveShadow.ts.
+    const shadow = await buildLiveShadowRoot(targetFsPath, fsPath!, doc.getText()).catch(() => undefined);
+    if (shadow) {
+      compileFsPath = shadow.compileFsPath;
+      cwd = shadow.cwd;
+      shadowCleanup = shadow.cleanup;
     }
   }
 
@@ -272,6 +285,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     connection.sendDiagnostics({ uri, diagnostics: result.diagnostics });
   } finally {
     if (tempDir) void fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    if (shadowCleanup) void shadowCleanup();
   }
 }
 
