@@ -27,7 +27,7 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   if (reg) return markdown(renderRegister(reg));
 
   const size = sizeSpecifiers.find((s) => s.name.toLowerCase() === lower);
-  if (size) return markdown(renderTagged(size.name, SIZE_KIND_LABELS[size.kind], size.summary));
+  if (size) return markdown(renderSizeSpecifier(size));
 
   const dir = directives.find((d) => d.name.toLowerCase() === lower && (d.dialect === 'both' || d.dialect === dialect));
   if (dir) return markdown(renderDirective(dir));
@@ -77,6 +77,45 @@ const SIZE_KIND_LABELS: Record<SizeSpecifierEntry['kind'], string> = {
   addressing: 'addressing qualifier',
 };
 
+/**
+ * A "size specifier" (dword, qword, ...) and the "d*"/"r*" data directives (dd/rd, dq/rq, ...) of
+ * the same width are easy to conflate — they're literally the same byte count — but they're not
+ * interchangeable: a size specifier just disambiguates an *existing* operand's width (e.g.
+ * "mov dword [rbx], 0"), while a data directive actually declares/reserves memory. Cross-
+ * referenced in both directions so hovering either one calls out the distinction.
+ */
+const SIZE_TO_DATA_DIRECTIVES: Record<string, { declare: string; reserve: string }> = {
+  byte: { declare: 'db', reserve: 'rb' },
+  word: { declare: 'dw', reserve: 'rw' },
+  dword: { declare: 'dd', reserve: 'rd' },
+  fword: { declare: 'dp', reserve: 'rp' },
+  pword: { declare: 'dp', reserve: 'rp' },
+  qword: { declare: 'dq', reserve: 'rq' },
+  tbyte: { declare: 'dt', reserve: 'rt' },
+  tword: { declare: 'dt', reserve: 'rt' },
+  dqword: { declare: 'ddq', reserve: 'rdq' },
+  xword: { declare: 'ddq', reserve: 'rdq' },
+  qqword: { declare: 'dqq', reserve: 'rqq' },
+  yword: { declare: 'dqq', reserve: 'rqq' },
+  dqqword: { declare: 'ddqq', reserve: 'rdqq' },
+  zword: { declare: 'ddqq', reserve: 'rdqq' },
+};
+
+// Written out explicitly (rather than derived from SIZE_TO_DATA_DIRECTIVES) so a directive shared
+// by two synonymous sizes (e.g. "dp" backs both "fword" and "pword") points at one specific,
+// consistent name instead of whichever happened to be inserted last.
+const DATA_DIRECTIVE_TO_SIZE: Record<string, string> = {
+  db: 'byte', rb: 'byte',
+  dw: 'word', rw: 'word',
+  dd: 'dword', rd: 'dword',
+  dp: 'fword', rp: 'fword', df: 'fword', rf: 'fword',
+  dq: 'qword', rq: 'qword',
+  dt: 'tbyte', rt: 'tbyte',
+  ddq: 'dqword', rdq: 'dqword',
+  dqq: 'qqword', rqq: 'qqword',
+  ddqq: 'dqqword', rdqq: 'dqqword',
+};
+
 /** A handful of directives are really CALM (the low-level code-emission language used inside a
  * "calminstruction" block) sub-commands rather than ordinary top-level directives — a more
  * specific, more useful tag than "directive" for exactly these. */
@@ -99,6 +138,21 @@ function renderDirective(dir: DirectiveEntry): string {
   const tag = CALM_COMMANDS.has(dir.name) ? 'CALM command' : dir.dialect === 'both' ? 'directive' : `${dir.dialect} directive`;
   const lines = [`**${dir.name}** — *${tag}*`, '', dir.summary];
   if (dir.snippet) lines.push('', fasmCode(snippetToExample(dir.snippet)));
+
+  const relatedSize = DATA_DIRECTIVE_TO_SIZE[dir.name];
+  if (relatedSize) lines.push('', `*Not the same as the \`${relatedSize}\` operand-size specifier — this reserves/declares actual memory, not just a size hint.*`);
+
+  return lines.join('\n');
+}
+
+function renderSizeSpecifier(size: SizeSpecifierEntry): string {
+  const lines = [`**${size.name}** — *${SIZE_KIND_LABELS[size.kind]}*`, '', size.summary];
+
+  const dataDirectives = SIZE_TO_DATA_DIRECTIVES[size.name];
+  if (dataDirectives) {
+    lines.push('', `*Not the same as the \`${dataDirectives.declare}\`/\`${dataDirectives.reserve}\` data directives (declare/reserve memory of this width) — this just marks an existing operand's size.*`);
+  }
+
   return lines.join('\n');
 }
 

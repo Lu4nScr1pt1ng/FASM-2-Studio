@@ -118,6 +118,29 @@ describe('getHover', () => {
     assert.match(value(getHover(ws, uri, 'fasm2', 'ptr')), /\*\*ptr\*\* — \*addressing qualifier\*/);
   });
 
+  describe('size specifier vs. same-width data directive (easily conflated, genuinely different)', () => {
+    it('cross-references dword to dd/rd, and vice versa', () => {
+      assert.match(value(getHover(ws, uri, 'fasm2', 'dword')), /Not the same as the `dd`\/`rd` data directives/);
+      assert.match(value(getHover(ws, uri, 'fasm2', 'dd')), /Not the same as the `dword` operand-size specifier/);
+      assert.match(value(getHover(ws, uri, 'fasm2', 'rd')), /Not the same as the `dword` operand-size specifier/);
+    });
+
+    it('points fasm1\'s "df"/"rf" synonyms at fword, the primary size name, not the synonym pword', () => {
+      const v = value(getHover(ws, uri, 'fasm1', 'df'));
+      assert.match(v, /Not the same as the `fword` operand-size specifier/);
+    });
+
+    it('does not add the cross-reference note to an addressing qualifier (no matching data directive exists)', () => {
+      const v = value(getHover(ws, uri, 'fasm2', 'ptr'));
+      assert.ok(!v.includes('Not the same as'), 'ptr/near/far/short have no corresponding data directive');
+    });
+
+    it('does not add the cross-reference note to a directive with no corresponding size specifier', () => {
+      const v = value(getHover(ws, uri, 'fasm2', 'format'));
+      assert.ok(!v.includes('Not the same as'), '"format" has no same-width data-directive counterpart');
+    });
+  });
+
   describe('user symbols', () => {
     let tmpDir: string;
 
