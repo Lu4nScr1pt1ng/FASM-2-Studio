@@ -394,9 +394,15 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       }
 
       // --- NAME db/dw/dd/dq/dt/du/rb/rw/rd/rq/file ... (implicit data-label, no colon) ---
+      // Inside a struct body, the name is unambiguously a field, never a keyword usage — bypass
+      // NON_SYMBOL_IDENTIFIERS there. Without this, a field literally named "segment" or "offset"
+      // (both real field names in fasmg's own packages/x86/projects/challenger/challenger.asm,
+      // the same real file that motivated the matching struct-field fix in the syntax-highlight
+      // grammar) would never be indexed at all, since those words are also recognized directives
+      // — so hovering "PLANE_POINTER.segment" fell through to the unrelated "segment" directive.
       if (
         t0.type === TokenType.Ident &&
-        !NON_SYMBOL_IDENTIFIERS.has(t0.text.toLowerCase()) &&
+        (blockStack[blockStack.length - 1] === 'struct' || !NON_SYMBOL_IDENTIFIERS.has(t0.text.toLowerCase())) &&
         tokens[1] &&
         tokens[1].type === TokenType.Ident &&
         DATA_DIRECTIVES.has(lower(tokens[1]))
@@ -409,6 +415,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           nameRange: tokenRange(t0),
           parentLabel: isLocal ? lastGlobalLabel : undefined,
           value: tokens.slice(1).map((t) => t.text).join(' '),
+          isStructField: blockStack[blockStack.length - 1] === 'struct',
           uri,
         });
         if (!isLocal) lastGlobalLabel = t0.text;

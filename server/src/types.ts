@@ -51,6 +51,14 @@ export interface SymbolDefinition {
    */
   isAreaLabel?: boolean;
   /**
+   * Set for a label declared inside a `struct ... ends` body (a field). Checked ahead of
+   * context-free lookups (directives, instructions) in hover: a field literally named "segment"
+   * or "offset" (both real field names in fasmg's own packages/x86/projects/challenger/
+   * challenger.asm) would otherwise always resolve to the unrelated directive/register of the
+   * same spelling instead of the field itself.
+   */
+  isStructField?: boolean;
+  /**
    * Set when this symbol was declared via `local` inside a macro body — fasmg gives every macro
    * invocation a fresh, hygienic instance of each `local` name, so e.g. `value` declared this way
    * in one macro is a completely different, private variable from `value` declared the same way

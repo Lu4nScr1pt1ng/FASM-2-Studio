@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.12.0
+
+- Added `load NAME[:size] from ADDRESS` as a real symbol-defining construct (`proc64.inc`'s own
+  `initlocal` uses it: `load value:byte from area:pointer`) — previously unrecognized entirely, so
+  hovering `value` fell through every local lookup and landed on an unrelated symbol in a
+  different file. Also recognized `::` ("area label", `proc64.inc`'s `area::`) as its own label
+  form distinct from a plain `:` label, with its own local scoping; and fixed hovering a bare `?`
+  (fasmg's most overloaded token — usually the `dd ?` reserve placeholder, but occasionally the
+  name of an anonymous `macro ? args`) surfacing an unrelated anonymous macro instead of
+  explaining both meanings directly.
+- Recognized `calminstruction NAME params` as a real symbol definition, the same as `macro` — every
+  real x86 instruction fasmg itself implements (`fld?`, `xcall`, and thousands more across the real
+  fasmg tree) is a `calminstruction`, not a `macro`, so none of them had a `SymbolDefinition` before
+  this and hover/go-to-definition found nothing unless the name was already hardcoded in this
+  extension's own `instructions.json`. Also fixed `end?.frame?`-style dot-separated weak names only
+  having their first `?` stripped, and detection of a CALM command extending itself via the
+  `calminstruction.` namespace (`8086.inc`'s `calminstruction calminstruction?.xcall?`, called
+  elsewhere as bare `xcall`).
+- Fixed a struct field whose name spells an unrelated directive/register (e.g.
+  `packages/x86/projects/challenger/challenger.asm`'s own `PLANE_POINTER.segment`/`.offset` fields)
+  always resolving hover to that directive instead of the field itself, both at the field's own
+  declaration and at every `IDENT.field` reference elsewhere in the file (including inside a
+  `[...]` memory operand).
+- Synced the syntax-highlight grammar with all of the above, plus two more: an `IDENT.field`
+  struct-field reference now gets its own member styling instead of occasionally lighting up as
+  the directive/keyword it happens to spell (same `PLANE_POINTER.segment` case); and the
+  `proc`/`endp`/`locals`/`endl`/`uses`/`frame`/`endf`/`invoke`/`cinvoke`/`stdcall`/`ccall`/`fastcall`
+  family from the standard `proc32.inc`/`proc64.inc` package — used in virtually every real fasmg
+  Windows/Linux program — now gets its own distinct styling instead of none at all.
+
 ## 0.11.0
 
 - Mapped the remaining constant-definition operators: `:=` (defined exactly once,

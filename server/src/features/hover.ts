@@ -78,6 +78,13 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   );
   if (localHere) return markdown(renderSymbol(localHere, uri, false));
 
+  // A struct field is likewise unambiguous — it can never mean anything else — so it takes the
+  // same priority as an in-scope local. Without this, a field literally named "segment" or
+  // "offset" (both real field names in fasmg's own packages/x86/projects/challenger/
+  // challenger.asm) would always resolve to the unrelated directive of the same spelling instead.
+  const structFieldHere = currentDoc?.symbols.find((s) => s.name === word && s.isStructField);
+  if (structFieldHere) return markdown(renderSymbol(structFieldHere, uri, false));
+
   const ins = instructions.filter((i) => i.mnemonic.toLowerCase() === lower);
   if (ins.length > 0) return markdown(renderInstructions(ins));
 

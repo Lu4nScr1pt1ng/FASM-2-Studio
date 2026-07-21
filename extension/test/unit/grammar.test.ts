@@ -179,4 +179,41 @@ describe('fasm TextMate grammar', () => {
       assert.strictEqual(scopes[scopes.length - 1], 'entity.name.function.fasm', `expected "${word}" to be a plain purged name, got: ${scopes}`);
     }
   });
+
+  it('tags a struct field reference (IDENT.field, no space) as a member even when the field name spells a real directive', async function () {
+    // Mirrors real usage in fasmg's own packages/x86/projects/challenger/challenger.asm:
+    // "PLANE_POINTER.offset" and "PLANE_POINTER.segment" are field accesses, not the "segment"
+    // format directive — but the struct-body fix only covered the field's own declaration site,
+    // not references to it elsewhere in the file (including inside a "[...]" memory operand).
+    this.timeout(10000);
+    const lines = await tokenizeLines(['mov esi,[ebx+PLANE_POINTER.segment]', 'mov eax,[ebx+PLANE_POINTER.offset]', 'sub ecx,SEGMENT_SIZE'].join('\n'));
+
+    const segmentScopes = scopesOf(lines[0], 'segment');
+    assert.strictEqual(segmentScopes[segmentScopes.length - 1], 'variable.other.member.fasm', `expected "PLANE_POINTER.segment" to tag "segment" as a member, got: ${segmentScopes}`);
+    const dotScopes = scopesOf(lines[0], '.');
+    assert.strictEqual(dotScopes[dotScopes.length - 1], 'punctuation.accessor.fasm', `expected the "." to be styled as an accessor, got: ${dotScopes}`);
+
+    const offsetScopes = scopesOf(lines[1], 'offset');
+    assert.strictEqual(offsetScopes[offsetScopes.length - 1], 'variable.other.member.fasm', `expected "PLANE_POINTER.offset" to tag "offset" as a member, got: ${offsetScopes}`);
+
+    // A plain identifier that merely contains the word "segment" (glued with no word boundary)
+    // must stay untouched by both this rule and the directive keyword rule — it never gets its
+    // own token at all (no rule claims it), so it's folded into its neighboring punctuation.
+    const constToken = lines[2].find((t) => t.text.includes('SEGMENT_SIZE'));
+    assert.ok(constToken, `expected a token containing "SEGMENT_SIZE", got: ${JSON.stringify(lines[2].map((t) => t.text))}`);
+    assert.ok(!constToken.scopes.some((s) => s.includes('directive') || s.includes('member')), `"SEGMENT_SIZE" must not be tagged as a directive or member, got: ${constToken.scopes}`);
+  });
+
+  it('tags the proc/invoke macro family from the standard proc32.inc/proc64.inc package as support.function, distinct from core directives', async function () {
+    // These are ordinary macros (e.g. "macro invoke?: proc*,args&" in fasmg's own
+    // packages/x86/include/macro/proc64.inc), not core-language keywords -- kept in their own
+    // scope rather than folded into #directives, which is reserved for the real core language.
+    this.timeout(10000);
+    const lines = await tokenizeLines('proc PlaneWindowProc uses ebx esi edi, hwnd\ninvoke GetModuleHandle,0\nendp\n');
+    for (const [lineIdx, word] of [[0, 'proc'], [0, 'uses'], [1, 'invoke'], [2, 'endp']] as const) {
+      const scopes = scopesOf(lines[lineIdx], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'support.function.fasm', `expected "${word}" to be tagged support.function, got: ${scopes}`);
+      assert.ok(!scopes.some((s) => s.includes('keyword.control.directive')), `"${word}" must not also be tagged as a core directive, got: ${scopes}`);
+    }
+  });
 });

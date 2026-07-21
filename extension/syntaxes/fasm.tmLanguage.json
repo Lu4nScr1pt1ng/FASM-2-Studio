@@ -9,10 +9,12 @@
     { "include": "#include-directive" },
     { "include": "#label-definition" },
     { "include": "#struct-body" },
+    { "include": "#member-access" },
     { "include": "#macro-struct-definition" },
     { "include": "#purge-statement" },
     { "include": "#constant-definition" },
     { "include": "#calm-commands" },
+    { "include": "#procedure-macros" },
     { "include": "#data-directives" },
     { "include": "#directives" },
     { "include": "#format-keywords" },
@@ -125,6 +127,14 @@
         { "include": "#operators" }
       ]
     },
+    "member-access": {
+      "comment": "\"IDENT.field\" (e.g. \"PLANE_POINTER.offset\", struct field access with no space around the dot) must be recognized as a unit before a field name is left to fall through to #directives/#data-directives/#size-specifiers: a field that happens to spell a real directive/register (e.g. \"segment\", both a real field name in fasmg's own packages/x86/projects/challenger/challenger.asm and the real segment-override directive) would otherwise light up as that unrelated keyword. The lookbehind (only firing right after an identifier/register char, no space) is what tells this apart from a dot-prefixed local label used as a bare operand, e.g. \"jmp .exit\".",
+      "match": "(?<=[A-Za-z0-9_@$?])(\\.)([A-Za-z_@$?][A-Za-z0-9_@$?]*)",
+      "captures": {
+        "1": { "name": "punctuation.accessor.fasm" },
+        "2": { "name": "variable.other.member.fasm" }
+      }
+    },
     "constant-definition": {
       "comment": "\":=\" (defined exactly once, forward-reference-safe) and \"=:\" (preserves the previous value, restorable with `restore`) must be checked before the plain \"=\" pattern -- fasmg requires no space between the two characters (confirmed against the real compiler: \"X : = 1\" fails to assemble, parsed as a label \"X:\" followed by an invalid \"= 1\"), so unlike \"equ\"/\"reequ\" this isn't a separate keyword the plain \"=\" pattern could otherwise be taught to skip over.",
       "patterns": [
@@ -170,6 +180,11 @@
       "comment": "fasmg's CALM (Compiled Assembly-Like Macro) sub-language, used inside calminstruction/postpone bodies — kept as its own scope (matching hover's distinct \"CALM command\" tag) rather than lumped in with ordinary directives, since it's a genuinely different sublanguage. \"call\" and \"jno\" are deliberately left out despite also being CALM commands: both are far more commonly the real x86 CALL/JNO instructions, and this grammar has no notion of \"inside a calminstruction body\" to disambiguate the two.",
       "name": "keyword.other.calm.fasm",
       "match": "(?i)\\b(calminstruction|postpone|match|arrange|assemble|emit|compute|check|element|jump|jyes|exit|publish|transform|stringify|take|taketext|initsym)\\b"
+    },
+    "procedure-macros": {
+      "comment": "proc/endp/locals/endl/uses/frame/endf/invoke/cinvoke/stdcall/ccall/fastcall are not core fasmg directives — they're ordinary macros from the standard packages/x86/include/macro/proc32.inc and proc64.inc (e.g. \"macro invoke?: proc*,args&\"), the same category as any other user-defined macro name, and any x86 program is free to not include that package at all. But in practice virtually every real fasmg Windows/Linux program uses this exact package (see packages/x86/examples), so leaving the whole family uncolored costs more in everyday readability than the purity of \"not a real keyword\" is worth. Kept as its own support.* scope rather than folded into #directives (keyword.control.directive.fasm), which is reserved for constructs the core language itself defines.",
+      "name": "support.function.fasm",
+      "match": "(?i)\\b(proc|endp|locals|endl|uses|frame|endf|invoke|cinvoke|stdcall|ccall|fastcall)\\b"
     },
     "data-directives": {
       "comment": "Directives that reserve/declare typed storage (db/dw/dd/... and their r-prefixed \"reserve\" counterparts) get the same storage.type family as #size-specifiers, since they're the same underlying concept (a type/width), just declaring storage instead of just naming a width.",
