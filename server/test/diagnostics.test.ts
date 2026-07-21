@@ -3,8 +3,15 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { DiagnosticSeverity } from 'vscode-languageserver/node';
+import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+
+// This project's fasm/fasm1 output never produces a MarkupContent message — only the LSP type
+// allows for one (a 3.18 protocol addition) — so asserting it's a plain string here is safe.
+function messageText(d: Diagnostic): string {
+  assert.strictEqual(typeof d.message, 'string');
+  return d.message as string;
+}
 
 describe('parseDiagnostics', () => {
   it('parses a single-error block captured from a real fasm2 run', () => {
@@ -20,7 +27,7 @@ describe('parseDiagnostics', () => {
     assert.strictEqual(diags.length, 1);
     assert.strictEqual(diags[0].severity, DiagnosticSeverity.Error);
     assert.strictEqual(diags[0].range.start.line, 1); // 0-based
-    assert.match(diags[0].message, /undefinedsymbol/);
+    assert.match(messageText(diags[0]), /undefinedsymbol/);
   });
 
   it('parses multiple back-to-back error blocks (as produced by -e N)', () => {
@@ -57,7 +64,7 @@ describe('parseDiagnostics', () => {
     const diags = parseDiagnostics(output, '/tmp/warn.asm');
     assert.strictEqual(diags.length, 1);
     assert.strictEqual(diags[0].severity, DiagnosticSeverity.Warning);
-    assert.match(diags[0].message, /might not do what you expect/);
+    assert.match(messageText(diags[0]), /might not do what you expect/);
   });
 
   it('maps a "Custom error:" line (from an `err` instruction) to error severity, not dropped', () => {
@@ -70,7 +77,7 @@ describe('parseDiagnostics', () => {
     const diags = parseDiagnostics(output, '/tmp/custom.asm');
     assert.strictEqual(diags.length, 1);
     assert.strictEqual(diags[0].severity, DiagnosticSeverity.Error);
-    assert.match(diags[0].message, /bits64 or higher required/);
+    assert.match(messageText(diags[0]), /bits64 or higher required/);
   });
 
   it('handles a mix of error and warning blocks in the same run', () => {
@@ -110,7 +117,7 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.toolError, undefined);
       assert.strictEqual(result.diagnostics.length, 1);
       assert.strictEqual(result.diagnostics[0].range.start.line, 1);
-      assert.match(result.diagnostics[0].message, /undefinedsymbol/);
+      assert.match(messageText(result.diagnostics[0]), /undefinedsymbol/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -129,7 +136,7 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.toolError, undefined);
       assert.strictEqual(result.diagnostics.length, 1);
       assert.strictEqual(result.diagnostics[0].range.start.line, 0);
-      assert.match(result.diagnostics[0].message, /undefinedsymbol/);
+      assert.match(messageText(result.diagnostics[0]), /undefinedsymbol/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

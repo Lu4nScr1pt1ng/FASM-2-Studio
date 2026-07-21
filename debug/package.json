@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "tsc -p . --noEmit && tsc -p test --noEmit",
     "pretest": "node esbuild.js",
     "test": "mocha --require tsx 'test/**/*.test.ts'"
   },
