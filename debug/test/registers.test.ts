@@ -170,8 +170,37 @@ describe('parseUserNumber', () => {
     assert.strictEqual(parseUserNumber('0x1FFFF', 16), 0xffffn);
   });
 
-  it('falls back to pulling a leading 0x... out of a pasted display string (re-submitting an unedited value is a no-op)', () => {
-    assert.strictEqual(parseUserNumber('eax = 0x0000002a  42  0b0000...', 32), 0x2an);
+  it('re-submitting the whole pre-filled display string unedited is a no-op', () => {
+    // VS Code pre-fills the Registers panel's edit box with the *entire* current display line,
+    // not a bare number — clicking to edit and pressing Enter without changing anything must
+    // round-trip to the same value.
+    assert.strictEqual(parseUserNumber('eax = 0x0000002a  42  0b00000000000000000000000000101010', 32), 0x2an);
+  });
+
+  it('picks up an edit made to just the hex column of the pre-filled display string, leaving decimal/binary as they were', () => {
+    // Real bug: the old fallback always grabbed the *first* "0x..." substring in the string,
+    // regardless of which column the user actually edited — so editing decimal or binary had no
+    // effect at all, only hex ever "worked". This is the one case that already worked before the
+    // fix; kept as a named case for symmetry with the two below.
+    assert.strictEqual(parseUserNumber('eax = 0x000000ff  42  0b00000000000000000000000000101010', 32), 0xffn);
+  });
+
+  it('picks up an edit made to just the decimal column, even though hex/binary in the string are now stale', () => {
+    assert.strictEqual(parseUserNumber('eax = 0x0000002a  100  0b00000000000000000000000000101010', 32), 100n);
+  });
+
+  it('picks up an edit made to just the binary column, even though hex/decimal in the string are now stale', () => {
+    assert.strictEqual(parseUserNumber('eax = 0x0000002a  42  0b00000000000000000000000011111111', 32), 0xffn);
+  });
+
+  it('handles the eflags row\'s extra decoded-flags suffix (e.g. "  [ IF ]") without it interfering with the three-column parse', () => {
+    assert.strictEqual(parseUserNumber('eflags = 0x00000202  514  0b00000000000000000000001000000010  [ IF ]', 32), 514n);
+    // Editing decimal still works with the trailing flags text present.
+    assert.strictEqual(parseUserNumber('eflags = 0x00000202  70  0b00000000000000000000001000000010  [ IF ]', 32), 70n);
+  });
+
+  it('falls back to pulling a leading 0x... when the string isn\'t the full three-column display shape', () => {
+    assert.strictEqual(parseUserNumber('some text with 0x2a in it', 32), 0x2an);
   });
 
   it('returns undefined for genuinely unparseable input', () => {

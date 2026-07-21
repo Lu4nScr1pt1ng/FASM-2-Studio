@@ -148,29 +148,51 @@ export function formatRegisterValue(name: string, bits: RegisterBits, value: big
   return `${name} = 0x${hex}  ${value.toString()}  0b${bin}`;
 }
 
+// Matches formatRegisterValue's own output shape: "name = 0xHEX  DEC  0bBIN", optionally followed
+// by more text (formatRegister appends a decoded flag string like "  [ IF ]" for eflags) — used
+// by parseUserNumber to figure out *which* column the user actually edited when VS Code hands
+// back the whole pre-filled display string, not just the part someone changed.
+const DISPLAY_TRIPLE_RE = /^\S+\s*=\s*0x([0-9a-f]+)\s+(\d+)\s+0b([01_]+)/i;
+
 /**
  * Parses user input for "set this register to a new value", accepting decimal, `0x.../0b...`,
  * and the asm-style `...h` hex suffix (e.g. "1234h") — since this is what someone debugging
  * assembly is used to typing. A negative decimal wraps to the register's own two's-complement bit
  * pattern (so "-1" on a 32-bit register becomes 0xffffffff) rather than being rejected, since
- * that's a genuinely useful shorthand at this level. Falls back to pulling the leading `0x...`
- * out of our own hover/Registers-panel display string, so re-submitting an unedited value (VS
- * Code pre-fills the edit box with the current display text) is a no-op instead of an error.
+ * that's a genuinely useful shorthand at this level.
+ *
+ * VS Code pre-fills the edit box with the *entire* current display string ("rax = 0x...  N
+ * 0b..."), not just one column, so editing only the decimal or binary part still submits the
+ * whole three-column string back — naively grabbing "the first 0x... substring" from that (a
+ * real bug this replaces) would silently keep the *old* hex value and ignore whatever the user
+ * actually changed. Instead: parse all three columns, and if exactly one of them disagrees with
+ * the other two (which, being unedited, still agree with each other), that's the one the user
+ * changed — pulled out and used as the real new value, wrapped to the register's own width.
  */
 export function parseUserNumber(input: string, bits: RegisterBits): bigint | undefined {
   const trimmed = input.trim();
   const modulus = 1n << BigInt(bits);
+  const wrap = (v: bigint): bigint => ((v % modulus) + modulus) % modulus;
 
-  let value: bigint | undefined;
-  if (/^0x[0-9a-f]+$/i.test(trimmed)) value = BigInt(trimmed);
-  else if (/^0b[01]+$/i.test(trimmed)) value = BigInt(trimmed);
-  else if (/^[0-9a-f]+h$/i.test(trimmed)) value = BigInt(`0x${trimmed.slice(0, -1)}`);
-  else if (/^-?\d+$/.test(trimmed)) value = BigInt(trimmed);
-  else {
-    const hexMatch = /0x[0-9a-f]+/i.exec(trimmed);
-    if (hexMatch) value = BigInt(hexMatch[0]);
+  if (/^0x[0-9a-f]+$/i.test(trimmed)) return wrap(BigInt(trimmed));
+  if (/^0b[01]+$/i.test(trimmed)) return wrap(BigInt(trimmed));
+  if (/^[0-9a-f]+h$/i.test(trimmed)) return wrap(BigInt(`0x${trimmed.slice(0, -1)}`));
+  if (/^-?\d+$/.test(trimmed)) return wrap(BigInt(trimmed));
+
+  const triple = DISPLAY_TRIPLE_RE.exec(trimmed);
+  if (triple) {
+    const hexVal = BigInt(`0x${triple[1]}`);
+    const decVal = BigInt(triple[2]);
+    const binVal = BigInt(`0b${triple[3].replace(/_/g, '')}`);
+    if (hexVal === decVal && decVal === binVal) return wrap(hexVal); // unedited — re-submitting is a no-op
+    if (decVal === binVal) return wrap(hexVal); // hex is the odd one out — that's what changed
+    if (hexVal === binVal) return wrap(decVal);
+    if (hexVal === decVal) return wrap(binVal);
+    // All three disagree (e.g. more than one column edited inconsistently) — no principled way
+    // to pick one, so fall through to the last-resort substring pull below instead of guessing.
   }
 
-  if (value === undefined) return undefined;
-  return ((value % modulus) + modulus) % modulus;
+  const hexMatch = /0x[0-9a-f]+/i.exec(trimmed);
+  if (hexMatch) return wrap(BigInt(hexMatch[0]));
+  return undefined;
 }

@@ -26,7 +26,7 @@ import {
   resolveRegisterGroups,
   unsignedCastType,
 } from './registers';
-import { buildSymbolAddressMap, DebugSymbol } from './symbols';
+import { buildConstantMap, buildSymbolAddressMap, ConstantSymbol, DebugSymbol, formatConstantCompact, formatConstantDetailed } from './symbols';
 import {
   decodeLittleEndianElements,
   formatStringPreview,
@@ -74,6 +74,10 @@ export class FasmDebugSession extends DebugSession {
   /** Source label name -> runtime address (+ size, when knowable), built from the listing file —
    * see symbols.ts for why this exists at all (fasmg emits no symbol table for gdb to consult). */
   private symbolMap: Map<string, DebugSymbol> = new Map();
+  /** Symbolic constant name (e.g. "FD_STDERR" from "FD_STDERR = 2") -> its defined value — these
+   * have no runtime address at all, so gdb can't answer "what's the value of FD_STDERR" either
+   * (fails with "No symbol table is loaded"); resolved statically instead, same as symbolMap. */
+  private constantMap: Map<string, ConstantSymbol> = new Map();
 
   public constructor() {
     super();
@@ -109,6 +113,7 @@ export class FasmDebugSession extends DebugSession {
       const candidates = buildCandidateSequence(path.resolve(args.asmFile));
       this.addressMap = correlateListing(listingEntries, candidates);
       this.symbolMap = buildSymbolAddressMap(listingEntries);
+      this.constantMap = buildConstantMap(listingEntries);
 
       this.gdb = new GdbDriver();
       this.gdb.on('console', (text) => this.sendEvent(new OutputEvent(text, 'console')));
@@ -701,6 +706,18 @@ export class FasmDebugSession extends DebugSession {
     const symbol = this.symbolMap.get(trimmed);
     if (symbol) {
       const text = args.context === 'hover' ? await this.formatSymbolValueDetailed(symbol) : await this.formatSymbolValueCompact(symbol);
+      response.body = { result: text, variablesReference: 0 };
+      this.sendResponse(response);
+      return;
+    }
+
+    // A bare symbolic constant (e.g. "FD_STDERR" from "FD_STDERR = 2") — these have no runtime
+    // address at all (fasmg substitutes them at compile time), so gdb can't resolve them either;
+    // it would fail the same way as an unknown label ("No symbol table is loaded"). Resolved
+    // entirely from the listing instead — see symbols.ts — so this never reaches gdb at all.
+    const constant = this.constantMap.get(trimmed);
+    if (constant) {
+      const text = args.context === 'hover' ? formatConstantDetailed(constant) : formatConstantCompact(constant);
       response.body = { result: text, variablesReference: 0 };
       this.sendResponse(response);
       return;

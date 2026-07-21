@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.17.0
+
+- Symbolic constants (e.g. `FD_STDERR = 2`, `FD_STDOUT equ 1`, `define`/`redefine`, `:=`/`=:`) now
+  resolve to their value when hovered or watched during a debug session, entirely from the
+  listing — these have no runtime address at all (fasmg substitutes them at compile time), so
+  asking gdb about one used to fail with a raw, confusing `No symbol table is loaded. Use the
+  "file" command.` error instead of showing anything useful.
+- Fixed a real bug in editing a register's value from the Registers panel: VS Code pre-fills the
+  edit box with the *entire* current display string (`"eax = 0x0000002a  42  0b0000...0010"`), not
+  a bare number, so editing only the decimal or binary column and submitting the whole string back
+  used to silently do nothing — only editing the hex column ever actually took effect. Now detects
+  which of the three columns was actually changed and uses that.
+
 ## 0.16.0
 
 - The Registers view is now organized into expandable groups (General Purpose / Pointers / Flags /

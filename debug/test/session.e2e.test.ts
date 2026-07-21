@@ -382,6 +382,29 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
         /Could not parse/,
       );
 
+      // The real user-reported bug: VS Code's in-place editor pre-fills the *entire* current
+      // display string ("eax = 0x0000002a  42  0b0000...0010"), not a bare number. Editing only
+      // the decimal or binary column and submitting the whole string back used to silently do
+      // nothing (only the hex column ever took effect) — confirmed here against the real adapter
+      // and a real register write, not just the pure parseUserNumber unit tests.
+      const currentEax = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' })).result;
+      const editedDecimalOnly = currentEax.replace(/\d+(?=\s+0b)/, '100'); // change only the middle (decimal) column
+      const viaDecimalEdit = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: registersRef,
+        name: 'eax',
+        value: editedDecimalOnly,
+      });
+      assert.strictEqual(viaDecimalEdit.value, 'eax = 0x00000064  100  0b0000_0000_0000_0000_0000_0000_0110_0100');
+
+      const currentEaxAgain = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' })).result;
+      const editedBinaryOnly = currentEaxAgain.replace(/0b[01_]+$/, '0b1111_1111_1111_1111_1111_1111_1111_1111'); // change only the last (binary) column
+      const viaBinaryEdit = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: registersRef,
+        name: 'eax',
+        value: editedBinaryOnly,
+      });
+      assert.strictEqual(viaBinaryEdit.value, 'eax = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
       await client.sendRequest('disconnect');
@@ -598,6 +621,77 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     } finally {
       proc.kill();
       fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a symbolic constant (e.g. "FD_STDERR = 2") to its value without ever asking gdb, instead of surfacing "No symbol table is loaded"', async function () {
+    this.timeout(30000);
+
+    // The exact user-reported scenario: a plain "NAME = literal" constant (no runtime address at
+    // all — fasmg substitutes it at compile time) hovered while stopped. Before this resolved
+    // constants itself, evaluateRequest fell through to gdb's own expression evaluator, which
+    // correctly — but unhelpfully — rejects it with "No symbol table is loaded. Use the "file"
+    // command." (there's no symbol table for gdb to have loaded; fasmg never emits one).
+    const constDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-const-'));
+    const constAsmPath = path.join(constDir, 'const.asm');
+    const constProgramPath = path.join(constDir, 'const');
+    const constListingPath = path.join(constDir, 'const.lst');
+    const CONST_SRC = [
+      'format ELF executable 3',
+      'entry start',
+      '',
+      'FD_STDERR = 2',
+      'FD_STDOUT equ 1',
+      '',
+      'segment readable executable',
+      '',
+      'start:',
+      '\tmov eax, FD_STDERR',
+      '\tmov ebx, FD_STDOUT',
+      '\tnop',
+      '\tmov eax, 1',
+      '\tmov ebx, 0',
+      '\tint 0x80',
+      '',
+    ].join('\n');
+    fs.writeFileSync(constAsmPath, CONST_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", constAsmPath, constProgramPath], { cwd: constDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(constProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: constProgramPath, asmFile: constAsmPath, listingFile: constListingPath, cwd: constDir });
+
+      const bpResponse = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: constAsmPath },
+        breakpoints: [{ line: 11 }], // "nop"
+      });
+      assert.strictEqual(bpResponse.breakpoints[0].verified, true);
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const hover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'FD_STDERR', context: 'hover' });
+      assert.strictEqual(hover.result, 'FD_STDERR  (constant, defined via "=")\nvalue = 0x2  2');
+
+      const watch = await client.sendRequest<{ result: string }>('evaluate', { expression: 'FD_STDOUT', context: 'watch' });
+      assert.strictEqual(watch.result, '0x1  1');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(constDir, { recursive: true, force: true });
     }
   });
 });

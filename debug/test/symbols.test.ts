@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ListingEntry } from '../src/listingMap';
-import { buildSymbolAddressMap } from '../src/symbols';
+import { buildConstantMap, buildSymbolAddressMap, formatConstantCompact, formatConstantDetailed } from '../src/symbols';
 
 function entry(address: number, text: string): ListingEntry {
   return { address: BigInt(address), text };
@@ -160,5 +160,112 @@ describe('buildSymbolAddressMap', () => {
       assert.strictEqual(sym!.stringLengthBytes, 3);
       assert.strictEqual(sym!.elementCount, 1);
     });
+  });
+});
+
+describe('buildConstantMap', () => {
+  it('resolves "NAME = literal", the exact real listing shape for "FD_STDERR = 2"', () => {
+    // Captured from a real fasm2 build (format ELF executable 3, "FD_STDERR = 2" /
+    // "FD_STDOUT equ 1" followed by "mov eax, FD_STDERR") — the defining line keeps the address
+    // of whatever code follows it (it emits no bytes of its own), and the listing never
+    // substitutes the value at usage sites, only at the definition.
+    const entries = [entry(0x8048054, 'entry start'), entry(0x8048054, 'FD_STDERR = 2'), entry(0x8048054, 'FD_STDOUT equ 1')];
+    const constants = buildConstantMap(entries);
+    const fdStderr = constants.get('FD_STDERR');
+    assert.ok(fdStderr);
+    assert.strictEqual(fdStderr!.value, 2n);
+    assert.strictEqual(fdStderr!.definedVia, '=');
+  });
+
+  it('resolves "NAME equ literal" and "NAME reequ literal"', () => {
+    const entries = [entry(0, 'FD_STDOUT equ 1'), entry(0, 'X reequ 5')];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.get('FD_STDOUT')!.value, 1n);
+    assert.strictEqual(constants.get('FD_STDOUT')!.definedVia, 'equ');
+    assert.strictEqual(constants.get('X')!.value, 5n);
+    assert.strictEqual(constants.get('X')!.definedVia, 'reequ');
+  });
+
+  it('resolves "NAME := literal" and "NAME =: literal" only when written with no space, matching fasmg itself', () => {
+    const entries = [entry(0, 'A := 10'), entry(0, 'B =: 20')];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.get('A')!.value, 10n);
+    assert.strictEqual(constants.get('A')!.definedVia, ':=');
+    assert.strictEqual(constants.get('B')!.value, 20n);
+    assert.strictEqual(constants.get('B')!.definedVia, '=:');
+  });
+
+  it('resolves "define NAME literal" / "redefine NAME literal" -- the directive comes first, the name second', () => {
+    const entries = [entry(0, 'define Y -5'), entry(0, 'redefine Y 7')];
+    const constants = buildConstantMap(entries);
+    // First definition wins, same convention as buildSymbolAddressMap.
+    assert.strictEqual(constants.get('Y')!.value, -5n);
+    assert.strictEqual(constants.get('Y')!.definedVia, 'define');
+  });
+
+  it('parses hex (0x.../...h), binary (0b.../...b), and negative literals', () => {
+    const entries = [entry(0, 'A = 0x2a'), entry(0, 'B = 2Ah'), entry(0, 'C = 0b101010'), entry(0, 'D = 101010b'), entry(0, 'E = -1')];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.get('A')!.value, 42n);
+    assert.strictEqual(constants.get('B')!.value, 42n);
+    assert.strictEqual(constants.get('C')!.value, 42n);
+    assert.strictEqual(constants.get('D')!.value, 42n);
+    assert.strictEqual(constants.get('E')!.value, -1n);
+  });
+
+  it('strips digit separators ("_"/"\'") from a literal before parsing, matching fasmg\'s own number syntax', () => {
+    const entries = [entry(0, "A = 1'000'000")];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.get('A')!.value, 1000000n);
+  });
+
+  it('leaves value undefined (but keeps the raw text) for a right-hand side that isn\'t a plain literal', () => {
+    const entries = [entry(0, 'X = Y + 1')];
+    const constants = buildConstantMap(entries);
+    const x = constants.get('X');
+    assert.ok(x);
+    assert.strictEqual(x!.value, undefined);
+    assert.strictEqual(x!.rawText, 'Y + 1');
+  });
+
+  it('never resolves the built-in pseudo-variables ($, $$, %, %%, ...) as if they were ordinary constants', () => {
+    // These aren't really "defined" via "=" in real code, but a defensive check all the same —
+    // mirrors server/src/parser/symbolIndex.ts's own BUILTIN_PSEUDO_VARIABLES exclusion.
+    const entries = [entry(0, '$ = 5'), entry(0, '%% = 3')];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.size, 0);
+  });
+
+  it('keeps the first definition when the same name is (re)defined more than once', () => {
+    const entries = [entry(0, 'X = 1'), entry(0, 'X = 2')];
+    const constants = buildConstantMap(entries);
+    assert.strictEqual(constants.get('X')!.value, 1n);
+  });
+
+  it('ignores ordinary instruction lines and never throws on malformed input', () => {
+    const entries = [entry(0, 'mov eax, 1'), entry(0, ''), entry(0, '=== garbled')];
+    assert.doesNotThrow(() => {
+      const constants = buildConstantMap(entries);
+      assert.strictEqual(constants.size, 0);
+    });
+  });
+});
+
+describe('formatConstantDetailed / formatConstantCompact', () => {
+  it('formats a resolved numeric constant as hex + decimal, both detailed and compact', () => {
+    const c = { name: 'FD_STDERR', value: 2n, rawText: '2', definedVia: '=' as const };
+    assert.strictEqual(formatConstantDetailed(c), 'FD_STDERR  (constant, defined via "=")\nvalue = 0x2  2');
+    assert.strictEqual(formatConstantCompact(c), '0x2  2');
+  });
+
+  it('formats a negative constant with a signed hex representation', () => {
+    const c = { name: 'X', value: -1n, rawText: '-1', definedVia: 'equ' as const };
+    assert.strictEqual(formatConstantCompact(c), '-0x1  -1');
+  });
+
+  it('falls back to the raw definition text when the value could not be parsed', () => {
+    const c = { name: 'X', value: undefined, rawText: 'Y + 1', definedVia: '=' as const };
+    assert.strictEqual(formatConstantDetailed(c), 'X  (constant, defined via "=")\ntext: Y + 1  (not a plain number — this lightweight scan doesn\'t evaluate expressions)');
+    assert.strictEqual(formatConstantCompact(c), '(constant) Y + 1');
   });
 });

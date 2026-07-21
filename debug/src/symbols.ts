@@ -157,3 +157,112 @@ export function buildSymbolAddressMap(entries: readonly ListingEntry[]): Map<str
 
   return symbols;
 }
+
+export interface ConstantSymbol {
+  name: string;
+  /** Parsed value, when the definition's right-hand side is a single, directly-parseable numeric
+   * literal (decimal, "0x"/"0b"-prefixed, or an asm-style h/b/o-suffixed literal, digit separators
+   * stripped). Undefined when the right-hand side is anything else — an expression referencing
+   * other symbols, a string, a register — that this lightweight, non-evaluating scan can't
+   * compute (fasmg's own preprocessor would; this doesn't reimplement it). */
+  value?: bigint;
+  /** The definition's own right-hand-side text, exactly as written — always available, shown
+   * when `value` couldn't be parsed. */
+  rawText: string;
+  definedVia: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine';
+}
+
+const BUILTIN_PSEUDO_VARIABLES: ReadonlySet<string> = new Set(['$', '$$', '$@', '$%', '$%%', '%', '%%']);
+
+/** Parses a *source* numeric literal (not user-typed input — no wrapping/modulus, unlike
+ * registers.ts's parseUserNumber) — decimal, "0x"/"0b"-prefixed, or an asm-style h/b/o-suffixed
+ * literal, with fasmg's own digit separators ("'"/"_", manual.txt's "Fundamental syntax rules")
+ * stripped first. Returns undefined for anything else (a float, an expression, ...). */
+function parseSourceLiteral(text: string): bigint | undefined {
+  const cleaned = text.replace(/[_']/g, '');
+  if (/^0x[0-9a-f]+$/i.test(cleaned)) return BigInt(cleaned);
+  if (/^0b[01]+$/i.test(cleaned)) return BigInt(cleaned);
+  if (/^[0-9a-f]+h$/i.test(cleaned)) return BigInt(`0x${cleaned.slice(0, -1)}`);
+  if (/^[01]+b$/i.test(cleaned)) return BigInt(`0b${cleaned.slice(0, -1)}`);
+  if (/^[0-7]+o$/i.test(cleaned)) return BigInt(`0o${cleaned.slice(0, -1)}`);
+  if (/^\d+d?$/i.test(cleaned)) return BigInt(cleaned.replace(/d$/i, ''));
+  return undefined;
+}
+
+function addConstant(map: Map<string, ConstantSymbol>, name: string, valueTokens: Token[], definedVia: ConstantSymbol['definedVia']): void {
+  if (BUILTIN_PSEUDO_VARIABLES.has(name) || map.has(name)) return; // first definition wins, same convention as buildSymbolAddressMap
+  const rawText = valueTokens.map((t) => t.text).join(' ');
+
+  let value: bigint | undefined;
+  if (valueTokens.length === 1 && valueTokens[0].type === TokenType.Number) {
+    value = parseSourceLiteral(valueTokens[0].text);
+  } else if (valueTokens.length === 2 && valueTokens[0].type === TokenType.Punct && valueTokens[0].text === '-' && valueTokens[1].type === TokenType.Number) {
+    const abs = parseSourceLiteral(valueTokens[1].text);
+    value = abs === undefined ? undefined : -abs;
+  }
+
+  map.set(name, { name, value, rawText, definedVia });
+}
+
+/**
+ * Resolves a symbolic constant (e.g. "FD_STDERR = 2" or "FD_STDOUT equ 1") to its defined value —
+ * these have no runtime address at all (fasmg substitutes them at compile time; nothing is ever
+ * generated for the definition line itself), so gdb has no way to answer "what's the value of
+ * FD_STDERR" — asking it fails with "No symbol table is loaded", a raw gdb error that isn't
+ * meaningful to someone debugging assembly. Resolving this ourselves, entirely from the listing
+ * (mirroring server/src/parser/symbolIndex.ts's own token patterns for constant definitions —
+ * see manual.txt's "Basic symbol definitions"), means hover/Watch never needs to ask gdb about a
+ * constant at all.
+ */
+export function buildConstantMap(entries: readonly ListingEntry[]): Map<string, ConstantSymbol> {
+  const constants = new Map<string, ConstantSymbol>();
+
+  for (const entry of entries) {
+    const tokens = tokenizeLine(entry.text, 0).filter((t) => t.type !== TokenType.Comment);
+    if (tokens.length < 2 || tokens[0].type !== TokenType.Ident) continue;
+
+    // ":=" and "=:" are two punctuation tokens each (the tokenizer never merges multi-char
+    // operators) — only count as one when written with no space between them, matching how
+    // fasmg itself requires no space in these operators.
+    const isColonEquals = tokens[1].type === TokenType.Punct && tokens[1].text === ':' && tokens[2]?.type === TokenType.Punct && tokens[2].text === '=' && tokens[1].endChar === tokens[2].startChar;
+    const isEqualsColon = tokens[1].type === TokenType.Punct && tokens[1].text === '=' && tokens[2]?.type === TokenType.Punct && tokens[2].text === ':' && tokens[1].endChar === tokens[2].startChar;
+    const isPlainEquals = tokens[1].type === TokenType.Punct && tokens[1].text === '=' && !isEqualsColon;
+    const lower1 = tokens[1].text.toLowerCase();
+    const isEqu = lower1 === 'equ';
+    const isReequ = lower1 === 'reequ';
+
+    if (isColonEquals || isEqualsColon || isPlainEquals || isEqu || isReequ) {
+      const definedVia: ConstantSymbol['definedVia'] = isColonEquals ? ':=' : isEqualsColon ? '=:' : isEqu ? 'equ' : isReequ ? 'reequ' : '=';
+      const valueStart = isColonEquals || isEqualsColon ? 3 : 2;
+      addConstant(constants, tokens[0].text, tokens.slice(valueStart), definedVia);
+      continue;
+    }
+
+    // "define NAME expr" / "redefine NAME expr" — unlike every other form above, the *directive*
+    // comes first and the name second (manual.txt: "define y -a").
+    const lower0 = tokens[0].text.toLowerCase();
+    if ((lower0 === 'define' || lower0 === 'redefine') && tokens[1].type === TokenType.Ident) {
+      addConstant(constants, tokens[1].text, tokens.slice(2), lower0 as 'define' | 'redefine');
+      continue;
+    }
+  }
+
+  return constants;
+}
+
+/** Multi-line hover explanation for a resolved constant — see formatConstantCompact for the
+ * single-line form used everywhere else (Watch/REPL/inline values). */
+export function formatConstantDetailed(c: ConstantSymbol): string {
+  const header = `${c.name}  (constant, defined via "${c.definedVia}")`;
+  if (c.value === undefined) {
+    return `${header}\ntext: ${c.rawText}  (not a plain number — this lightweight scan doesn't evaluate expressions)`;
+  }
+  const hex = c.value < 0n ? `-0x${(-c.value).toString(16)}` : `0x${c.value.toString(16)}`;
+  return `${header}\nvalue = ${hex}  ${c.value.toString()}`;
+}
+
+export function formatConstantCompact(c: ConstantSymbol): string {
+  if (c.value === undefined) return `(constant) ${c.rawText}`;
+  const hex = c.value < 0n ? `-0x${(-c.value).toString(16)}` : `0x${c.value.toString(16)}`;
+  return `${hex}  ${c.value.toString()}`;
+}
