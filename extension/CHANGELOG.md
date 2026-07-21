@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Fixed: diagnostics for an already-saved file were compiling from last-saved disk content
+  instead of the live editor buffer, so unsaved edits (including to a fragment included by a
+  different entry file) wouldn't be flagged until the file was saved.
+
 ## 0.2.1
 
 - No functional changes; fixes the publish workflow (previous tag failed CI validation).
