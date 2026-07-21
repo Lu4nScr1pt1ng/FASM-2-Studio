@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.0
+
+- Mapped the remaining constant-definition operators: `:=` (defined exactly once,
+  forward-reference-safe), `=:` (preserves the previous value, restorable with `restore`),
+  `reequ` (like `equ` but discards the previous value), and `define`/`redefine NAME EXPR`. Found
+  by analyzing fasmg's own `packages/x86/include/macro/proc64.inc`, which uses all seven
+  constant-defining forms side by side. Also fixed the `?` weak/overridable-name suffix only
+  being stripped from macro/struct names and not from constants defined this way, and a macro's
+  `!` (unconditional) suffix being mistaken for a parameter (`macro endp?!` showed a bogus `!`
+  parameter).
+- Fixed the block-nesting tracker desyncing for the rest of a file after a macro that
+  deliberately leaves a block open across invocations (`proc64.inc`'s own `initlocal` opens a
+  `virtual at` block only closed later by a separate macro) — a real, confirmed pattern this
+  parser can't fully follow, now recovered from instead of corrupting every macro-local scope
+  after it.
+- Added hover documentation for fasmg's built-in pseudo-variables (`$`, `$$`, `$@`, `%`, `%%`)
+  and its logical-expression operators (`~`, `&`, `|` — distinct from the word-form `not`/`and`/`or`
+  used in ordinary arithmetic, and from `&` on a macro's last parameter, which means something
+  else entirely). Verified the "logical-only, not arithmetic" distinction against the real
+  compiler.
+- Macro/struct hover now explains the parameter modifiers actually present (`*` required,
+  `:` default value, `&` captures the rest of the line) and the name's own `?`/`!` suffixes,
+  instead of showing the raw signature with no explanation.
+- Fixed a macro defined *inside* another macro's body (e.g. `com64.inc`'s `cominvk`/`comcall`,
+  each defining their own private `call` macro meant to shadow the real CALL instruction only for
+  their own body) having no position-aware scoping at all — hovering `call` anywhere, even
+  directly on one of these nested definitions, always fell through to the real x86 instruction.
+- Synced the syntax-highlight grammar with all of the above: `:=`/`=:`/`reequ` now get the same
+  treatment as `=`/`equ`; `$`/`$$`/`$@`/`%`/`%%` get their own scope instead of no styling (or,
+  for `%`, generic operator styling); fasmg's `$1A`-style dollar-prefixed hex literal is now
+  recognized as a number.
+
 ## 0.10.0
 
 - Fixed `local` variables inside macros being tracked as one shared global constant instead of a
