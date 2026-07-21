@@ -19,6 +19,14 @@ const DATA_DIRECTIVES: ReadonlySet<string> = new Set([
   'rb', 'rw', 'rd', 'rp', 'rf', 'rq', 'rt', 'rdq', 'rqq', 'rdqq', 'file',
 ]);
 
+/** Joins a macro/struct's parameter tokens back into source text (no separator, so operators like
+ * "*" in "a*,b*" don't grow a spurious space). Drops a trailing "{" — present when the block body
+ * opens on the same line (e.g. "macro foo a, b {") — which isn't part of the parameter list. */
+function paramsFromTokens(tokens: Token[]): string | undefined {
+  const relevant = tokens.length > 0 && tokens[tokens.length - 1].text === '{' ? tokens.slice(0, -1) : tokens;
+  return relevant.map((t) => t.text).join('').trim() || undefined;
+}
+
 const BLOCK_END_KEYWORDS: Record<string, string> = {
   macro: 'end',
   struct: 'ends',
@@ -108,7 +116,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           kind: SymbolKind.Macro,
           range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(nameTok),
-          params: tokens.slice(2).map((t) => t.text).join('').trim() || undefined,
+          params: paramsFromTokens(tokens.slice(2)),
           uri,
         });
         blockStack.push('macro');
@@ -123,7 +131,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           kind: SymbolKind.Struct,
           range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
           nameRange: tokenRange(nameTok),
-          params: tokens.slice(2).map((t) => t.text).join('').trim() || undefined,
+          params: paramsFromTokens(tokens.slice(2)),
           uri,
         });
         blockStack.push('struct');

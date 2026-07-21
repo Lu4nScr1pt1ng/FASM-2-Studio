@@ -128,6 +128,13 @@ describe('symbolIndex', () => {
     assert.strictEqual(struct?.params, undefined);
   });
 
+  it('drops the inline "{" from params when a macro/struct body opens on the same line', () => {
+    const src = ['macro push_all reg1, reg2 {', '\tpush reg1', '\tpush reg2', '}'].join('\n');
+    const doc = parseDocument('file:///inlinebrace.asm', 1, src, 'fasm2');
+    const macro = doc.symbols.find((s) => s.name === 'push_all');
+    assert.strictEqual(macro?.params, 'reg1,reg2');
+  });
+
   it('keeps every definition when a constant is redefined rather than silently dropping earlier ones', () => {
     const src = ['SIZE = 1', 'SIZE = 2'].join('\n');
     const doc = parseDocument('file:///redefined.asm', 1, src, 'fasm2');

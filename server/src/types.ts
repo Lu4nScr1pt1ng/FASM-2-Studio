@@ -69,6 +69,15 @@ export interface RegisterEntry {
   bits: number;
 }
 
+/** One general-purpose register's sub-width aliases (e.g. al/ax/eax/rax) plus its calling-
+ * convention role — shown on hover regardless of which width the cursor is actually on. */
+export interface RegisterFamilyEntry {
+  widths: Partial<Record<'8' | '16' | '32' | '64', string>>;
+  /** Legacy 8-bit high-byte view (ah/bh/ch/dh) — only al/bl/cl/dl have one. */
+  highByte?: string;
+  role: string;
+}
+
 export interface DirectiveEntry {
   name: string;
   summary: string;

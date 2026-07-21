@@ -13,7 +13,7 @@
   { "name": "ELFx32", "summary": "Selects the ELF x32 ABI: x86-64 instructions with 32-bit pointers." },
   {
     "name": "executable",
-    "summary": "For ELF/ELF64/ELFx32: produces a standalone executable (ET_EXEC) instead of a relocatable object. An optional trailing identifier/number sets the OSABI field, e.g. \"format ELF64 executable 3\" sets OSABI to 3 (Linux/GNU); 0 = System V, 9 = FreeBSD, 12 = OpenBSD. For MachO/MachO64: produces a runnable image instead of an object file. Not a keyword for PE/MZ/COFF — those are executables by default (PE becomes a library only via \"DLL\")."
+    "summary": "Two distinct meanings depending on where it appears. Right after \"format\": for ELF/ELF64/ELFx32, produces a standalone executable (ET_EXEC) instead of a relocatable object — an optional trailing identifier/number sets the OSABI field, e.g. \"format ELF64 executable 3\" sets OSABI to 3 (Linux/GNU); 0 = System V, 9 = FreeBSD, 12 = OpenBSD; for MachO/MachO64, produces a runnable image instead of an object file; not a keyword for PE/MZ/COFF, which are executables by default (PE becomes a library only via \"DLL\"). In a \"segment\"/\"section\" attribute list (e.g. \"segment readable executable\"): marks that segment's pages as executable (ELF PF_X / PE section characteristic) — this is the far more common everyday use."
   },
   { "name": "dynamic", "summary": "For ELF/ELF64 (not ELFx32, which doesn't accept it): produces a position-independent/shared-object executable (ET_DYN), e.g. for PIE binaries or .so libraries." },
   { "name": "console", "summary": "PE subsystem: console application (IMAGE_SUBSYSTEM_WINDOWS_CUI)." },
