@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed: `FASM: Debug` could fail with "Could not find the task 'fasm: Debug build (active file)'"
+  when starting a session any way other than with the target `.asm` file focused (e.g. from the
+  Run and Debug panel) — the debug build now runs directly instead of depending on VS Code's
+  task-label lookup.
+- Fixed: diagnostics silently produced nothing, with no explanation, when no fasm2/fasm1 compiler
+  could be resolved on `PATH`; now logs a warning explaining what's missing.
+- Fixed: a document diagnosed before workspace indexing finished (so its real entry point
+  couldn't be found yet) was never re-diagnosed once indexing completed.
+
 ## 0.2.2
 
 - Fixed: diagnostics for an already-saved file were compiling from last-saved disk content
