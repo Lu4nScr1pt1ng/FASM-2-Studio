@@ -24,6 +24,16 @@ function defaultOutputFor(sourceFsPath: string): string {
   return path.join(dir, name);
 }
 
+/** fasm2Studio.buildOutputPath, resolved against the source file's own directory (as documented),
+ * not the workspace root — so e.g. "../bin/cc" from a source file in "src/" lands in "<root>/bin/",
+ * letting build/debug output be redirected somewhere already covered by a project's .gitignore
+ * instead of sitting next to the source it was built from. */
+function configuredOutputFor(sourceFsPath: string): string | undefined {
+  const configured = vscode.workspace.getConfiguration('fasm2Studio').get<string>('buildOutputPath', '').trim();
+  if (!configured) return undefined;
+  return path.isAbsolute(configured) ? configured : path.resolve(path.dirname(sourceFsPath), configured);
+}
+
 export function getListingPath(outputFsPath: string): string {
   return `${outputFsPath}.lst`;
 }
@@ -55,7 +65,7 @@ function resolveWorkspacePath(raw: string): string {
 
 export async function buildTask(def: FasmTaskDefinition, name: string): Promise<vscode.Task> {
   const sourceFsPath = resolveWorkspacePath(def.file);
-  const outputFsPath = def.output ? resolveWorkspacePath(def.output) : defaultOutputFor(sourceFsPath);
+  const outputFsPath = def.output ? resolveWorkspacePath(def.output) : getDefaultOutputPath(sourceFsPath);
   const dialect = await dialectFor(sourceFsPath, def.dialect);
 
   if (def.debugBuild && dialect !== 'fasm2') {
@@ -68,6 +78,15 @@ export async function buildTask(def: FasmTaskDefinition, name: string): Promise<
       `Could not find a ${dialect === 'fasm1' ? 'fasm1' : 'fasm2/fasmg'} executable on PATH. ` +
         `Set "fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'}" or install it.`,
     );
+  }
+
+  // fasm2/fasm1 won't create missing parent directories for their own output file — needed for
+  // fasm2Studio.buildOutputPath to actually redirect output into a not-yet-existing directory
+  // (e.g. a project's already-gitignored "bin/") instead of silently failing to write there.
+  try {
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(outputFsPath)));
+  } catch {
+    // Best-effort: if this fails, the compiler invocation below will surface its own clear error.
   }
 
   const args: (string | vscode.ShellQuotedString)[] = [sourceFsPath, outputFsPath, ...(def.extraArgs ?? [])];
@@ -87,7 +106,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string): Promise<
 }
 
 export function getDefaultOutputPath(sourceFsPath: string): string {
-  return defaultOutputFor(sourceFsPath);
+  return configuredOutputFor(sourceFsPath) ?? defaultOutputFor(sourceFsPath);
 }
 
 export const DEBUG_BUILD_TASK_NAME = 'Debug build (active file)';

@@ -75,7 +75,7 @@
         "fasm2Studio.buildOutputPath": {
           "type": "string",
           "default": "",
-          "description": "Output path for the default Build task, relative to the source file's directory. Leave empty to use the source file name with its extension stripped."
+          "description": "Output path for Build/Run/Debug, relative to the source file's directory (e.g. \"../bin/cc\" to keep build output out of the source tree). FASM: Debug's .lst listing is placed alongside it. Leave empty to use the source file name with its extension stripped, next to the source."
         },
         "fasm2Studio.gdbPath": {
           "type": "string",
