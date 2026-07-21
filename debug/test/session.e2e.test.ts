@@ -298,4 +298,67 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       fs.rmSync(regDir, { recursive: true, force: true });
     }
   });
+
+  it('sets register values from the Registers panel and from a Watch expression', async function () {
+    this.timeout(30000);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 9 }] }); // "add eax, ebx"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const registersRef = scopes.scopes[0].variablesReference;
+
+      // setVariable (the Registers panel's in-place editor), plain decimal.
+      const viaSetVariable = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: registersRef,
+        name: 'eax',
+        value: '42',
+      });
+      assert.strictEqual(viaSetVariable.value, 'eax = 0x0000002a  42  0b0000_0000_0000_0000_0000_0000_0010_1010');
+
+      // The write is real, not just echoed back: re-reading confirms it via a fresh evaluate.
+      const reread = await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' });
+      assert.strictEqual(reread.result, viaSetVariable.value);
+
+      // setExpression (editing a Watch entry), asm-style "h" hex suffix and a "$"-prefixed name.
+      const viaSetExpression = await client.sendRequest<{ value: string }>('setExpression', {
+        expression: '$eax',
+        value: '2Ah',
+      });
+      assert.strictEqual(viaSetExpression.value, viaSetVariable.value, 'expected "2Ah" (asm hex) to parse to the same 42 as decimal "42"');
+
+      // A negative decimal wraps to the register's own two's-complement bit pattern.
+      const negative = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: registersRef,
+        name: 'ebx',
+        value: '-1',
+      });
+      assert.strictEqual(negative.value, 'ebx = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+
+      // An unparseable value is rejected with an error response, not silently ignored.
+      await assert.rejects(
+        client.sendRequest('setVariable', { variablesReference: registersRef, name: 'eax', value: 'not a number' }),
+        /Could not parse/,
+      );
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
 });

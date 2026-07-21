@@ -60,6 +60,33 @@ function formatRegisterValue(name: string, bits: 8 | 16 | 32 | 64, value: bigint
   return `${name} = 0x${hex}  ${value.toString()}  0b${bin}`;
 }
 
+/**
+ * Parses user input for "set this register to a new value", accepting decimal, `0x.../0b...`,
+ * and the asm-style `...h` hex suffix (e.g. "1234h") — since this is what someone debugging
+ * assembly is used to typing. A negative decimal wraps to the register's own two's-complement bit
+ * pattern (so "-1" on a 32-bit register becomes 0xffffffff) rather than being rejected, since
+ * that's a genuinely useful shorthand at this level. Falls back to pulling the leading `0x...`
+ * out of our own hover/Registers-panel display string, so re-submitting an unedited value (VS
+ * Code pre-fills the edit box with the current display text) is a no-op instead of an error.
+ */
+function parseUserNumber(input: string, bits: 8 | 16 | 32 | 64): bigint | undefined {
+  const trimmed = input.trim();
+  const modulus = 1n << BigInt(bits);
+
+  let value: bigint | undefined;
+  if (/^0x[0-9a-f]+$/i.test(trimmed)) value = BigInt(trimmed);
+  else if (/^0b[01]+$/i.test(trimmed)) value = BigInt(trimmed);
+  else if (/^[0-9a-f]+h$/i.test(trimmed)) value = BigInt(`0x${trimmed.slice(0, -1)}`);
+  else if (/^-?\d+$/.test(trimmed)) value = BigInt(trimmed);
+  else {
+    const hexMatch = /0x[0-9a-f]+/i.exec(trimmed);
+    if (hexMatch) value = BigInt(hexMatch[0]);
+  }
+
+  if (value === undefined) return undefined;
+  return ((value % modulus) + modulus) % modulus;
+}
+
 interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
   /** Path to the assembled, executable binary. */
   program: string;
@@ -99,6 +126,8 @@ export class FasmDebugSession extends DebugSession {
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsEvaluateForHovers = true;
     response.body.supportsSingleThreadExecutionRequests = false;
+    response.body.supportsSetVariable = true;
+    response.body.supportsSetExpression = true;
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -426,6 +455,63 @@ export class FasmDebugSession extends DebugSession {
     } catch (err) {
       this.sendErrorResponse(response, 3, (err as Error).message);
     }
+  }
+
+  /** Edits a register's value from the Registers panel (VS Code's in-place variable editor). */
+  protected async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
+    if (this.variableHandles.get(args.variablesReference) !== 'registers') {
+      this.sendErrorResponse(response, 8, 'Only registers can be set');
+      return;
+    }
+    const formatted = await this.setRegister(args.name.toLowerCase(), args.value, response);
+    if (formatted === undefined) return; // an error response was already sent
+    response.body = { value: formatted };
+    this.sendResponse(response);
+  }
+
+  /** Edits a register's value from a Watch expression (typing e.g. "eax" into Watch, then
+   * editing its value in place — DAP's setVariable only covers the Variables/Registers tree). */
+  protected async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments): Promise<void> {
+    const registerName = args.expression.trim().replace(/^\$/, '').toLowerCase();
+    const formatted = await this.setRegister(registerName, args.value, response);
+    if (formatted === undefined) return; // an error response was already sent
+    response.body = { value: formatted, variablesReference: 0 };
+    this.sendResponse(response);
+  }
+
+  /**
+   * Shared by setVariable/setExpression: validates `name` is a register we know the width of,
+   * parses `rawValue` (decimal/hex/binary/asm-style "h" suffix — see parseUserNumber), assigns it
+   * in gdb via the same "$reg = value" expression-evaluator trick used to *read* registers
+   * elsewhere in this file, and returns the freshly re-read, freshly formatted value — the caller
+   * still has to attach it to `response.body` and call `sendResponse` itself. On failure, sends an
+   * error response itself and returns undefined, so the caller knows to stop.
+   */
+  private async setRegister(name: string, rawValue: string, response: DebugProtocol.Response): Promise<string | undefined> {
+    if (!this.gdb) {
+      this.sendErrorResponse(response, 2, 'Debug session is not running');
+      return undefined;
+    }
+    const bits = REGISTER_WIDTH_BITS[name];
+    if (bits === undefined) {
+      this.sendErrorResponse(response, 5, `"${name}" is not a register this debugger knows how to set`);
+      return undefined;
+    }
+    const parsed = parseUserNumber(rawValue, bits);
+    if (parsed === undefined) {
+      this.sendErrorResponse(response, 6, `Could not parse "${rawValue}" as a number (try decimal, 0x.., 0b.., or an asm-style ..h hex literal)`);
+      return undefined;
+    }
+
+    try {
+      await this.gdb.sendCommand(`-data-evaluate-expression "$${name} = ${parsed.toString()}"`);
+    } catch (err) {
+      this.sendErrorResponse(response, 7, (err as Error).message);
+      return undefined;
+    }
+
+    const formatted = await this.formatRegister(name, bits);
+    return formatted ?? parsed.toString();
   }
 
   protected async disconnectRequest(response: DebugProtocol.DisconnectResponse): Promise<void> {
