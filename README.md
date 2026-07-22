@@ -7,8 +7,8 @@ across your whole project, live error checking from the real compiler, and build
 on Linux, macOS and Windows, with nothing native bundled into the extension itself.
 
 It does not ship a compiler or a debugger. It drives whatever `fasm2`/`fasm1` (and, for debugging,
-`gdb`/`lldb`) you already have installed, the same way a C/C++ or Rust extension drives your
-existing toolchain rather than bringing its own.
+`gdb` — or `lldb-mi` on macOS) you already have installed, the same way a C/C++ or Rust extension
+drives your existing toolchain rather than bringing its own.
 
 ## Install this first
 
@@ -19,14 +19,17 @@ existing toolchain rather than bringing its own.
 
 **macOS**
 - `fasm2` and/or `fasm1`, on your `PATH`.
-- Xcode Command Line Tools, if you want to debug (`xcode-select --install`) — this is what
-  provides `lldb`. Most machines that have ever built anything already have it.
+- For debugging (experimental): Apple ships no gdb, and the `lldb` that comes with Xcode does
+  *not* speak the GDB/MI protocol this extension's debug adapter uses. The MI-speaking frontend
+  is [`lldb-mi`](https://github.com/lldb-tools/lldb-mi) — build it from source (Apple stopped
+  bundling it with Xcode in 2019 and it isn't in Homebrew), then put it on `PATH` or point
+  `fasm2Studio.gdbPath` at it.
 
 **Windows**
 - `fasm2` and/or `fasm1`, on your `PATH`.
 - For debugging: a `gdb` build, most easily from MSYS2 (`pacman -S mingw-w64-x86_64-gdb`) or
-  w64devkit. Windows has no built-in equivalent to gdb/lldb, so this is the one genuinely extra
-  step compared to the other two platforms.
+  w64devkit. Windows has no built-in gdb, so this is the one genuinely extra step compared to
+  Linux.
 
 If a compiler isn't on `PATH`, set `fasm2Studio.fasm2CompilerPath` / `fasm2Studio.fasm1CompilerPath`
 in your VS Code settings instead. The dialect (fasm2 vs. fasm1) is auto-detected per file from
@@ -56,7 +59,7 @@ extension finds your compiler automatically; a status bar item shows which one i
 you override it.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source file is never
-modified) and launches it under gdb/lldb. Breakpoints, step, and continue all work; since fasm2
+modified) and launches it under gdb (or lldb-mi). Breakpoints, step, and continue all work; since fasm2
 doesn't emit DWARF/CodeView debug info, source-line mapping comes from that listing rather than a
 standard debug format, and there's no call-stack unwinding or typed variables — what you get
 instead is a live register view and gdb-expression evaluation (`$eax`, `*(dword*)$esp`, and so
@@ -65,9 +68,10 @@ only; fasm1 uses a different native listing format this extension doesn't parse.
 is exercised end to end locally (Linux) against a real, live compiled binary; CI runs the
 listing/MI-parser unit tests against pre-captured fixtures on every push, but doesn't install
 fasm2 itself, so the live end-to-end session test skips there rather than verifying a real gdb
-session on any platform. Debugging on Windows (gdb) and macOS (lldb, sharing the same MI-protocol
-driver) hasn't been verified against a real session either way — if you hit something there,
-please open an issue.
+session on any platform. Debugging on Windows (gdb) and macOS (lldb-mi, which implements the same
+MI protocol — its command coverage was checked against its source, but no real session has been
+run) hasn't been verified end to end either way — if you hit something there, please open an
+issue.
 
 ## Repository layout
 
@@ -76,7 +80,7 @@ npm workspaces, three packages:
 - `server/` — the language server. Not a full assembler: a fast, single-pass tokenizer and symbol
   index built for editor tooling, plus a diagnostics engine that shells out to the real compiler.
 - `debug/` — the debug adapter: parses the listing fasm2 produces into an address/source-line map,
-  drives gdb (or lldb) over its machine interface, and exposes it all as a standard DAP session.
+  drives gdb (or lldb-mi) over its machine interface, and exposes it all as a standard DAP session.
 - `extension/` — the VS Code extension itself: grammar, language configuration, snippets, the
   language client, the build/run/debug task and configuration providers, and compiler discovery.
 

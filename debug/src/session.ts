@@ -122,8 +122,12 @@ export class FasmDebugSession extends DebugSession {
       this.gdb.on('exit', () => this.sendEvent(new TerminatedEvent()));
       this.gdb.on('error', (err) => this.sendEvent(new OutputEvent(`gdb error: ${err.message}\n`, 'stderr')));
 
+      // macOS ships no gdb at all (and Apple's lldb doesn't speak the MI protocol this adapter
+      // uses) — the MI-capable debugger there is lldb-mi, so that's the default worth probing for
+      // on darwin instead of a gdb that can't exist. See buildLaunchArgs for the invocation
+      // differences between the two.
       this.gdb.start({
-        gdbPath: args.gdbPath || 'gdb',
+        gdbPath: args.gdbPath || (process.platform === 'darwin' ? 'lldb-mi' : 'gdb'),
         programPath: path.resolve(args.program),
         cwd: args.cwd ?? path.dirname(args.program),
       });

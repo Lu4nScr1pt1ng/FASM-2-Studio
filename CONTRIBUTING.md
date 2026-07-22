@@ -63,7 +63,7 @@ it fresh).
 - `debug/` is the debug adapter. `debug/src/listingMap.ts` correlates machine addresses back to
   source lines using a listing macro injected via fasm2's `-i` flag (fasm2 doesn't emit DWARF or
   CodeView by default, so there's no standard debug format to lean on).
-  `debug/src/gdbDriver.ts`/`miParser.ts` drive gdb (or lldb) over its machine interface.
+  `debug/src/gdbDriver.ts`/`miParser.ts` drive gdb (or lldb-mi) over its machine interface.
 - `extension/` is the VS Code glue: the grammar, snippets, task providers, and the bits that wire
   the language server and debug adapter into the editor.
 

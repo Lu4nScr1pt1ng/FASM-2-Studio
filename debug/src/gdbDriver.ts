@@ -4,6 +4,7 @@
 // re-emitted as events for the debug session to react to.
 import { ChildProcess, spawn } from 'child_process';
 import { EventEmitter } from 'events';
+import * as path from 'path';
 import { MIRecord, parseMILine } from './miParser';
 
 export interface GdbDriverOptions {
@@ -20,6 +21,24 @@ interface PendingCommand {
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
+
+/**
+ * Builds the debugger's own command line. gdb and lldb-mi need different invocations: lldb-mi's
+ * option parser (checked against lldb-tools/lldb-mi's MIDriver.cpp/MIDriverMgr.cpp source, not
+ * guessed) accepts only --interpreter/--executable/--log/--version/--help and scans the rest of
+ * the command line right-to-left for anything filename-shaped to treat as the executable — so
+ * gdb's --nx/-q/--args flags aren't just ignored there, "--args" itself can get *misparsed as
+ * the program path*. The conventional client invocation is `lldb-mi --interpreter <program>`
+ * (what Eclipse and VS Code's cpptools used), detected here by binary name. lldb-mi has no
+ * --args equivalent, so program arguments are only supported on the gdb form (nothing in this
+ * extension passes any today).
+ */
+export function buildLaunchArgs(debuggerPath: string, programPath: string, programArgs: string[] = []): string[] {
+  if (path.basename(debuggerPath).toLowerCase().includes('lldb-mi')) {
+    return ['--interpreter', programPath];
+  }
+  return ['--interpreter=mi3', '--nx', '-q', '--args', programPath, ...programArgs];
+}
 
 /**
  * Thin async wrapper over a spawned gdb/lldb-mi process's stdin/stdout MI stream.
@@ -41,11 +60,9 @@ export class GdbDriver extends EventEmitter {
   private buffer = '';
 
   start(opts: GdbDriverOptions): void {
-    this.child = spawn(
-      opts.gdbPath,
-      ['--interpreter=mi3', '--nx', '-q', '--args', opts.programPath, ...(opts.programArgs ?? [])],
-      { cwd: opts.cwd },
-    );
+    this.child = spawn(opts.gdbPath, buildLaunchArgs(opts.gdbPath, opts.programPath, opts.programArgs ?? []), {
+      cwd: opts.cwd,
+    });
 
     this.child.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));
     this.child.stderr?.on('data', (chunk: Buffer) => this.emit('stderr', chunk.toString('utf8')));

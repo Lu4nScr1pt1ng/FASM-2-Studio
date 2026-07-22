@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { GdbDriver } from '../src/gdbDriver';
+import { buildLaunchArgs, GdbDriver } from '../src/gdbDriver';
 
 function isAvailable(command: string): boolean {
   const result = spawnSync(command, ['--version'], { timeout: 5000 });
@@ -26,6 +26,22 @@ const PROGRAM_SRC = [
   '\tsyscall',
   '',
 ].join('\n');
+
+describe('buildLaunchArgs', () => {
+  it('uses the full gdb flag set for a gdb binary', () => {
+    assert.deepStrictEqual(buildLaunchArgs('gdb', '/tmp/prog'), ['--interpreter=mi3', '--nx', '-q', '--args', '/tmp/prog']);
+    assert.deepStrictEqual(buildLaunchArgs('/usr/bin/gdb', '/tmp/prog', ['a', 'b']), ['--interpreter=mi3', '--nx', '-q', '--args', '/tmp/prog', 'a', 'b']);
+  });
+
+  it('uses the minimal lldb-mi invocation for an lldb-mi binary (its option parser rejects/misparses the gdb flags)', () => {
+    // lldb-mi scans the command line right-to-left for anything filename-shaped to treat as the
+    // executable, so gdb's "--args" flag can itself get picked up as the program path there —
+    // the conventional client invocation is just "--interpreter <program>".
+    assert.deepStrictEqual(buildLaunchArgs('lldb-mi', '/tmp/prog'), ['--interpreter', '/tmp/prog']);
+    assert.deepStrictEqual(buildLaunchArgs('/usr/local/bin/lldb-mi', '/tmp/prog'), ['--interpreter', '/tmp/prog']);
+    assert.deepStrictEqual(buildLaunchArgs('C:\\tools\\lldb-mi.exe', '/tmp/prog'), ['--interpreter', '/tmp/prog']);
+  });
+});
 
 describe('GdbDriver (integration, real gdb + a real compiled fasm2 ELF binary)', function () {
   let dir: string;

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.0
+
+- `fasm2Studio.gdbPath` now defaults to `lldb-mi` on macOS instead of `gdb`, which Apple doesn't
+  ship at all. Real debugging on macOS is still experimental and unverified end to end (Apple's
+  own `lldb` doesn't speak the GDB/MI protocol this extension's debug adapter uses — the
+  MI-speaking frontend is the separate, self-built [`lldb-mi`](https://github.com/lldb-tools/lldb-mi)
+  project), but the driver now launches it with its own correct argument form: lldb-mi's option
+  parser is not gdb's, and passing it gdb's `--nx`/`-q`/`--args` flags could get `--args` itself
+  misparsed as the program path, since lldb-mi scans the command line for anything filename-shaped.
+- Corrected README/CONTRIBUTING/extension-manifest text that implied Xcode's bundled `lldb`
+  already works as the debug backend on macOS — it doesn't; documented the actual `lldb-mi`
+  requirement instead.
+
 ## 0.18.0
 
 - Large performance pass over the language server's hot paths, each change verified with

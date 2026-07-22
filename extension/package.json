@@ -1,8 +1,8 @@
 {
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
-  "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb/lldb debugging for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "0.18.0",
+  "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
+  "version": "0.19.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -116,7 +116,7 @@
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",
-          "description": "Path to gdb, used by FASM: Debug. Leave empty to use \"gdb\" from PATH (e.g. from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
+          "description": "Path to the MI-speaking debugger used by FASM: Debug — gdb on Linux/Windows, lldb-mi on macOS. Leave empty to use \"gdb\" from PATH (\"lldb-mi\" on macOS; e.g. gdb from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
         }
       }
     },
@@ -217,7 +217,7 @@
               },
               "gdbPath": {
                 "type": "string",
-                "description": "Path to gdb. Leave unset to use \"gdb\" from PATH."
+                "description": "Path to gdb (or lldb-mi on macOS). Leave unset to use \"gdb\" from PATH (\"lldb-mi\" on macOS)."
               },
               "cwd": {
                 "type": "string",

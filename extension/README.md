@@ -2,7 +2,7 @@
 
 Editor tooling for [flat assembler g](https://flatassembler.net) (fasmg, distributed as "fasm2"),
 with source compatibility for classic flat assembler 1. This extension drives whatever
-`fasm2`/`fasm1` (and, for debugging, `gdb`/`lldb`) you already have installed — it doesn't bundle
+`fasm2`/`fasm1` (and, for debugging, `gdb` — or `lldb-mi` on macOS) you already have installed — it doesn't bundle
 a compiler or a debugger, the same way a C/C++ or Rust extension works with your existing
 toolchain rather than shipping its own.
 
@@ -27,7 +27,7 @@ extension finds your compiler automatically; a status bar item shows which one i
 you override it.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source is never
-modified) and launches it under gdb/lldb, with real breakpoints, stepping, and a live register
+modified) and launches it under gdb (or lldb-mi), with real breakpoints, stepping, and a live register
 view. fasm2 doesn't emit standard debug info by default, so source-line mapping comes from that
 listing instead — which also means there's no call-stack unwinding or typed variables; register
 and memory inspection via gdb's own expression evaluator (`$eax`, `*(dword*)$esp`, ...) is the
@@ -42,10 +42,14 @@ To use the debugger:
 
 - **Linux** — `gdb` (already installed on most distros; otherwise `apt install gdb`,
   `dnf install gdb`, or `pacman -S gdb`).
-- **macOS** — Xcode Command Line Tools (`xcode-select --install`), which provides `lldb`.
+- **macOS** (experimental) — Apple ships no gdb, and Xcode's `lldb` does not speak the GDB/MI
+  protocol this extension's debug adapter uses. The MI-speaking frontend is
+  [`lldb-mi`](https://github.com/lldb-tools/lldb-mi) — build it from source (Apple stopped
+  bundling it in 2019 and it isn't in Homebrew), then put it on `PATH` or point
+  `fasm2Studio.gdbPath` at it.
 - **Windows** — a `gdb` build, most easily from MSYS2 (`pacman -S mingw-w64-x86_64-gdb`) or
-  w64devkit. There's no built-in equivalent to gdb/lldb on Windows, so this is the one genuinely
-  extra step compared to the other two platforms.
+  w64devkit. There's no built-in gdb on Windows, so this is the one genuinely
+  extra step compared to Linux.
 
 ## Settings
 
