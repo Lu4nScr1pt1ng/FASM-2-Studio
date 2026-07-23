@@ -1060,6 +1060,19 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       const argHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'write_stderr', context: 'hover' });
       assert.match(argHover.result, /\(label, address 0x/);
 
+      // The other real user-reported regression this fix introduced and then had to un-introduce:
+      // an instruction mnemonic (e.g. "js") already has a real hover from the language server's
+      // own hover provider, shown *alongside* whatever this debug adapter returns for the same
+      // token. A *successful* debug-hover response (the "no runtime value" text above) actually
+      // gets displayed and steps on that working language hover; a *failed* one is silently
+      // dropped by VS Code, leaving the language hover to stand on its own — so a known mnemonic
+      // must keep failing the old way, not succeed with this adapter's own message.
+      await assert.rejects(
+        client.sendRequest('evaluate', { expression: 'js', context: 'hover' }),
+        (err: Error) => !/no runtime value/i.test(err.message),
+        'a known instruction mnemonic must not get the "no runtime value" short-circuit',
+      );
+
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
       await client.sendRequest('disconnect');

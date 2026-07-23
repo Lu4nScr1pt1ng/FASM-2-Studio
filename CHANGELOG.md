@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.0
+
+- Fixed a regression from 0.22.0's macro-hover fix: hovering an instruction mnemonic (e.g. `js`)
+  while debugging now shows the language server's own hover documentation again, instead of this
+  debug adapter's "has no runtime value here" message stepping on it. A *failed* debug hover is
+  silently dropped by VS Code, letting the language hover stand on its own — but 0.22.0's fix
+  returned a *successful* response for any unresolved bare word, mnemonics included, and a
+  successful one actually gets shown. Now scoped to only macro invocations and other genuinely
+  undocumented words, not anything the language server already has real docs for.
+
 ## 0.22.0
 
 - Hovering/watching a macro invocation's own name (e.g. `write_msg` in `write_msg write_stderr,

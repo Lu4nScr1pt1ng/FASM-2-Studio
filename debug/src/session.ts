@@ -37,6 +37,10 @@ import {
   unsignedCastType,
 } from './registers';
 import { buildConstantMap, buildSymbolAddressMap, ConstantSymbol, DebugSymbol, formatConstantCompact, formatConstantDetailed } from './symbols';
+import directivesData from '@fasm2-studio/server/src/data/directives.json';
+import formatKeywordsData from '@fasm2-studio/server/src/data/formatKeywords.json';
+import instructionsData from '@fasm2-studio/server/src/data/instructions.json';
+import sizeSpecifiersData from '@fasm2-studio/server/src/data/sizeSpecifiers.json';
 import {
   decodeLittleEndianElements,
   formatStringPreview,
@@ -88,6 +92,21 @@ const BARE_IDENTIFIER_RE = /^[A-Za-z_.][A-Za-z0-9_.]*$/;
  * evaluateRequestUnsafe's own doc comment for why inline-value decorations are deliberately not
  * included here. */
 const EXPLICIT_ASK_CONTEXTS: ReadonlySet<string> = new Set(['hover', 'watch', 'clipboard', 'variables']);
+/** Every mnemonic/directive/format-keyword/size-specifier the language server itself knows —
+ * these already have a real hover from its own hover provider (confirmed by the real "offers
+ * hover documentation for a known mnemonic" server test), which VS Code shows *alongside* this
+ * debug adapter's own hover response for the same token. Short-circuiting these with "no runtime
+ * value" the same way an unresolved macro name gets doesn't just add noise: a *successful* debug
+ * hover response actually gets shown, unlike a failed one (which VS Code silently drops, letting
+ * the language hover stand on its own) — so returning anything at all here would step on a hover
+ * that was already working fine. Same data source as extension/src/inlineValues.ts's own
+ * NEVER_A_VALUE, kept as a separate copy since debug and extension are independent packages. */
+const KNOWN_LANGUAGE_TOKENS: ReadonlySet<string> = new Set([
+  ...(instructionsData as Array<{ mnemonic: string }>).map((i) => i.mnemonic.toLowerCase()),
+  ...(directivesData as Array<{ name: string }>).flatMap((d) => d.name.toLowerCase().split(' ')),
+  ...(formatKeywordsData as Array<{ name: string }>).map((k) => k.name.toLowerCase()),
+  ...(sizeSpecifiersData as Array<{ name: string }>).map((s) => s.name.toLowerCase()),
+]);
 
 const EMPTY_REGISTER_GROUPS: RegisterGroups = { generalPurpose: [], pointers: [], segment: [], eflagsName: undefined };
 
@@ -987,25 +1006,31 @@ export class FasmDebugSession extends DebugSession {
     }
 
     // A bare identifier (a single token, no operators/brackets/"$"-prefix) that isn't a register,
-    // label, or constant has no runtime value at all — most commonly a macro invocation (e.g.
-    // "write_msg" in "write_msg write_stderr, usage_text, usage_text_len": the macro itself
-    // vanishes entirely at compile time, only the instructions it expands to exist at runtime), or
-    // an instruction mnemonic. Asking gdb would only produce its own raw, unhelpful error ("No
-    // symbol table is loaded" or similar) — the exact noise labels/constants above are resolved
-    // locally specifically to avoid. Only short-circuited for contexts where the user explicitly
-    // asked about *this* token (hover/watch/clipboard/variables); inline-value decorations (VS
-    // Code's own undocumented context string for those — see extension/src/inlineValues.ts) keep
-    // falling through to the generic evaluator and its silently-dropped-on-error path below, since
-    // a "no value here" annotation next to every stray identifier on the stopped line would be
-    // noise there, not something anyone explicitly asked for. A "$"-prefixed bare word (e.g. "$pc",
-    // a gdb convenience variable, not a register this file knows how to format) is deliberately
-    // excluded too — that's gdb's own namespace, not a FASM source identifier, and genuinely needs
-    // the real evaluator.
-    if (EXPLICIT_ASK_CONTEXTS.has(args.context ?? '') && BARE_IDENTIFIER_RE.test(trimmed)) {
-      const text =
-        args.context === 'hover'
-          ? `"${trimmed}" has no runtime value here — not a register, label, or constant (likely a macro invocation or instruction mnemonic: fasmg's compile-time-only constructs never generate a symbol for either)`
-          : `(no runtime value) ${trimmed}`;
+    // label, or constant has no runtime value at all — a macro invocation (e.g. "write_msg" in
+    // "write_msg write_stderr, usage_text, usage_text_len": the macro itself vanishes entirely at
+    // compile time, only the instructions it expands to exist at runtime), or any other stray word
+    // fasmg's own preprocessor consumed. Asking gdb would only produce its own raw, unhelpful error
+    // ("No symbol table is loaded" or similar) — the exact noise labels/constants above are
+    // resolved locally specifically to avoid.
+    //
+    // Deliberately does NOT cover instruction mnemonics/directives/format keywords/size specifiers
+    // (KNOWN_LANGUAGE_TOKENS) even though those are equally "no runtime value" — those already get
+    // a real, useful hover from the language server's own hover provider (VS Code shows it
+    // *alongside* whatever this debug adapter returns for the same token), and unlike a *failed*
+    // evaluate — which VS Code drops silently, leaving the language hover to stand on its own — a
+    // *successful* one (this short-circuit) actually gets shown, stepping on a hover that already
+    // worked fine. So a known mnemonic just falls through to the generic evaluator below and fails
+    // the same way it always did, exactly as before this fix existed.
+    //
+    // Only short-circuited for contexts where the user explicitly asked about *this* token (hover/
+    // watch/clipboard/variables); inline-value decorations (VS Code's own undocumented context
+    // string for those — see extension/src/inlineValues.ts) keep falling through to the generic
+    // evaluator too, since a "no value here" annotation next to every stray identifier on the
+    // stopped line would be noise there, not something anyone explicitly asked for. A "$"-prefixed
+    // bare word (e.g. "$pc", a gdb convenience variable, not a register this file knows how to
+    // format) is excluded the same way — that's gdb's own namespace, not a FASM source identifier.
+    if (EXPLICIT_ASK_CONTEXTS.has(args.context ?? '') && BARE_IDENTIFIER_RE.test(trimmed) && !KNOWN_LANGUAGE_TOKENS.has(trimmed.toLowerCase())) {
+      const text = args.context === 'hover' ? `"${trimmed}" has no runtime value here — not a register, label, or constant (likely a macro invocation, which fasmg's compile-time-only constructs never generate a symbol for)` : `(no runtime value) ${trimmed}`;
       response.body = { result: text, variablesReference: 0 };
       this.sendResponse(response);
       return;
