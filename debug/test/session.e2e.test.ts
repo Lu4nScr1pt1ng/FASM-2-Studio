@@ -702,6 +702,290 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('Step Over runs straight through a call inside a macro invocation; Step Into dives into it', async function () {
+    this.timeout(30000);
+
+    // The real user-reported scenario: a macro like "write_msg target, msg, msglen" whose body
+    // ends in a real "call target" — stepping onto the invocation line and pressing Step used to
+    // always dive into the callee (both were "-exec-step-instruction" under the hood, no
+    // distinction). This macro is deliberately parameter-free ("call_helper" -> "call helper"): its
+    // invocation-line text ("call_helper", one token) and its own macro-body text ("call helper",
+    // two tokens) are never equal, so the listing's address<->line correlation unambiguously
+    // attributes the generated "call" instruction to the *invocation* line, not the macro body —
+    // confirmed for real against fasm2's own listing output before writing this test.
+    const stepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-step-'));
+    const stepAsmPath = path.join(stepDir, 'step.asm');
+    const stepProgramPath = path.join(stepDir, 'step');
+    const stepListingPath = path.join(stepDir, 'step.lst');
+    const STEP_SRC = [
+      'format ELF64 executable 3', // 1
+      'entry start', // 2
+      '', // 3
+      'macro call_helper', // 4
+      '    call helper', // 5
+      'end macro', // 6
+      '', // 7
+      'segment readable executable', // 8
+      '', // 9
+      'start:', // 10
+      '\tmov eax, 1', // 11
+      '\tcall_helper', // 12
+      '\tmov ebx, 2', // 13
+      '\tnop', // 14
+      '\tmov edi, 0', // 15
+      '\tmov eax, 60', // 16
+      '\tsyscall', // 17
+      '', // 18
+      'helper:', // 19
+      '\tmov ecx, 3', // 20
+      '\tret', // 21
+      '', // 22
+    ].join('\n');
+    fs.writeFileSync(stepAsmPath, STEP_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", stepAsmPath, stepProgramPath], { cwd: stepDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(stepProgramPath, 0o755);
+
+    async function stopAtCallHelper(): Promise<{ client: DapClient; proc: ChildProcessWithoutNullStreams }> {
+      const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const client = new DapClient(proc);
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: stepProgramPath, asmFile: stepAsmPath, listingFile: stepListingPath, cwd: stepDir });
+      const bp = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: stepAsmPath },
+        breakpoints: [{ line: 12 }], // "call_helper"
+      });
+      assert.strictEqual(bp.breakpoints[0].verified, true);
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+      return { client, proc };
+    }
+
+    const over = await stopAtCallHelper();
+    try {
+      await over.client.sendRequest('next', { threadId: 1 });
+      await over.client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'step');
+      const stackTrace = await over.client.sendRequest<{ stackFrames: Array<{ line: number }> }>('stackTrace', { threadId: 1 });
+      assert.strictEqual(stackTrace.stackFrames[0].line, 13, 'Step Over should land on "mov ebx, 2" (line 13), never inside helper: (line 20)');
+
+      await over.client.sendRequest('continue', { threadId: 1 });
+      await over.client.waitForEvent('terminated');
+      await over.client.sendRequest('disconnect');
+    } finally {
+      over.proc.kill();
+    }
+
+    const into = await stopAtCallHelper();
+    try {
+      await into.client.sendRequest('stepIn', { threadId: 1 });
+      await into.client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'step');
+      const stackTrace = await into.client.sendRequest<{ stackFrames: Array<{ line: number }> }>('stackTrace', { threadId: 1 });
+      assert.strictEqual(stackTrace.stackFrames[0].line, 20, 'Step Into should dive into helper: (line 20), same as before this distinction existed');
+
+      await into.client.sendRequest('continue', { threadId: 1 });
+      await into.client.waitForEvent('terminated');
+      await into.client.sendRequest('disconnect');
+    } finally {
+      into.proc.kill();
+    }
+  });
+
+  it('supports instruction-granularity stepping and exposes instructionPointerReference, backing VS Code\'s Disassembly View', async function () {
+    this.timeout(30000);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      const capabilities = await client.sendRequest<{ supportsSteppingGranularity?: boolean; supportsDisassembleRequest?: boolean }>('initialize', {
+        adapterID: 'fasm2',
+        linesStartAt1: true,
+        columnsStartAt1: true,
+        pathFormat: 'path',
+      });
+      assert.strictEqual(capabilities.supportsSteppingGranularity, true);
+      assert.strictEqual(capabilities.supportsDisassembleRequest, true);
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 7 }] }); // "mov eax, 1"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const beforeTrace = await client.sendRequest<{ stackFrames: Array<{ line: number; instructionPointerReference?: string }> }>('stackTrace', {
+        threadId: 1,
+      });
+      const startPc = beforeTrace.stackFrames[0].instructionPointerReference;
+      assert.ok(startPc && /^0x[0-9a-f]+$/i.test(startPc), `expected a hex instructionPointerReference, got: ${startPc}`);
+      assert.strictEqual(beforeTrace.stackFrames[0].line, 7);
+
+      // One raw machine-instruction step (Disassembly View's own "Step"), not a statement step —
+      // "mov eax, 1" is 5 bytes, so the PC should land exactly 5 bytes later, still one real
+      // instruction short of "mov ebx, 2" (the next *source-mapped* line).
+      await client.sendRequest('next', { threadId: 1, granularity: 'instruction' });
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'step');
+
+      const afterTrace = await client.sendRequest<{ stackFrames: Array<{ line: number; instructionPointerReference?: string }> }>('stackTrace', {
+        threadId: 1,
+      });
+      const afterPc = afterTrace.stackFrames[0].instructionPointerReference;
+      assert.ok(afterPc, 'expected instructionPointerReference to still be set even off the exact PC read at the breakpoint');
+      assert.strictEqual(BigInt(afterPc!) - BigInt(startPc!), 5n, '"mov eax, 1" (B8 01 00 00 00) is exactly 5 bytes');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  it('disassembles byte-accurately in Intel syntax, forward and backward through an unmapped mid-macro address, with placeholder rows before the first instruction', async function () {
+    this.timeout(30000);
+
+    // "backward" is the hard direction: x86 instructions are variable-length, so there's no
+    // generally-sound way to find a real instruction boundary by walking backward from an
+    // arbitrary address. This is the actual test of disassembleAround's anchor-and-forward-decode
+    // strategy — proven here by asking for the *same* 3 instructions two different ways (forward
+    // from their own known-good start, and backward from the last one, an address with no source
+    // mapping of its own) and requiring byte-identical results either way.
+    const disDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-disasm-'));
+    const disAsmPath = path.join(disDir, 'dis.asm');
+    const disProgramPath = path.join(disDir, 'dis');
+    const disListingPath = path.join(disDir, 'dis.lst');
+    const DIS_SRC = [
+      'format ELF64 executable 3', // 1
+      'entry start', // 2
+      '', // 3
+      'macro triple target, a, b', // 4
+      '    mov eax, a', // 5
+      '    mov ebx, b', // 6
+      '    call target', // 7
+      'end macro', // 8
+      '', // 9
+      'segment readable executable', // 10
+      '', // 11
+      'start:', // 12
+      '\tnop', // 13
+      '\ttriple helper, 0x11, 0x22', // 14
+      '\tmov ecx, 0x33', // 15
+      '\tnop', // 16
+      '\tmov edi, 0', // 17
+      '\tmov eax, 60', // 18
+      '\tsyscall', // 19
+      '', // 20
+      'helper:', // 21
+      '\tmov edx, 0x44', // 22
+      '\tret', // 23
+      '', // 24
+    ].join('\n');
+    fs.writeFileSync(disAsmPath, DIS_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", disAsmPath, disProgramPath], { cwd: disDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(disProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    type Insn = { address: string; instruction: string; instructionBytes?: string; line?: number; presentationHint?: string };
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: disProgramPath, asmFile: disAsmPath, listingFile: disListingPath, cwd: disDir });
+
+      const bp = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: disAsmPath },
+        breakpoints: [{ line: 13 }, { line: 14 }], // "nop", then "triple helper, 0x11, 0x22"
+      });
+      assert.strictEqual(bp.breakpoints.length, 2);
+      assert.ok(bp.breakpoints.every((b) => b.verified));
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      // First stop: the very first instruction of the executable segment. Nothing is mapped
+      // before it (the ELF header's own listing entry sits at address 0, but "nop" here is
+      // already its own nearest-known-address-at-or-before itself), so asking for instructions
+      // *before* it must come back as placeholder rows, never garbage decoded from data bytes.
+      const nopTrace = await client.sendRequest<{ stackFrames: Array<{ line: number; instructionPointerReference?: string }> }>('stackTrace', {
+        threadId: 1,
+      });
+      assert.strictEqual(nopTrace.stackFrames[0].line, 13);
+      const nopPc = nopTrace.stackFrames[0].instructionPointerReference!;
+
+      const beforeNop = await client.sendRequest<{ instructions: Insn[] }>('disassemble', {
+        memoryReference: nopPc,
+        instructionOffset: -2,
+        instructionCount: 2,
+      });
+      assert.strictEqual(beforeNop.instructions.length, 2);
+      for (const insn of beforeNop.instructions) assert.strictEqual(insn.presentationHint, 'invalid', 'nothing real precedes the segment\'s first instruction');
+
+      // Second stop: the macro invocation. Its first generated instruction ("mov eax, 0x11") is
+      // the only one of the three the listing attributes a source line to at all — the other two
+      // ("mov ebx, 0x22" and "call helper", both inside the same collapsed macro expansion) have
+      // no source mapping of their own, which is exactly the scenario disassembleAround's backward
+      // reconstruction has to get right.
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const macroTrace = await client.sendRequest<{ stackFrames: Array<{ line: number; instructionPointerReference?: string }> }>('stackTrace', {
+        threadId: 1,
+      });
+      assert.strictEqual(macroTrace.stackFrames[0].line, 14);
+      const macroStart = macroTrace.stackFrames[0].instructionPointerReference!;
+
+      const forward = await client.sendRequest<{ instructions: Insn[] }>('disassemble', {
+        memoryReference: macroStart,
+        instructionOffset: 0,
+        instructionCount: 3,
+      });
+      assert.strictEqual(forward.instructions.length, 3);
+      const [movEax, movEbx, call] = forward.instructions;
+
+      assert.match(movEax.instruction, /mov\s+eax,\s*0x?11/i, `expected Intel-syntax "mov eax, 0x11", got: ${movEax.instruction}`);
+      assert.strictEqual(movEax.address, macroStart);
+      assert.strictEqual(movEax.line, 14, 'the macro invocation\'s first generated instruction carries the invocation\'s own source line');
+      assert.ok(movEax.instructionBytes && /^[0-9a-f]{2}(\s[0-9a-f]{2})*$/i.test(movEax.instructionBytes), `expected raw opcode bytes, got: ${movEax.instructionBytes}`);
+
+      assert.match(movEbx.instruction, /mov\s+ebx,\s*0x?22/i, `expected Intel-syntax "mov ebx, 0x22", got: ${movEbx.instruction}`);
+      assert.strictEqual(movEbx.line, undefined, 'the 2nd instruction of the collapsed macro expansion has no source line of its own');
+
+      assert.match(call.instruction, /^call\b/i, `expected a call instruction, got: ${call.instruction}`);
+      assert.strictEqual(call.line, undefined);
+
+      // The actual proof: asking for the same 3 instructions *backward*, anchored on the call's
+      // own (unmapped) address, must reconstruct byte-identical results to the forward decode.
+      const backward = await client.sendRequest<{ instructions: Insn[] }>('disassemble', {
+        memoryReference: call.address,
+        instructionOffset: -2,
+        instructionCount: 3,
+      });
+      assert.deepStrictEqual(
+        backward.instructions.map((i) => [i.address, i.instruction]),
+        forward.instructions.map((i) => [i.address, i.instruction]),
+        'backward reconstruction through an unmapped mid-macro address must byte-align with the forward decode from the real, known-good boundary',
+      );
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(disDir, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a symbolic constant (e.g. "FD_STDERR = 2") to its value without ever asking gdb, instead of surfacing "No symbol table is loaded"', async function () {
     this.timeout(30000);
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.0
+
+- Step Over and Step Into now actually differ: Step Over runs straight through a `call` (landing
+  right after it returns) instead of diving into it, so stepping over a macro invocation whose
+  body ends in a real call — a `write_msg`-style helper macro, for instance — advances past the
+  whole macro in one step instead of jumping into the callee. This is a plain ISA-level
+  distinction gdb already knows how to make without any symbol table, so it applies uniformly to
+  every macro, not just a specific one.
+- Added VS Code's Disassembly View support (instruction-granularity stepping and a `disassemble`
+  request), so a macro's expansion can actually be watched happening one raw instruction at a
+  time instead of a whole statement silently stepping past it. Disassembly is shown in Intel
+  syntax (matching FASM's own convention, not gdb's AT&T default) and is byte-accurate even when
+  asked for instructions *before* the current one, reconstructed from the nearest known-good
+  instruction boundary rather than guessed at from an arbitrary byte offset.
+
 ## 0.20.0
 
 - The Debug Console now works as a real gdb/lldb-mi console: any input that isn't a register,

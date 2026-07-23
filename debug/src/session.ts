@@ -6,9 +6,19 @@
 //   - "Registers" instead of "variables" — there's no type info, so raw register/memory
 //     inspection (via gdb's own expression evaluator, e.g. "$eax" or "*(dword*)$esp") is the
 //     asm-appropriate equivalent, and what the Watch/evaluate views expose.
-//   - Step (next/stepIn/stepOut are all the same operation) means "single-step machine
-//     instructions until the PC reaches a different source-mapped line", since there's no call
-//     graph to distinguish stepping over vs. into vs. out of.
+//   - Step (statement granularity) single-steps machine instructions until the PC reaches a
+//     different source-mapped line, since there's no line table to consult for "the next
+//     statement" the way a real compiled-language debugger would. Step Over and Step Into *do*
+//     differ from each other despite that: Over uses -exec-next-instruction (steps over a call,
+//     landing right after it returns — this is what makes stepping over a macro invocation whose
+//     body ends in a real `call`, like a helper macro that calls a print routine, behave like a
+//     single step instead of diving into the callee) while Into uses -exec-step-instruction
+//     (dives into the call on purpose). Both are ISA-level distinctions gdb already knows how to
+//     make without any symbol table — nothing here is specific to any particular macro.
+//   - Instruction-granularity stepping and the `disassemble` request back VS Code's Disassembly
+//     View, for actually watching a macro's expansion execute one raw instruction at a time
+//     instead of having the whole thing (and the source line it collapses to) step silently past
+//     in one statement-granularity Step.
 import { ContinuedEvent, DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as fs from 'fs';
@@ -49,6 +59,25 @@ const CONSOLE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
  * MAX_LOOKAHEAD reasoning: bounds a pathological case (a program with thousands of data labels)
  * without affecting any realistic program. */
 const MAX_DATA_LABELS_SHOWN = 300;
+/** The architectural maximum length of a single x86-64 instruction encoding — used to size a
+ * disassembly byte-window generously enough to always contain however many whole instructions
+ * were asked for (see disassembleAround). */
+const MAX_X86_INSTRUCTION_BYTES = 15;
+/** Hard ceiling on a single disassembly window, regardless of how large a request's own
+ * instructionCount/instructionOffset are — mirrors listingMap.ts's MAX_LOOKAHEAD reasoning: a
+ * pathological or malicious request just gets padded with placeholder rows past this point,
+ * rather than asking gdb to disassemble an unbounded byte range. Far larger than any real VS Code
+ * Disassembly View page (typically a few hundred instructions). */
+const MAX_DISASSEMBLE_WINDOW_BYTES = 2_000_000;
+
+/** The underlying MI command for one machine-instruction step: "-exec-next-instruction" (gdb's
+ * `nexti`) runs straight over a `call` instead of diving into it, landing right after it returns —
+ * Step Over uses this. "-exec-step-instruction" (`stepi`) dives into a `call` on purpose — Step
+ * Into/Step Out both use this (there's no unwound call stack here for a real "run until this frame
+ * returns", so Step Out falls back to the same single-instruction-into behavior as Step Into, same
+ * as before this distinction existed). Both are ISA-level gdb primitives that already know how to
+ * recognize a `call` without any symbol table — nothing macro-specific. */
+type StepMiCommand = '-exec-step-instruction' | '-exec-next-instruction';
 
 const EMPTY_REGISTER_GROUPS: RegisterGroups = { generalPurpose: [], pointers: [], segment: [], eflagsName: undefined };
 
@@ -72,6 +101,10 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
 export class FasmDebugSession extends DebugSession {
   private gdb: GdbDriver | undefined;
   private addressMap: AddressLineMap | undefined;
+  /** Every source-mapped address from addressMap, ascending — lets disassembleAround binary-search
+   * for "the nearest known-good instruction boundary at or before X" in O(log n) instead of
+   * scanning the whole map on every Disassembly View scroll/page request. */
+  private sortedAddresses: bigint[] = [];
   private readonly variableHandles = new Handles<string>();
   /** Which of the target's own registers (gdb-reported, so architecture-correct — see
    * registers.ts) fall into each display group. Populated once in launchRequest; empty until then,
@@ -109,6 +142,8 @@ export class FasmDebugSession extends DebugSession {
     response.body.supportsSingleThreadExecutionRequests = false;
     response.body.supportsSetVariable = true;
     response.body.supportsSetExpression = true;
+    response.body.supportsSteppingGranularity = true;
+    response.body.supportsDisassembleRequest = true;
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -118,6 +153,7 @@ export class FasmDebugSession extends DebugSession {
       const listingEntries = parseListingFile(fs.readFileSync(args.listingFile, 'utf8'));
       const candidates = buildCandidateSequence(path.resolve(args.asmFile));
       this.addressMap = correlateListing(listingEntries, candidates);
+      this.sortedAddresses = [...this.addressMap.addressToLocation.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       this.symbolMap = buildSymbolAddressMap(listingEntries);
       this.constantMap = buildConstantMap(listingEntries);
 
@@ -162,6 +198,13 @@ export class FasmDebugSession extends DebugSession {
           // fail the whole launch over a view that's secondary to actually running the program.
         },
       );
+
+      // FASM is Intel-syntax throughout; gdb's own disassembler defaults to AT&T on Linux, which
+      // would read as a different, unfamiliar language in the Disassembly View. lldb-mi has no
+      // equivalent MI-reachable setting, so this is best-effort and silently ignored there — worth
+      // doing for the common gdb case, not worth failing the whole launch over on the experimental
+      // macOS path.
+      void this.gdb.sendCommand('-gdb-set disassembly-flavor intel').catch(() => {});
 
       if (args.stopOnEntry) {
         // gdb's own `start` command needs a symbol table to resolve "main", which these binaries
@@ -267,20 +310,30 @@ export class FasmDebugSession extends DebugSession {
   }
 
   protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse): Promise<void> {
-    const loc = await this.currentLocation();
+    const pc = await this.currentPc();
+    const loc = pc !== undefined ? this.addressMap?.addressToLocation.get(pc) : undefined;
     const frame = loc
       ? new StackFrame(MAIN_FRAME_ID, path.basename(loc.fsPath), new Source(path.basename(loc.fsPath), loc.fsPath), loc.line)
       : new StackFrame(MAIN_FRAME_ID, '<unmapped address>');
+    // Needed even when `loc` resolved fine: this is what tells VS Code a Disassembly View exists
+    // for this frame at all (the "Open Disassembly View" affordance), not just what backs it once
+    // opened.
+    if (pc !== undefined) frame.instructionPointerReference = `0x${pc.toString(16)}`;
     response.body = { stackFrames: [frame], totalFrames: 1 };
     this.sendResponse(response);
   }
 
   private async currentLocation(): Promise<{ fsPath: string; line: number } | undefined> {
-    if (!this.gdb || !this.addressMap) return undefined;
+    if (!this.addressMap) return undefined;
+    const pc = await this.currentPc();
+    if (pc === undefined) return undefined;
+    return this.addressMap.addressToLocation.get(pc);
+  }
+
+  private async currentPc(): Promise<bigint | undefined> {
+    if (!this.gdb) return undefined;
     try {
-      const pc = await this.evaluateToBigInt('$pc');
-      if (pc === undefined) return undefined;
-      return this.addressMap.addressToLocation.get(pc);
+      return await this.evaluateToBigInt('$pc');
     } catch {
       return undefined;
     }
@@ -298,6 +351,149 @@ export class FasmDebugSession extends DebugSession {
     } catch {
       return undefined;
     }
+  }
+
+  /** See variablesRequest's own doc comment on why every DAP handler that awaits anything needs
+   * its own try/catch wrapper like this one, rather than relying on dispatchRequest's. */
+  protected async disassembleRequest(response: DebugProtocol.DisassembleResponse, args: DebugProtocol.DisassembleArguments): Promise<void> {
+    try {
+      const instructionOffset = args.instructionOffset ?? 0;
+      const target = BigInt(args.memoryReference) + BigInt(args.offset ?? 0);
+      response.body = { instructions: await this.disassembleAround(target, instructionOffset, args.instructionCount) };
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendErrorResponse(response, 10, (err as Error).message);
+    }
+  }
+
+  /**
+   * Resolves `instructionCount` instructions starting `instructionOffset` instructions away from
+   * `target` (both DAP conventions — see DisassembleArguments), backed by gdb's own disassembler
+   * (works with zero symbol table, same as everything else in this file).
+   *
+   * The one real difficulty: `instructionOffset` can be negative (VS Code's Disassembly View asks
+   * for context *before* the current instruction), and x86 has variable-length instructions, so
+   * there's no way to reliably find a real instruction boundary by walking backward from an
+   * arbitrary byte offset — you can land mid-instruction and decode garbage that just happens to
+   * look plausible. The fix: `sortedAddresses` (built from the same listing-derived addressMap as
+   * everything else here) gives the nearest address at or before `target` that fasm2 itself
+   * actually emitted an instruction at — a guaranteed-real boundary. Disassembling forward from
+   * there, *through* target, is byte-accurate no matter how far back it has to reach, because x86
+   * decoding is only ambiguous about where a stream starts, never about what follows a correct
+   * start. Any part of the request that still falls outside what gdb could actually disassemble
+   * (memory error, running off the start/end of the loaded image) is padded with DAP's own
+   * sanctioned "invalid instruction" filler rather than guessed at.
+   */
+  private async disassembleAround(target: bigint, instructionOffset: number, instructionCount: number): Promise<DebugProtocol.DisassembledInstruction[]> {
+    if (!this.gdb) return this.placeholderRun(target, instructionOffset, instructionCount);
+
+    try {
+      const anchor = instructionOffset < 0 ? (this.nearestKnownAddressAtOrBefore(target) ?? target) : target;
+      // "-data-disassemble" always decodes whole instructions even past its own end address (an
+      // instruction straddling the boundary is still returned in full), so over-fetching a
+      // generous byte window is free and never risks a truncated instruction the way trying to
+      // compute an exact byte length up front could.
+      const instructionsPastTarget = Math.max(0, instructionOffset + instructionCount);
+      const windowBytes = Math.min((instructionsPastTarget + 8) * MAX_X86_INSTRUCTION_BYTES, MAX_DISASSEMBLE_WINDOW_BYTES);
+      const endAddr = target + BigInt(windowBytes);
+
+      const insns = await this.disassembleRawRange(anchor, endAddr);
+      const targetIdx = insns.findIndex((insn) => insn.address === target);
+      if (targetIdx === -1) return this.placeholderRun(target, instructionOffset, instructionCount);
+
+      const startIdx = targetIdx + instructionOffset;
+      const out: DebugProtocol.DisassembledInstruction[] = [];
+      for (let i = 0; i < instructionCount; i++) {
+        const insn = insns[startIdx + i];
+        out.push(insn ? this.toDisassembledInstruction(insn) : this.placeholderInstruction(target + BigInt(startIdx + i - targetIdx)));
+      }
+      return out;
+    } catch {
+      return this.placeholderRun(target, instructionOffset, instructionCount);
+    }
+  }
+
+  /** Binary search over `sortedAddresses` for the greatest address <= `target` — see
+   * disassembleAround's own doc comment for why this needs to be a *real* instruction boundary. */
+  private nearestKnownAddressAtOrBefore(target: bigint): bigint | undefined {
+    const addrs = this.sortedAddresses;
+    let lo = 0;
+    let hi = addrs.length - 1;
+    let result: bigint | undefined;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (addrs[mid] <= target) {
+        result = addrs[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return result;
+  }
+
+  /** Raw "-data-disassemble" over an address range, mode 2 (opcodes shown, no source correlation
+   * asked of gdb — this file already has its own, listing-derived source mapping, applied in
+   * toDisassembledInstruction). Never throws on a malformed individual entry; skips it instead, the
+   * same defensive posture as every other MI-result parser in this file. */
+  private async disassembleRawRange(startAddr: bigint, endAddr: bigint): Promise<Array<{ address: bigint; opcodes?: string; inst?: string }>> {
+    if (!this.gdb) return [];
+    const result = await this.gdb.sendCommand(`-data-disassemble -s 0x${startAddr.toString(16)} -e 0x${endAddr.toString(16)} -- 2`);
+    const raw = (result.data as Record<string, unknown> | undefined)?.['asm_insns'];
+    if (!Array.isArray(raw)) return [];
+
+    const out: Array<{ address: bigint; opcodes?: string; inst?: string }> = [];
+    for (const entry of raw) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const rec = entry as Record<string, unknown>;
+      if (typeof rec.address !== 'string') continue;
+      let address: bigint;
+      try {
+        address = BigInt(rec.address);
+      } catch {
+        continue;
+      }
+      out.push({
+        address,
+        opcodes: typeof rec.opcodes === 'string' ? rec.opcodes : undefined,
+        inst: typeof rec.inst === 'string' ? rec.inst : undefined,
+      });
+    }
+    return out;
+  }
+
+  /** A real, gdb-decoded instruction — annotated with this file's own listing-derived source
+   * location when one exists at that exact address (the first instruction of a mapped line or
+   * macro invocation), so the Disassembly View shows which FASM source line each instruction
+   * belongs to, not just raw bytes. */
+  private toDisassembledInstruction(insn: { address: bigint; opcodes?: string; inst?: string }): DebugProtocol.DisassembledInstruction {
+    const loc = this.addressMap?.addressToLocation.get(insn.address);
+    const out: DebugProtocol.DisassembledInstruction = {
+      address: `0x${insn.address.toString(16)}`,
+      instruction: insn.inst ?? '(unknown)',
+    };
+    if (insn.opcodes) out.instructionBytes = insn.opcodes.trim().replace(/\s+/g, ' ');
+    if (loc) {
+      out.location = new Source(path.basename(loc.fsPath), loc.fsPath);
+      out.line = loc.line;
+    }
+    return out;
+  }
+
+  private placeholderRun(target: bigint, instructionOffset: number, instructionCount: number): DebugProtocol.DisassembledInstruction[] {
+    const out: DebugProtocol.DisassembledInstruction[] = [];
+    for (let i = 0; i < instructionCount; i++) out.push(this.placeholderInstruction(target + BigInt(instructionOffset + i)));
+    return out;
+  }
+
+  /** DAP's own sanctioned way to represent an instruction slot this adapter couldn't actually
+   * resolve (DisassembleArguments' own doc comment: "any unavailable instructions should be
+   * replaced with an implementation-defined 'invalid instruction' value") — the address is a
+   * placeholder too (real spacing isn't known for a slot gdb never decoded), never claimed to be
+   * accurate, which is exactly why every such row is marked `presentationHint: 'invalid'`. */
+  private placeholderInstruction(address: bigint): DebugProtocol.DisassembledInstruction {
+    const clamped = address < 0n ? 0n : address;
+    return { address: `0x${clamped.toString(16)}`, instruction: '(unavailable)', presentationHint: 'invalid' };
   }
 
   protected scopesRequest(response: DebugProtocol.ScopesResponse): void {
@@ -614,8 +810,10 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
-  /** next/stepIn/stepOut all resolve to the same operation — see the module doc comment. */
-  private async stepToNextLine(response: DebugProtocol.Response): Promise<void> {
+  /** Statement-granularity step: repeats one machine-instruction step (over or into a `call`,
+   * per `miCommand`) until the PC reaches a different source-mapped line, since there's no line
+   * table to consult for "the next statement" directly. */
+  private async stepToNextLine(response: DebugProtocol.Response, miCommand: StepMiCommand): Promise<void> {
     this.sendResponse(response);
     if (!this.gdb || !this.addressMap) return;
 
@@ -624,7 +822,7 @@ export class FasmDebugSession extends DebugSession {
     for (let i = 0; i < MAX_STEP_INSTRUCTIONS; i++) {
       let result;
       try {
-        result = await this.gdb.sendCommand('-exec-step-instruction');
+        result = await this.gdb.sendCommand(miCommand);
       } catch (err) {
         this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
         return;
@@ -646,6 +844,26 @@ export class FasmDebugSession extends DebugSession {
     this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
   }
 
+  /** Instruction-granularity step (VS Code's Disassembly View "Step"): exactly one machine
+   * instruction, reported immediately regardless of whether it changed source line — the whole
+   * point is watching each instruction happen individually (e.g. a macro's expansion), which
+   * stepToNextLine's line-granularity loop deliberately hides. */
+  private async stepOneInstruction(response: DebugProtocol.Response, miCommand: StepMiCommand): Promise<void> {
+    this.sendResponse(response);
+    if (!this.gdb) return;
+    let result;
+    try {
+      result = await this.gdb.sendCommand(miCommand);
+    } catch (err) {
+      this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
+      return;
+    }
+    if (result.klass !== 'running') return;
+    const stoppedOnce = await this.waitForNextStop();
+    if (!stoppedOnce) return;
+    this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
+  }
+
   private waitForNextStop(): Promise<boolean> {
     if (!this.gdb) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -662,16 +880,19 @@ export class FasmDebugSession extends DebugSession {
     });
   }
 
-  protected nextRequest(response: DebugProtocol.NextResponse): void {
-    void this.stepToNextLine(response);
+  protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+    if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-next-instruction');
+    else void this.stepToNextLine(response, '-exec-next-instruction');
   }
 
-  protected stepInRequest(response: DebugProtocol.StepInResponse): void {
-    void this.stepToNextLine(response);
+  protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments): void {
+    if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-step-instruction');
+    else void this.stepToNextLine(response, '-exec-step-instruction');
   }
 
-  protected stepOutRequest(response: DebugProtocol.StepOutResponse): void {
-    void this.stepToNextLine(response);
+  protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void {
+    if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-step-instruction');
+    else void this.stepToNextLine(response, '-exec-step-instruction');
   }
 
   /** See variablesRequest's own doc comment: dispatchRequest doesn't await this method, so any
