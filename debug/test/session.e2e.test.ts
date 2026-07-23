@@ -986,6 +986,135 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('hovering/watching a macro invocation itself (e.g. "write_msg" in "write_msg write_stderr, ...") gets a friendly message, not gdb\'s raw "No symbol table is loaded"', async function () {
+    this.timeout(30000);
+
+    // The exact user-reported scenario, reproduced with the real write_msg macro shape: a macro
+    // vanishes entirely at compile time (fasmg substitutes its body inline; nothing is ever
+    // generated for the macro *name* itself), so gdb has no symbol to resolve when hovering/
+    // watching "write_msg" on the invocation line — it used to fall through to gdb's own
+    // evaluator and surface its raw "No symbol table is loaded. Use the \"file\" command." error.
+    const macroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-macroname-'));
+    const macroAsmPath = path.join(macroDir, 'macroname.asm');
+    const macroProgramPath = path.join(macroDir, 'macroname');
+    const macroListingPath = path.join(macroDir, 'macroname.lst');
+    const MACRO_SRC = [
+      'format ELF64 executable 3', // 1
+      'entry start', // 2
+      '', // 3
+      'macro write_msg target, msg, msglen', // 4
+      '    mov rsi, msg', // 5
+      '    mov rdx, msglen', // 6
+      '    call target', // 7
+      'end macro', // 8
+      '', // 9
+      'segment readable executable', // 10
+      '', // 11
+      'start:', // 12
+      '\twrite_msg write_stderr, usage_text, usage_text_len', // 13
+      '\tmov edi, 0', // 14
+      '\tmov eax, 60', // 15
+      '\tsyscall', // 16
+      '', // 17
+      'write_stderr:', // 18
+      '\tret', // 19
+      '', // 20
+      'segment readable writeable', // 21
+      'usage_text db "usage",10', // 22
+      'usage_text_len = $ - usage_text', // 23
+      '', // 24
+    ].join('\n');
+    fs.writeFileSync(macroAsmPath, MACRO_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", macroAsmPath, macroProgramPath], { cwd: macroDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(macroProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: macroProgramPath, asmFile: macroAsmPath, listingFile: macroListingPath, cwd: macroDir });
+
+      const bpResponse = await client.sendRequest<{ breakpoints: Array<{ verified: boolean }> }>('setBreakpoints', {
+        source: { path: macroAsmPath },
+        breakpoints: [{ line: 13 }], // "write_msg write_stderr, usage_text, usage_text_len"
+      });
+      assert.strictEqual(bpResponse.breakpoints[0].verified, true);
+
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const hover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'write_msg', context: 'hover' });
+      assert.match(hover.result, /no runtime value/i);
+      assert.doesNotMatch(hover.result, /no symbol table/i);
+
+      const watch = await client.sendRequest<{ result: string }>('evaluate', { expression: 'write_msg', context: 'watch' });
+      assert.strictEqual(watch.result, '(no runtime value) write_msg');
+
+      // The macro's *arguments* are real labels and still resolve normally — this fix is scoped
+      // to the macro name itself, not a blanket "give up on this whole line" change.
+      const argHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'write_stderr', context: 'hover' });
+      assert.match(argHover.result, /\(label, address 0x/);
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      fs.rmSync(macroDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stepping the exact instruction that exits the program terminates cleanly, with no spurious "step failed: The program is not being run."', async function () {
+    this.timeout(30000);
+
+    // Real user-reported bug: waitForNextStop used to resolve `true` for *any* 'stopped' event,
+    // including one caused by the inferior exiting (not just gdb's own process exiting). Stepping
+    // the program's last instruction (its own exit syscall) hit exactly that: the loop treated the
+    // resulting "can't read $pc, no inferior" failure as "landed on an unmapped address, keep
+    // stepping", and sent one more step command to an already-dead process.
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+
+      // "syscall" (line 13) is the program's very last instruction — it directly exits the process.
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 13 }] });
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      await client.sendRequest('next', { threadId: 1 });
+      await client.waitForEvent('terminated');
+
+      // The buggy version of this code path fires its spurious second step *after* 'terminated'
+      // has already gone out (it's queued on the next microtask via a still-pending
+      // waitForNextStop() promise, a separate async chain from the synchronous 'stopped' listener
+      // that sends TerminatedEvent) — so this needs a real grace period, not just an immediate
+      // check right after 'terminated', to give that straggler command a chance to actually land.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const stepFailedOutput = client.events.find((e) => e.event === 'output' && /step failed/i.test((e.body as { output?: string }).output ?? ''));
+      assert.strictEqual(stepFailedOutput, undefined, `expected no spurious step-failed output, got: ${JSON.stringify(stepFailedOutput)}`);
+
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
   it('resolves a symbolic constant (e.g. "FD_STDERR = 2") to its value without ever asking gdb, instead of surfacing "No symbol table is loaded"', async function () {
     this.timeout(30000);
 

@@ -79,6 +79,16 @@ const MAX_DISASSEMBLE_WINDOW_BYTES = 2_000_000;
  * recognize a `call` without any symbol table — nothing macro-specific. */
 type StepMiCommand = '-exec-step-instruction' | '-exec-next-instruction';
 
+/** Matches a single bare word — a macro invocation, an instruction mnemonic, or any other stray
+ * FASM-source identifier — but not a compound expression ("$eax + 1"), a bracketed/cast expression
+ * ("*(dword*)$esp"), or a "$"-prefixed gdb convenience variable ("$pc"). See evaluateRequestUnsafe's
+ * own doc comment on why only this shape is safe to short-circuit before ever asking gdb. */
+const BARE_IDENTIFIER_RE = /^[A-Za-z_.][A-Za-z0-9_.]*$/;
+/** DAP evaluate contexts where the user explicitly asked about *this* token — see
+ * evaluateRequestUnsafe's own doc comment for why inline-value decorations are deliberately not
+ * included here. */
+const EXPLICIT_ASK_CONTEXTS: ReadonlySet<string> = new Set(['hover', 'watch', 'clipboard', 'variables']);
+
 const EMPTY_REGISTER_GROUPS: RegisterGroups = { generalPurpose: [], pointers: [], segment: [], eflagsName: undefined };
 
 /** Byte widths a single gdb-cast memory read can resolve to a plain scalar (matches
@@ -864,12 +874,26 @@ export class FasmDebugSession extends DebugSession {
     this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
   }
 
+  /**
+   * Resolves `true` for a real code stop (the caller should keep stepping/inspecting), `false`
+   * for anything that means there's no more program left to step through — the gdb *process*
+   * itself exiting (existing behavior), but also the *inferior* exiting normally while gdb stays
+   * up, which arrives as an ordinary 'stopped' event with reason "exited"/"exited-normally" (real
+   * bug found here: this used to resolve `true` unconditionally for *any* stopped event, so
+   * stepping the exact instruction that ends the program — e.g. its own "syscall" exit — made
+   * stepToNextLine's loop try to evaluate $pc against a dead inferior, fail, treat that failure as
+   * "landed on an unmapped address, keep stepping" (see its own `if (!loc) continue`), and send yet
+   * another step command to a process that no longer exists — which is exactly what surfaced as a
+   * spurious "step failed: The program is not being run." right after the real, correct
+   * TerminatedEvent had already fired from onStopped's own separate 'stopped' listener).
+   */
   private waitForNextStop(): Promise<boolean> {
     if (!this.gdb) return Promise.resolve(false);
     return new Promise((resolve) => {
-      const onStop = () => {
+      const onStop = (data: Record<string, unknown>) => {
         this.gdb?.off('exit', onExit);
-        resolve(true);
+        const reason = typeof data.reason === 'string' ? data.reason : '';
+        resolve(!reason.startsWith('exited'));
       };
       const onExit = () => {
         this.gdb?.off('stopped', onStop);
@@ -957,6 +981,31 @@ export class FasmDebugSession extends DebugSession {
     const constant = this.constantMap.get(trimmed);
     if (constant) {
       const text = args.context === 'hover' ? formatConstantDetailed(constant) : formatConstantCompact(constant);
+      response.body = { result: text, variablesReference: 0 };
+      this.sendResponse(response);
+      return;
+    }
+
+    // A bare identifier (a single token, no operators/brackets/"$"-prefix) that isn't a register,
+    // label, or constant has no runtime value at all — most commonly a macro invocation (e.g.
+    // "write_msg" in "write_msg write_stderr, usage_text, usage_text_len": the macro itself
+    // vanishes entirely at compile time, only the instructions it expands to exist at runtime), or
+    // an instruction mnemonic. Asking gdb would only produce its own raw, unhelpful error ("No
+    // symbol table is loaded" or similar) — the exact noise labels/constants above are resolved
+    // locally specifically to avoid. Only short-circuited for contexts where the user explicitly
+    // asked about *this* token (hover/watch/clipboard/variables); inline-value decorations (VS
+    // Code's own undocumented context string for those — see extension/src/inlineValues.ts) keep
+    // falling through to the generic evaluator and its silently-dropped-on-error path below, since
+    // a "no value here" annotation next to every stray identifier on the stopped line would be
+    // noise there, not something anyone explicitly asked for. A "$"-prefixed bare word (e.g. "$pc",
+    // a gdb convenience variable, not a register this file knows how to format) is deliberately
+    // excluded too — that's gdb's own namespace, not a FASM source identifier, and genuinely needs
+    // the real evaluator.
+    if (EXPLICIT_ASK_CONTEXTS.has(args.context ?? '') && BARE_IDENTIFIER_RE.test(trimmed)) {
+      const text =
+        args.context === 'hover'
+          ? `"${trimmed}" has no runtime value here — not a register, label, or constant (likely a macro invocation or instruction mnemonic: fasmg's compile-time-only constructs never generate a symbol for either)`
+          : `(no runtime value) ${trimmed}`;
       response.body = { result: text, variablesReference: 0 };
       this.sendResponse(response);
       return;

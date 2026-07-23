@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.0
+
+- Hovering/watching a macro invocation's own name (e.g. `write_msg` in `write_msg write_stderr,
+  usage_text, usage_text_len`) now gets a clear "has no runtime value here" message instead of
+  gdb's raw `No symbol table is loaded. Use the "file" command.` — a macro vanishes entirely at
+  compile time, so gdb never had anything to resolve there in the first place. Applies to any bare
+  identifier (macro name, instruction mnemonic, or any other stray word) that isn't a register,
+  label, or constant, not just this one macro.
+- Fixed a real bug where stepping the exact instruction that ends a program (its own exit
+  syscall) could produce a spurious `step failed: The program is not being run.` right after the
+  program had already terminated cleanly. The stepping loop was treating *any* stop the same way,
+  including the inferior exiting, so it tried to keep single-stepping a process that no longer
+  existed.
+
 ## 0.21.0
 
 - Step Over and Step Into now actually differ: Step Over runs straight through a `call` (landing
