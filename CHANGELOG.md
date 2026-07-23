@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.0
+
+- The Debug Console now works as a real gdb/lldb-mi console: any input that isn't a register,
+  source label, or symbolic constant (e.g. `info registers`, `x/10i $pc`, `disassemble`, `bt`, or
+  even `continue`/`next` typed directly) is run as a raw CLI command instead of being rejected as a
+  failed value expression. A `ContinuedEvent` is emitted when such a command actually resumes the
+  target, so the Variables/Call Stack views don't stay stuck showing stale, stopped-at-the-old-line
+  data until the next stop.
+- An empty Debug Console line or blank Watch entry now resolves to a clean empty result instead of
+  surfacing gdb's own raw `Argument required (expression to compute)` error.
+
 ## 0.19.0
 
 - `fasm2Studio.gdbPath` now defaults to `lldb-mi` on macOS instead of `gdb`, which Apple doesn't

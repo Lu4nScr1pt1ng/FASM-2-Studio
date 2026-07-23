@@ -9,7 +9,7 @@
 //   - Step (next/stepIn/stepOut are all the same operation) means "single-step machine
 //     instructions until the PC reaches a different source-mapped line", since there's no call
 //     graph to distinguish stepping over vs. into vs. out of.
-import { DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
+import { ContinuedEvent, DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -39,6 +39,12 @@ import {
 const MAIN_THREAD_ID = 1;
 const MAIN_FRAME_ID = 1;
 const MAX_STEP_INSTRUCTIONS = 200_000;
+/** A raw console command (e.g. a typed "continue" or "run") doesn't return control to gdb's
+ * command reader until the target stops again, unlike this adapter's own -exec-* commands, which
+ * return immediately and report the eventual stop as a separate async event — see
+ * runConsoleCommand's own doc comment. DEFAULT_COMMAND_TIMEOUT_MS (gdbDriver.ts, 10s) would fire
+ * on any long-running program, so this path gets a much longer budget instead. */
+const CONSOLE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 /** Safety cap on the Data Labels scope's own top-level list — mirrors listingMap.ts's
  * MAX_LOOKAHEAD reasoning: bounds a pathological case (a program with thousands of data labels)
  * without affecting any realistic program. */
@@ -690,6 +696,14 @@ export class FasmDebugSession extends DebugSession {
     // Console) gets the same hex/decimal/binary formatting as the Registers scope, instead of
     // whatever plain (often signed, or for eflags non-numeric) string gdb would print by default.
     const trimmed = args.expression.trim();
+    if (trimmed.length === 0) {
+      // An empty Watch entry, or Enter pressed on a blank Debug Console line — forwarding this to
+      // gdb as-is would come back as its own raw "Argument required (expression to compute)",
+      // which reads as a crash to someone who just hit Enter on nothing.
+      response.body = { result: '', variablesReference: 0 };
+      this.sendResponse(response);
+      return;
+    }
     const registerName = trimmed.replace(/^\$/, '').toLowerCase();
     const bits = REGISTER_WIDTH_BITS[registerName];
     if (bits !== undefined) {
@@ -727,7 +741,23 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
 
-    // Anything else — a compound expression like "*(dword*)$esp" — is passed straight through.
+    // Anything else in the Debug Console (context 'repl') is treated as a raw gdb/lldb-mi CLI
+    // command rather than a value expression — "info registers", "x/10i $pc", "bt", or even
+    // "continue"/"next" typed directly. Hover/Watch/clipboard never take this path: those need an
+    // actual value back, not console text, so they keep going straight to gdb's expression
+    // evaluator below.
+    if (args.context === 'repl') {
+      try {
+        await this.runConsoleCommand(trimmed);
+        response.body = { result: '', variablesReference: 0 };
+        this.sendResponse(response);
+      } catch (err) {
+        this.sendErrorResponse(response, 3, (err as Error).message);
+      }
+      return;
+    }
+
+    // A compound expression like "*(dword*)$esp" — passed straight through to gdb's evaluator.
     try {
       // Quoted: MI's argument parser splits on whitespace, so an unquoted expression containing
       // one (e.g. "$eax + 1", or any real C-like expression beyond a single token) would be seen
@@ -739,6 +769,30 @@ export class FasmDebugSession extends DebugSession {
       this.sendResponse(response);
     } catch (err) {
       this.sendErrorResponse(response, 3, (err as Error).message);
+    }
+  }
+
+  /**
+   * Runs a raw gdb/lldb-mi CLI command typed straight into the Debug Console. The console text it
+   * prints comes back through the driver's own 'console' stream (already wired to OutputEvent in
+   * launchRequest), so this method itself doesn't need to return anything.
+   *
+   * ContinuedEvent: VS Code only infers "the target resumed" on its own when *it* asked for that
+   * (clicking Continue/Next); a raw "continue" typed here arrives as an 'evaluate' request, so
+   * without this the Variables/Call Stack views would stay frozen on stale data until the next
+   * stop. The listener is scoped to exactly this command's own round-trip (attached right before
+   * sending, removed right after), so it never fires during the existing step implementation's own
+   * internal -exec-step-instruction loop (stepToNextLine) — that loop never calls this method.
+   */
+  private async runConsoleCommand(command: string): Promise<void> {
+    if (!this.gdb) return;
+    const onRunning = () => this.sendEvent(new ContinuedEvent(MAIN_THREAD_ID));
+    this.gdb.once('running', onRunning);
+    try {
+      const quoted = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await this.gdb.sendCommand(`-interpreter-exec console "${quoted}"`, CONSOLE_COMMAND_TIMEOUT_MS);
+    } finally {
+      this.gdb.off('running', onRunning);
     }
   }
 

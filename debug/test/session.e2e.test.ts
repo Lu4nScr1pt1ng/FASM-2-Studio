@@ -624,6 +624,84 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('returns a clean empty result for a blank Debug Console/Watch expression, instead of gdb\'s raw "Argument required"', async function () {
+    this.timeout(30000);
+
+    // The exact user-reported scenario: pressing Enter on an empty Debug Console line, or an empty
+    // Watch entry. Before this guard, the empty string sailed through every resolution step and
+    // reached gdb as `-data-evaluate-expression ""`, which rejects with its own raw "Argument
+    // required (expression to compute)." — confusing for something that was never a real command.
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 9 }] }); // "add eax, ebx"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const blankRepl = await client.sendRequest<{ result: string }>('evaluate', { expression: '', context: 'repl' });
+      assert.strictEqual(blankRepl.result, '');
+
+      const whitespaceWatch = await client.sendRequest<{ result: string }>('evaluate', { expression: '   ', context: 'watch' });
+      assert.strictEqual(whitespaceWatch.result, '');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  it('runs a raw gdb command typed into the Debug Console, and reports the target as continued when the command resumes it', async function () {
+    this.timeout(30000);
+
+    // The other half of the "console isn't a real gdb console" complaint: typing "print 1+1" or
+    // "continue" directly into the Debug Console used to just be evaluated as a (failing) value
+    // expression. Now anything not resolved as a register/label/constant, in 'repl' context only,
+    // is run as a real gdb CLI command via -interpreter-exec console — its console output arrives
+    // as an 'output' event exactly like any other gdb console text.
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 9 }] }); // "add eax, ebx"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const printOutput = client.waitForEvent('output', (b) => /\$1 = 2/.test((b as { output?: string }).output ?? ''));
+      const printResult = await client.sendRequest<{ result: string }>('evaluate', { expression: 'print 1+1', context: 'repl' });
+      assert.strictEqual(printResult.result, '', 'the value itself arrives as console output text, not as the evaluate response');
+      await printOutput;
+
+      // A raw "continue" typed here arrives as an 'evaluate' request, not a 'continue' request —
+      // without an explicit ContinuedEvent, VS Code would have no way to know the target resumed
+      // and would leave the Variables/Call Stack views showing stale, stopped-at-the-breakpoint data.
+      const continuedEvent = client.waitForEvent('continued');
+      await client.sendRequest('evaluate', { expression: 'continue', context: 'repl' });
+      await continuedEvent;
+
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
   it('resolves a symbolic constant (e.g. "FD_STDERR = 2") to its value without ever asking gdb, instead of surfacing "No symbol table is loaded"', async function () {
     this.timeout(30000);
 
