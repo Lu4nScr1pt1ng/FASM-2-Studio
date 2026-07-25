@@ -169,6 +169,43 @@ describe('Workspace indexing', () => {
     assert.strictEqual(ws.findSymbolAnywhere('value').length, 0);
   });
 
+  describe('struct instantiation (resolveInstanceField / resolvePossibleInstance)', () => {
+    it('resolves "instance.field" and the bare instance name through a real struct instantiation', () => {
+      // Real user-reported scenario: fasmg's struct package dynamically generates a
+      // "instanceName TypeName" command once a struct is defined (macro/struct.inc's "ends?"),
+      // so "assembly_workspace Workspace" declares assembly_workspace as an instance of the
+      // Workspace struct -- and "assembly_workspace.memory_start" is the real, canonical way
+      // its field gets referenced from anywhere else in the source.
+      const uri = 'file:///workspace.asm';
+      const src = ['struct Workspace', '\tmemory_start dd ?', '\tmemory_end dd ?', 'ends', '', 'assembly_workspace Workspace', '', 'mov esi,[assembly_workspace.memory_start]'].join('\n');
+      const ws = new Workspace();
+      ws.updateDocument(uri, 1, src, 'fasm2');
+
+      const instance = ws.resolvePossibleInstance(uri, 'fasm2', 'assembly_workspace');
+      assert.ok(instance, 'expected "assembly_workspace" to resolve as a confirmed struct instance');
+      assert.strictEqual(instance?.typeName, 'Workspace');
+
+      const fieldDefs = ws.resolveInstanceField(uri, 'fasm2', 'assembly_workspace.memory_start');
+      assert.strictEqual(fieldDefs.length, 1);
+      assert.strictEqual(fieldDefs[0].name, 'Workspace.memory_start');
+
+      // A field that doesn't exist on the struct must not resolve to anything.
+      assert.strictEqual(ws.resolveInstanceField(uri, 'fasm2', 'assembly_workspace.no_such_field').length, 0);
+    });
+
+    it('never treats an ordinary macro invocation with one bare argument as a struct instantiation', () => {
+      // The exact same "IDENT1 IDENT2" shape as a real instantiation -- the only thing that must
+      // keep this from misresolving is that "usage_text" is never a real struct anywhere.
+      const uri = 'file:///macro-call.asm';
+      const src = ['macro write_msg target', '\tcall target', 'end macro', '', 'write_msg usage_text'].join('\n');
+      const ws = new Workspace();
+      ws.updateDocument(uri, 1, src, 'fasm2');
+
+      assert.strictEqual(ws.resolvePossibleInstance(uri, 'fasm2', 'write_msg'), undefined);
+      assert.strictEqual(ws.resolveInstanceField(uri, 'fasm2', 'write_msg.anything').length, 0);
+    });
+  });
+
   it('never throws when given a mix of missing, unreadable and valid files', async () => {
     const uriValid = await writeFile('ok.asm', 'OK = 1\n');
     const uriMissing = URI.file(path.join(tmpDir, 'does-not-exist.asm')).toString();

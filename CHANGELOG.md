@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.0
+
+- Hover and go-to-definition now resolve struct *instances*, not just the struct type itself:
+  `assembly_workspace Workspace` (fasmg's struct package dynamically generates a command literally
+  named after a struct once it's defined, so this is ordinary label-prefixed-instruction syntax)
+  declares `assembly_workspace` as an instance, and `assembly_workspace.memory_start` — the actual
+  way real code references a field — now resolves to the field's own definition, and the bare
+  instance name resolves too. This shape is syntactically identical to an ordinary macro call with
+  one bare-identifier argument, so it's only ever trusted after confirming the second word is a
+  real, reachable struct — never guessed from a single file's own tokens alone.
+
 ## 0.24.0
 
 - `sizeof.StructName` and `StructName.field` (the *actual* names fasmg's own struct package

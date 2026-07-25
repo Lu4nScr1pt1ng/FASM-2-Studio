@@ -98,6 +98,29 @@ export interface IncludeDirective {
   uri: string;
 }
 
+/**
+ * An unconfirmed candidate struct instantiation: a top-level "IDENT1 IDENT2 [args...]" line (e.g.
+ * "assembly_workspace Workspace") — fasmg's struct package dynamically generates a calminstruction
+ * literally named after the struct once it's defined (macro/struct.inc's own "ends?"), so writing
+ * "instanceName TypeName" is genuinely ordinary "label-prefixed instruction" syntax, not a special
+ * form. This is *exactly* the same shape as an ordinary macro invocation with one bare-identifier
+ * argument (e.g. "some_macro some_arg") — there is no way to tell them apart from this single
+ * file's own tokens alone, since that requires knowing whether "IDENT2" is really a struct
+ * anywhere in the reachable workspace. So this is recorded unconditionally, as a candidate only,
+ * never promoted to a real SymbolDefinition here — see workspace.ts's resolveInstanceField/
+ * resolvePossibleInstance, which only ever trust one of these after confirming typeName really is
+ * a reachable struct.
+ */
+export interface PossibleInstance {
+  /** The declared instance's own name (e.g. "assembly_workspace"). */
+  name: string;
+  /** The second token on the line, as written — unconfirmed until a caller checks it against the
+   * real struct registry. */
+  typeName: string;
+  nameRange: Range;
+  range: Range;
+}
+
 export interface ParsedDocument {
   uri: string;
   version: number;
@@ -105,6 +128,7 @@ export interface ParsedDocument {
   symbols: SymbolDefinition[];
   references: SymbolReference[];
   includes: IncludeDirective[];
+  possibleInstances: PossibleInstance[];
   /** format/use directives found at top level, useful for diagnostics context and hover. */
   formatDirective?: string;
   /**

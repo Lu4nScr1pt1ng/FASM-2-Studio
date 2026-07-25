@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { parseDocument } from './parser/symbolIndex';
-import { Dialect, ParsedDocument, SymbolDefinition, SymbolKind, SymbolReference } from './types';
+import { Dialect, ParsedDocument, PossibleInstance, SymbolDefinition, SymbolKind, SymbolReference } from './types';
 
 const MAX_INCLUDE_DEPTH = 8;
 const MAX_INDEXED_FILE_BYTES = 2 * 1024 * 1024; // guard against accidentally indexing huge/binary files
@@ -395,6 +395,47 @@ export class Workspace {
       }
     }
     return results;
+  }
+
+  /** Whether `name` is a real, reachable struct (SymbolKind.Struct) from `fromUri` — the one thing
+   * that turns a PossibleInstance candidate from "looks like a struct instantiation" into
+   * something actually safe to resolve fields through. See PossibleInstance's own doc comment: the
+   * exact same "IDENT1 IDENT2" shape is also how an ordinary one-argument macro invocation reads,
+   * so trusting a candidate without this check would resolve fields through things that were never
+   * struct instances at all. */
+  private isKnownStruct(fromUri: string, dialect: Dialect, name: string): boolean {
+    for (const doc of this.walkIncludeGraph(fromUri, dialect)) {
+      if (doc.symbols.some((s) => s.kind === SymbolKind.Struct && s.name === name)) return true;
+    }
+    return false;
+  }
+
+  /** Finds the PossibleInstance declaring `name` (e.g. "assembly_workspace"), reachable from
+   * `fromUri`, but only once its own typeName is confirmed to be a real struct — see
+   * isKnownStruct. Powers both a bare hover/go-to-definition on the instance name itself and, via
+   * resolveInstanceField, a dotted "instance.field" query. */
+  resolvePossibleInstance(fromUri: string, dialect: Dialect, name: string): PossibleInstance | undefined {
+    for (const doc of this.walkIncludeGraph(fromUri, dialect)) {
+      const instance = doc.possibleInstances.find((i) => i.name === name);
+      if (instance && this.isKnownStruct(fromUri, dialect, instance.typeName)) return instance;
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolves "instanceName.field" (e.g. "assembly_workspace.memory_start") through struct
+   * instantiation: once `instanceName` is confirmed to be a real instance of a real struct (see
+   * resolvePossibleInstance), this just delegates to the exact same "TypeName.field"
+   * qualified-name lookup a direct reference to the struct's own name would already resolve
+   * through (symbolIndex.ts's own struct-field qualification) — no separate field-lookup logic
+   * needed here at all.
+   */
+  resolveInstanceField(fromUri: string, dialect: Dialect, word: string): SymbolDefinition[] {
+    const dot = word.lastIndexOf('.');
+    if (dot <= 0 || dot === word.length - 1) return [];
+    const instance = this.resolvePossibleInstance(fromUri, dialect, word.slice(0, dot));
+    if (!instance) return [];
+    return this.findDefinitions(fromUri, `${instance.typeName}.${word.slice(dot + 1)}`, dialect);
   }
 
   // --- global name index -----------------------------------------------------------------

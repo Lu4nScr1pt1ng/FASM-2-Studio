@@ -179,6 +179,25 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   const elsewhere = workspace.findSymbolAnywhere(word)[0];
   if (elsewhere) return markdown(renderSymbol(elsewhere, uri, true));
 
+  // "instanceName.field" (e.g. "assembly_workspace.memory_start") through a confirmed struct
+  // instantiation — see workspace.ts's resolveInstanceField for why this can't just be a plain
+  // symbol-table lookup like everything above it.
+  const viaInstance = pickInScopeSymbol(workspace.resolveInstanceField(uri, dialect, word), uri, line);
+  if (viaInstance) return markdown(renderSymbol(viaInstance, uri, false));
+
+  // The bare instance name itself (e.g. "assembly_workspace"), confirmed to be a real instance of
+  // a real struct — see resolvePossibleInstance.
+  const instance = workspace.resolvePossibleInstance(uri, dialect, word);
+  if (instance) {
+    return markdown(
+      renderTagged(
+        instance.name,
+        'Label',
+        `Instance of struct \`${instance.typeName}\` — fasmg's struct package generates a command literally named after a struct once it's defined (macro/struct.inc), so this is ordinary "instanceName TypeName" label-prefixed-instruction syntax. Its fields are reachable as \`${instance.name}.fieldName\`.`,
+      ),
+    );
+  }
+
   return undefined;
 }
 

@@ -101,4 +101,30 @@ describe('getDefinitions', () => {
     assert.strictEqual(defs.length, 1);
     assert.strictEqual(defs[0].range.start.line, 1); // "struct RecognitionContext"
   });
+
+  it('jumps to a struct field\'s definition through a struct *instance* ("instanceName.field"), and to the instance\'s own declaration line', () => {
+    // Real user-reported follow-up: "assembly_workspace Workspace" declares an instance, and real
+    // code references its fields through that instance name, not the struct type name.
+    const uri = 'file:///workspace.asm';
+    const src = ['format binary', 'struct Workspace', '\tmemory_start dd ?', '\tmemory_end dd ?', 'ends', '', 'assembly_workspace Workspace'].join('\n');
+    const ws = new Workspace();
+    ws.updateDocument(uri, 1, src, 'fasm2');
+
+    const fieldDefs = getDefinitions(ws, uri, 'fasm2', 'assembly_workspace.memory_start', { line: 0, character: 0 });
+    assert.strictEqual(fieldDefs.length, 1);
+    assert.strictEqual(fieldDefs[0].range.start.line, 2); // "memory_start dd ?"
+
+    const instanceDefs = getDefinitions(ws, uri, 'fasm2', 'assembly_workspace', { line: 0, character: 0 });
+    assert.strictEqual(instanceDefs.length, 1);
+    assert.strictEqual(instanceDefs[0].range.start.line, 6); // "assembly_workspace Workspace"
+  });
+
+  it('does not jump anywhere for an ordinary macro invocation with one bare argument, despite the identical "IDENT1 IDENT2" shape as a real struct instantiation', () => {
+    const uri = 'file:///macro-call.asm';
+    const src = ['format binary', 'macro write_msg target', '\tcall target', 'end macro', '', 'write_msg usage_text'].join('\n');
+    const ws = new Workspace();
+    ws.updateDocument(uri, 1, src, 'fasm2');
+
+    assert.deepStrictEqual(getDefinitions(ws, uri, 'fasm2', 'write_msg.anything', { line: 0, character: 0 }), []);
+  });
 });

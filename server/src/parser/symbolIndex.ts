@@ -8,7 +8,7 @@
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
-import { DirectiveEntry, Dialect, InstructionEntry, IncludeDirective, ParsedDocument, Range, RegisterEntry, SymbolDefinition, SymbolKind, SymbolReference } from '../types';
+import { DirectiveEntry, Dialect, InstructionEntry, IncludeDirective, ParsedDocument, PossibleInstance, Range, RegisterEntry, SymbolDefinition, SymbolKind, SymbolReference } from '../types';
 import { Token, TokenType, tokenizeDocument, unquoteString } from './tokenizer';
 
 // Data-defining directives that, when immediately preceded by a bare identifier on the same line
@@ -114,6 +114,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   const symbols: SymbolDefinition[] = [];
   const references: SymbolReference[] = [];
   const includes: IncludeDirective[] = [];
+  const possibleInstances: PossibleInstance[] = [];
   let formatDirective: string | undefined;
   let hasTopLevelOrg = false;
   let inImportList = false;
@@ -546,6 +547,25 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         continue;
       }
 
+      // --- IDENT1 IDENT2 [args...] (e.g. "assembly_workspace Workspace") — a candidate struct
+      // instantiation; see PossibleInstance's own doc comment for why this is only ever recorded,
+      // never trusted here. Scoped to top level (blockStack empty): a real instantiation is
+      // ordinary global/segment-level data, not something written inside a macro/struct body.
+      if (
+        blockStack.length === 0 &&
+        t0.type === TokenType.Ident &&
+        !NON_SYMBOL_IDENTIFIERS.has(t0.text.toLowerCase()) &&
+        tokens[1]?.type === TokenType.Ident &&
+        !NON_SYMBOL_IDENTIFIERS.has(tokens[1].text.toLowerCase())
+      ) {
+        possibleInstances.push({
+          name: t0.text,
+          typeName: tokens[1].text,
+          nameRange: tokenRange(t0),
+          range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
+        });
+      }
+
       // Anything else on the line is treated as instruction/operand text; harvest bare
       // identifiers as best-effort references for go-to-definition.
       collectReferences(tokens, uri, references);
@@ -554,7 +574,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
     // Never let a parse failure propagate — degrade to whatever was collected so far.
   }
 
-  return { uri, version, dialect, symbols, references, includes, formatDirective, hasTopLevelOrg };
+  return { uri, version, dialect, symbols, references, includes, possibleInstances, formatDirective, hasTopLevelOrg };
 }
 
 function collectReferences(tokens: Token[], uri: string, out: SymbolReference[]): void {

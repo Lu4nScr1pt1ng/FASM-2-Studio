@@ -51,8 +51,16 @@ export function getDefinitions(
   // to a macro defined in a sibling file so the user can go add the `include` themselves.
   // (findSymbolAnywhere already never returns local-scoped symbols — see Workspace.addToGlobalIndex.)
   const found = local.length > 0 ? local : workspace.findSymbolAnywhere(word);
-  return found.map((sym) => ({
-    uri: sym.uri,
-    range: toLspRange(sym.nameRange),
-  }));
+  if (found.length > 0) return found.map((sym) => ({ uri: sym.uri, range: toLspRange(sym.nameRange) }));
+
+  // "instanceName.field" (e.g. "assembly_workspace.memory_start") through a confirmed struct
+  // instantiation, and the bare instance name itself — see workspace.ts's resolveInstanceField/
+  // resolvePossibleInstance for why this needs its own lookup instead of a plain symbol-table one.
+  const viaInstance = workspace.resolveInstanceField(uri, dialect, word);
+  if (viaInstance.length > 0) return viaInstance.map((sym) => ({ uri: sym.uri, range: toLspRange(sym.nameRange) }));
+
+  const instance = workspace.resolvePossibleInstance(uri, dialect, word);
+  if (instance) return [{ uri, range: toLspRange(instance.nameRange) }];
+
+  return [];
 }
