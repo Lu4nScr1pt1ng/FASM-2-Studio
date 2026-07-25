@@ -39,9 +39,14 @@ export interface SymbolDefinition {
    * - "define"   textual substitution like "equ", but does not evaluate symbolic variables in the
    *              text; preserves the previous value.
    * - "redefine" like "define", but discards the previous value like "reequ"/"=".
+   * - "struct-size" not a real fasmg keyword — synthesized by this parser itself for the
+   *                 "sizeof.<StructName>" companion constant fasmg's struct package
+   *                 (macro/struct.inc) auto-generates for every `struct ... ends` (its own
+   *                 "arrange sym, =sizeof.pname" at the close of the outermost struct); `value`
+   *                 holds the struct's own name for this variant.
    * Undefined for non-constant symbol kinds.
    */
-  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine' | 'load';
+  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine' | 'load' | 'struct-size';
   /**
    * Set for a label declared with "::" instead of ":" — a special "area label" fasmg uses only to
    * address `load`'s alternate addressing mode (`load NAME:size from AREA_LABEL:offset`), which

@@ -121,6 +121,16 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   const blockStack: string[] = [];
   const macroFrames: MacroFrame[] = [];
   let lastGlobalLabel: string | undefined;
+  /** The outermost currently-open `struct ... ends` block's own name/nameRange — real fasmg's
+   * struct package (macro/struct.inc) wraps a struct's *entire* body in `namespace <name>`, so
+   * every field's real, canonically-referenced name outside the struct is fully qualified
+   * ("StructName.field"), and closing the struct auto-generates a companion "sizeof.StructName"
+   * constant (struct.inc's own `close_struct:` label: "arrange sym, =sizeof.pname / publish sym,
+   * tmp") — see both usages below. Only set for the *outermost* struct: a real nested/anonymous
+   * `struct`/`union` sub-block (struct.inc supports this for e.g. packed union layouts) stays
+   * inside the same single outer namespace, so its fields still qualify under the outer struct's
+   * name, not the inner one. */
+  let currentStruct: { name: string; nameRange: Range } | undefined;
 
   /** If `name` was declared `local` in a currently-open macro, returns that macro's frame
    * (innermost first — a name can only sensibly be local to one enclosing macro at a time). */
@@ -170,6 +180,23 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       }
       if (kw0 === 'ends' && blockStack[blockStack.length - 1] === 'struct') {
         blockStack.pop();
+        // Only the *outermost* struct's close actually finalizes the size and publishes
+        // "sizeof.<name>" in real fasmg (struct.inc's collect? only reaches its own
+        // "asm end namespace" / "sizeof.pname" publish once its nesting accumulator is fully
+        // unwound) — a nested/anonymous sub-struct's own "ends" just closes that inner layout
+        // block, no new sizeof symbol of its own.
+        if (currentStruct && !blockStack.includes('struct')) {
+          symbols.push({
+            name: `sizeof.${currentStruct.name}`,
+            kind: SymbolKind.Constant,
+            range: currentStruct.nameRange,
+            nameRange: currentStruct.nameRange,
+            value: currentStruct.name,
+            definedVia: 'struct-size',
+            uri,
+          });
+          currentStruct = undefined;
+        }
         continue;
       }
 
@@ -300,6 +327,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           params: paramsFromTokens(tokens.slice(2)),
           uri,
         });
+        if (!currentStruct) currentStruct = { name: nameTok.text, nameRange: tokenRange(nameTok) };
         blockStack.push('struct');
         continue;
       }
@@ -430,6 +458,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         DATA_DIRECTIVES.has(lower(tokens[1]))
       ) {
         const isLocal = t0.text.startsWith('.');
+        const isField = blockStack[blockStack.length - 1] === 'struct';
         symbols.push({
           name: t0.text,
           kind: isLocal ? SymbolKind.LocalLabel : SymbolKind.Label,
@@ -437,9 +466,29 @@ export function parseDocument(uri: string, version: number, text: string, dialec
           nameRange: tokenRange(t0),
           parentLabel: isLocal ? lastGlobalLabel : undefined,
           value: tokens.slice(1).map((t) => t.text).join(' '),
-          isStructField: blockStack[blockStack.length - 1] === 'struct',
+          isStructField: isField,
           uri,
         });
+        // fasmg's struct package wraps a struct's *entire* body in "namespace <structName>"
+        // (macro/struct.inc's collect?), so a field's real, canonically-referenced name from
+        // outside the struct is always fully qualified ("StructName.field", e.g. real code's own
+        // "[ebx+MatchedExcerpt.matcher]") — never the bare field name alone. Indexed as its own,
+        // separate symbol (not a rename of the bare one above) so both an internal same-struct-
+        // body reference to the bare name and the overwhelmingly more common qualified external
+        // reference resolve to something; scoping it to exactly this struct's own qualified name
+        // also means two unrelated structs sharing a generic field name (e.g. two different
+        // structs each with a "flags" field) can never cross-resolve to each other's field.
+        if (isField && !isLocal && currentStruct) {
+          symbols.push({
+            name: `${currentStruct.name}.${t0.text}`,
+            kind: SymbolKind.Label,
+            range: lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar),
+            nameRange: tokenRange(t0),
+            value: tokens.slice(1).map((t) => t.text).join(' '),
+            isStructField: true,
+            uri,
+          });
+        }
         if (!isLocal) lastGlobalLabel = t0.text;
 
         collectReferences(tokens.slice(2), uri, references);

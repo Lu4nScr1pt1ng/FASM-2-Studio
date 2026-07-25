@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.24.0
+
+- `sizeof.StructName` and `StructName.field` (the *actual* names fasmg's own struct package
+  generates — every field's real, canonically-referenced name is fully qualified, and the total
+  size is a real auto-generated companion constant) now resolve in hover and go-to-definition,
+  instead of finding nothing at all. Nested/anonymous sub-structs are handled correctly too.
+- `calminstruction NAME params` now highlights its declared name the same way `macro NAME`/
+  `struct NAME` already did, while `calminstruction` itself stays tagged as a CALM command.
+- Fixed a real syntax-highlighting bug found validating against fasmg's own standard
+  `packages/x86/include/macro/import64.inc`: an `iterate <label,string>, ...`-bound loop variable
+  literally named `label`, written back unexpanded in the macro body as e.g. `label dq ...`, used
+  to be misread as the real `label NAME at EXPR` directive — stealing `dq` away from its own
+  data-directive highlight.
+- Added two bundled color themes, "FASM2 Studio Dark" and "FASM2 Studio Light", with a palette
+  designed specifically for FASM's own token categories (mnemonics, registers, directives, CALM
+  commands, structs, labels, ...), each checked against WCAG contrast ratios. The underlying
+  grammar scope names were also spot-checked against several popular built-in VS Code themes
+  (Dark/Light Modern, Dark/Light+, Monokai, Solarized Light, ...) for reasonable out-of-the-box
+  compatibility even without switching to the bundled themes.
+
 ## 0.23.0
 
 - Fixed a regression from 0.22.0's macro-hover fix: hovering an instruction mnemonic (e.g. `js`)

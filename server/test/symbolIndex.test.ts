@@ -218,6 +218,76 @@ describe('symbolIndex', () => {
     assert.strictEqual(doc.symbols.filter((s) => s.name === 'point').length, 1);
   });
 
+  it('indexes a struct field under both its bare name and its fully-qualified "StructName.field" name', () => {
+    // Real-world scenario: fasmg's struct package (macro/struct.inc) wraps a struct's entire body
+    // in "namespace <name>", so a field's real, canonically-referenced name from outside the
+    // struct is always fully qualified (e.g. real code's own "[ebx+MatchedExcerpt.matcher]") --
+    // hovering/go-to-definition on that qualified form found nothing at all before this, since
+    // only the bare field name ("matcher") was ever indexed.
+    const src = ['struct MatchedExcerpt', '\tmatcher dd ?', 'ends'].join('\n');
+    const doc = parseDocument('file:///qualified-field.asm', 1, src, 'fasm2');
+
+    const bare = doc.symbols.find((s) => s.name === 'matcher');
+    assert.ok(bare, 'expected the bare field name to still be indexed');
+    assert.strictEqual(bare?.isStructField, true);
+
+    const qualified = doc.symbols.find((s) => s.name === 'MatchedExcerpt.matcher');
+    assert.ok(qualified, 'expected the fully-qualified "MatchedExcerpt.matcher" name to also be indexed');
+    assert.strictEqual(qualified?.isStructField, true);
+    assert.strictEqual(qualified?.kind, SymbolKind.Label);
+    // Same source position either way -- these are two names for the one real field, not two
+    // unrelated definitions.
+    assert.deepStrictEqual(qualified?.nameRange, bare?.nameRange);
+  });
+
+  it('two different structs sharing a same-named field never cross-resolve through their qualified names', () => {
+    const src = ['struct Alpha', '\tflags dd ?', 'ends', 'struct Beta', '\tflags dd ?', 'ends'].join('\n');
+    const doc = parseDocument('file:///cross-struct.asm', 1, src, 'fasm2');
+
+    const alphaFlags = doc.symbols.find((s) => s.name === 'Alpha.flags');
+    const betaFlags = doc.symbols.find((s) => s.name === 'Beta.flags');
+    assert.ok(alphaFlags && betaFlags);
+    assert.notDeepStrictEqual(alphaFlags?.nameRange, betaFlags?.nameRange);
+    // Exactly one qualified symbol per struct -- not, say, both structs' fields cross-registered
+    // under both qualified names.
+    assert.strictEqual(doc.symbols.filter((s) => s.name === 'Alpha.flags').length, 1);
+    assert.strictEqual(doc.symbols.filter((s) => s.name === 'Beta.flags').length, 1);
+  });
+
+  it('synthesizes a "sizeof.<StructName>" constant when a struct closes, matching fasmg\'s own auto-generated companion symbol', () => {
+    // Confirmed against the real struct.inc source: closing the outermost struct does
+    // "arrange sym, =sizeof.pname" / "publish sym, tmp" -- a real, separate symbol distinct from
+    // the struct's own name, equal to its total byte size, used directly in real code (e.g.
+    // "add esi, sizeof.RecognitionContext"). Nothing indexed this before, so hovering it found
+    // nothing at all despite being one of the most common ways struct sizes are actually used.
+    const src = ['struct RecognitionContext', '\tbase_namespace dd ?', 'ends'].join('\n');
+    const doc = parseDocument('file:///sizeof.asm', 1, src, 'fasm2');
+
+    const sizeofSym = doc.symbols.find((s) => s.name === 'sizeof.RecognitionContext');
+    assert.ok(sizeofSym, `expected a "sizeof.RecognitionContext" symbol, got: ${JSON.stringify(doc.symbols.map((s) => s.name))}`);
+    assert.strictEqual(sizeofSym?.kind, SymbolKind.Constant);
+    assert.strictEqual(sizeofSym?.definedVia, 'struct-size');
+    assert.strictEqual(sizeofSym?.value, 'RecognitionContext');
+    // Points back at the struct's own name token -- the only actionable "definition" location,
+    // since "sizeof.RecognitionContext" itself never appears literally in this source.
+    const structSym = doc.symbols.find((s) => s.name === 'RecognitionContext' && s.kind === SymbolKind.Struct);
+    assert.deepStrictEqual(sizeofSym?.nameRange, structSym?.nameRange);
+  });
+
+  it('only synthesizes "sizeof" for the outermost struct, not a nested anonymous sub-struct, and qualifies nested fields under the outer name', () => {
+    // Real fasmg supports an anonymous nested "struct ... ends" inside a struct body (e.g. for a
+    // packed union-like sub-layout) -- struct.inc's own collect? only reaches its "sizeof.pname"
+    // publish once its nesting accumulator fully unwinds back to the outermost struct, so the
+    // inner "ends" must not synthesize a "sizeof" of its own, and the nested field still belongs
+    // to the *outer* struct's namespace, not some inner one.
+    const src = ['struct Outer', '\tstruct', '\t\tinner dd ?', '\tends', 'ends'].join('\n');
+    const doc = parseDocument('file:///nested-struct.asm', 1, src, 'fasm2');
+
+    assert.strictEqual(doc.symbols.filter((s) => s.name?.startsWith('sizeof.')).length, 1);
+    assert.ok(doc.symbols.some((s) => s.name === 'sizeof.Outer'));
+    assert.ok(doc.symbols.some((s) => s.name === 'Outer.inner'), 'expected the nested field to qualify under the *outer* struct name');
+  });
+
   it('only records the first top-level format directive, and ignores one nested inside a block', () => {
     const src = ['format binary', 'format ELF64 executable 3', 'macro foo?', '  format PE console', 'end macro'].join('\n');
     const doc = parseDocument('file:///format.asm', 1, src, 'fasm2');

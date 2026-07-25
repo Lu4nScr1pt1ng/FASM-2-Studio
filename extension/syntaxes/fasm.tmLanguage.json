@@ -11,6 +11,7 @@
     { "include": "#struct-body" },
     { "include": "#member-access" },
     { "include": "#macro-struct-definition" },
+    { "include": "#calminstruction-definition" },
     { "include": "#purge-statement" },
     { "include": "#constant-definition" },
     { "include": "#calm-commands" },
@@ -86,7 +87,8 @@
           }
         },
         {
-          "match": "\\b(label)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)",
+          "comment": "Real, confirmed false positive against fasmg's own standard packages/x86/include/macro/import64.inc: \"iterate <label,string>, definitions\" binds \"label\" as an ordinary loop variable name, and the macro body later writes it back out literally unexpanded as e.g. \"label dq RVA name.label\" -- with no macro-expansion awareness, that reads exactly like the real \"label NAME at EXPR\" directive naming \"dq\" as its target, wrongly stealing the data directive's own storage.type.data highlight. The negative lookahead (same DATA_DIRECTIVES set #data-directives itself matches) rules out only that specific, confirmed-real collision shape; an actual \"label NAME at EXPR\" is never followed directly by a data-directive keyword.",
+          "match": "\\b(label)\\s+(?!(?:db|dw|dd|dp|df|dq|dt|ddq|dqq|ddqq|du|rb|rw|rd|rp|rf|rq|rt|rdq|rqq|rdqq|file)\\b)([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)",
           "captures": {
             "1": { "name": "keyword.control.directive.fasm" },
             "2": { "name": "entity.name.label.fasm" }
@@ -98,6 +100,14 @@
       "match": "\\b(macro|struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
       "captures": {
         "1": { "name": "keyword.control.directive.fasm" },
+        "2": { "name": "entity.name.function.fasm" }
+      }
+    },
+    "calminstruction-definition": {
+      "comment": "\"calminstruction NAME params\" (e.g. \"calminstruction calminstruction?.xcall? instruction*, arguments&\") is the same kind of definition as \"macro NAME\"/\"struct NAME\" -- fasmg implements virtually every real x86 instruction this way (see hover.ts's own SymbolKind.Macro treatment of it) -- and deserves the same entity.name.function highlight on its declared name. Kept as its own rule rather than folded into #macro-struct-definition: unlike \"macro\"/\"struct\" (keyword.control.directive.fasm), the \"calminstruction\" keyword itself is tagged keyword.other.calm.fasm (grammar.test.ts's own \"tags CALM sub-language commands distinctly\" already covers this, alongside match/check/jyes/emit/exit), a genuinely different scope this rule must not change.",
+      "match": "\\b(calminstruction)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
+      "captures": {
+        "1": { "name": "keyword.other.calm.fasm" },
         "2": { "name": "entity.name.function.fasm" }
       }
     },

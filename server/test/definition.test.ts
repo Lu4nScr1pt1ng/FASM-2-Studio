@@ -75,4 +75,30 @@ describe('getDefinitions', () => {
     const defs = getDefinitions(ws, uri, 'fasm2', 'value', { line: 5, character: 0 });
     assert.deepStrictEqual(defs, []);
   });
+
+  it('jumps to a struct field\'s own definition line from its fully-qualified "StructName.field" name', () => {
+    // Real user-reported scenario: real code always references a struct field fully qualified
+    // (fasmg's struct package wraps the whole body in "namespace <name>"), e.g.
+    // "[ebx+MatchedExcerpt.matcher]" -- go-to-definition on that exact token found nothing before
+    // this, since only the bare field name was ever indexed.
+    const uri = 'file:///matched.asm';
+    const src = ['format binary', 'struct MatchedExcerpt', '\tmatcher dd ?', 'ends'].join('\n');
+    const ws = new Workspace();
+    ws.updateDocument(uri, 1, src, 'fasm2');
+
+    const defs = getDefinitions(ws, uri, 'fasm2', 'MatchedExcerpt.matcher', { line: 0, character: 0 });
+    assert.strictEqual(defs.length, 1);
+    assert.strictEqual(defs[0].range.start.line, 2); // "matcher dd ?"
+  });
+
+  it('jumps to the struct\'s own definition line from its auto-generated "sizeof.<StructName>" companion constant', () => {
+    const uri = 'file:///recognition.asm';
+    const src = ['format binary', 'struct RecognitionContext', '\tbase_namespace dd ?', 'ends'].join('\n');
+    const ws = new Workspace();
+    ws.updateDocument(uri, 1, src, 'fasm2');
+
+    const defs = getDefinitions(ws, uri, 'fasm2', 'sizeof.RecognitionContext', { line: 0, character: 0 });
+    assert.strictEqual(defs.length, 1);
+    assert.strictEqual(defs[0].range.start.line, 1); // "struct RecognitionContext"
+  });
 });

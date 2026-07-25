@@ -136,6 +136,26 @@ describe('fasm TextMate grammar', () => {
     }
   });
 
+  it('tags the name declared by "calminstruction NAME" as a function, like "macro NAME"/"struct NAME" already do, while keeping "calminstruction" itself tagged as a CALM command', async function () {
+    // Real user-reported gap: "calminstruction NAME params" is the same kind of definition as
+    // "macro NAME"/"struct NAME" (fasmg implements virtually every real x86 instruction this way,
+    // e.g. the real "calminstruction calminstruction?.xcall? instruction*, arguments&" from
+    // packages/x86/include/cpu/8086.inc) -- but only macro/struct got the entity.name.function
+    // highlight on their declared name, leaving every calminstruction's own name unstyled.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['calminstruction fld? src*', 'calminstruction calminstruction?.xcall? instruction*, arguments&'].join('\n'));
+
+    const kwScopes = scopesOf(lines[0], 'calminstruction');
+    assert.strictEqual(kwScopes[kwScopes.length - 1], 'keyword.other.calm.fasm', `expected "calminstruction" to stay a CALM command, got: ${kwScopes}`);
+    const nameScopes = scopesOf(lines[0], 'fld?');
+    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.function.fasm', `expected "fld?" to be tagged as a function name, got: ${nameScopes}`);
+
+    // The command-namespaced form ("calminstruction?.xcall?") is a single dotted+weak name, same
+    // as #macro-struct-definition already handles.
+    const namespacedScopes = scopesOf(lines[1], 'calminstruction?.xcall?');
+    assert.strictEqual(namespacedScopes[namespacedScopes.length - 1], 'entity.name.function.fasm', `expected "calminstruction?.xcall?" to be a single function-name token, got: ${namespacedScopes}`);
+  });
+
   it('does not steal "call" or "jno" from the real x86 instructions of the same name, despite both also being CALM commands', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines('\tcall my_function\n\tjno .skip\n');
@@ -217,6 +237,33 @@ describe('fasm TextMate grammar', () => {
     assert.strictEqual(eScopes[eScopes.length - 1], 'constant.numeric.float.fasm', `expected "5e10" to be a float, got: ${eScopes}`);
     const fScopes = scopesOf(lines[2], '5f');
     assert.strictEqual(fScopes[fScopes.length - 1], 'constant.numeric.float.fasm', `expected "5f" to be a float, got: ${fScopes}`);
+  });
+
+  it('tags "label NAME at EXPR" as the real label directive, naming NAME', async function () {
+    const lines = await tokenizeLines('label alias at start\n');
+    const kwScopes = scopesOf(lines[0], 'label');
+    assert.strictEqual(kwScopes[kwScopes.length - 1], 'keyword.control.directive.fasm', `expected "label" to be a directive, got: ${kwScopes}`);
+    const nameScopes = scopesOf(lines[0], 'alias');
+    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.label.fasm', `expected "alias" to be tagged as the declared label name, got: ${nameScopes}`);
+  });
+
+  it('does not mistake a data directive for the name argument of "label NAME at EXPR", e.g. a macro\'s own iterate-bound "label" variable written back literally as "label dq ..."', async function () {
+    // Real, confirmed bug found validating against fasmg's own standard packages/x86/include/
+    // macro/import64.inc: "iterate <label,string>, definitions" binds "label" as an ordinary loop
+    // variable, and (without real macro expansion, which this grammar deliberately never does)
+    // the body's own literal, unexpanded "label dq RVA name.label" used to read exactly like the
+    // real "label NAME at EXPR" directive naming "dq" as its target -- stealing "dq" away from
+    // #data-directives and mislabeling a genuine data declaration as if it were a label name.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['\t\t\t\t\tlabel dq RVA name.label', '\t\t\t\t\tlabel dw 0'].join('\n'));
+
+    const dqScopes = scopesOf(lines[0], 'dq');
+    assert.strictEqual(dqScopes[dqScopes.length - 1], 'storage.type.data.fasm', `expected "dq" to stay a data directive, got: ${dqScopes}`);
+    const dqAsLabelName = lines[0].filter((t) => t.text === 'dq' && t.scopes.some((s) => s.startsWith('entity.name.label')));
+    assert.strictEqual(dqAsLabelName.length, 0, '"dq" must never be tagged as a label name');
+
+    const dwScopes = scopesOf(lines[1], 'dw');
+    assert.strictEqual(dwScopes[dwScopes.length - 1], 'storage.type.data.fasm', `expected "dw" to stay a data directive too, got: ${dwScopes}`);
   });
 
   it('tags "load NAME:size from ADDRESS" and "::" area labels, mirroring proc64.inc\'s "load value:byte from area:pointer"', async function () {
