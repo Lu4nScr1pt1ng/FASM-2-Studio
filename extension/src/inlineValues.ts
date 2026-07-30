@@ -25,30 +25,34 @@ import { TokenType, tokenizeLine } from '@fasm2-studio/server/src/parser/tokeniz
 // never start a debug session — pays that parse/Set-construction cost as part of startup.
 let neverAValue: Set<string> | undefined;
 
-function getNeverAValue(): Set<string> {
+// A dynamic import (rather than a top-level static one) so esbuild only evaluates the four JSON
+// modules' data on the first actual call, not at extension activation.
+async function getNeverAValue(): Promise<Set<string>> {
   if (!neverAValue) {
-    const directivesData = require('@fasm2-studio/server/src/data/directives.json') as Array<{ name: string }>;
-    const formatKeywordsData = require('@fasm2-studio/server/src/data/formatKeywords.json') as Array<{ name: string }>;
-    const instructionsData = require('@fasm2-studio/server/src/data/instructions.json') as Array<{ mnemonic: string }>;
-    const sizeSpecifiersData = require('@fasm2-studio/server/src/data/sizeSpecifiers.json') as Array<{ name: string }>;
+    const [directivesData, formatKeywordsData, instructionsData, sizeSpecifiersData] = await Promise.all([
+      import('@fasm2-studio/server/src/data/directives.json') as Promise<{ default: Array<{ name: string }> }>,
+      import('@fasm2-studio/server/src/data/formatKeywords.json') as Promise<{ default: Array<{ name: string }> }>,
+      import('@fasm2-studio/server/src/data/instructions.json') as Promise<{ default: Array<{ mnemonic: string }> }>,
+      import('@fasm2-studio/server/src/data/sizeSpecifiers.json') as Promise<{ default: Array<{ name: string }> }>,
+    ]);
     neverAValue = new Set<string>([
-      ...instructionsData.map((i) => i.mnemonic.toLowerCase()),
-      ...directivesData.flatMap((d) => d.name.toLowerCase().split(' ')),
-      ...formatKeywordsData.map((k) => k.name.toLowerCase()),
-      ...sizeSpecifiersData.map((s) => s.name.toLowerCase()),
+      ...instructionsData.default.map((i) => i.mnemonic.toLowerCase()),
+      ...directivesData.default.flatMap((d) => d.name.toLowerCase().split(' ')),
+      ...formatKeywordsData.default.map((k) => k.name.toLowerCase()),
+      ...sizeSpecifiersData.default.map((s) => s.name.toLowerCase()),
     ]);
   }
   return neverAValue;
 }
 
 export class FasmInlineValuesProvider implements vscode.InlineValuesProvider {
-  provideInlineValues(document: vscode.TextDocument, _viewPort: vscode.Range, context: vscode.InlineValueContext): vscode.InlineValue[] {
+  async provideInlineValues(document: vscode.TextDocument, _viewPort: vscode.Range, context: vscode.InlineValueContext): Promise<vscode.InlineValue[]> {
     // "Typically the end position of the range denotes the line where the inline values are
     // shown" (vscode.d.ts's own doc comment on InlineValueContext.stoppedLocation).
     const line = context.stoppedLocation.end.line;
     if (line < 0 || line >= document.lineCount) return [];
 
-    const neverAValue = getNeverAValue();
+    const neverAValue = await getNeverAValue();
     const tokens = tokenizeLine(document.lineAt(line).text, line).filter((t) => t.type === TokenType.Ident && !neverAValue.has(t.text.toLowerCase()));
     return tokens.map((t) => new vscode.InlineValueEvaluatableExpression(new vscode.Range(line, t.startChar, line, t.endChar)));
   }
