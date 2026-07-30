@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0
+
+- Fixed `"repeat"`/`"end repeat"`/`"irp"`/`"irpv"` hover and completion being withheld under the
+  fasm1 dialect — they're native fasm1 directives too, not fasm2-only.
+- Fixed `"end irpv"` never dedenting or folding the editor.
+- Fixed the syntax highlighter splitting a name into a false name-plus-number pair whenever it
+  contained `"$"`/`"%"`/`"@"` followed by something that looked like a number (e.g. `"note$AB"`,
+  `"flag@0x1F"`) — neither character ends a token in fasmg.
+- Documented the `"priorequ"`/`"priormacro"`/`"priorstruc"` wildcard modifiers in `match`'s hover
+  text.
+
 ## 0.29.0
 
 - Fixed `"$FF"`-style hex literals (fasmg's `"$"` immediately followed by a hex digit) not being
