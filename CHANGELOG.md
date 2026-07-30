@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.29.0
+
+- Fixed `"$FF"`-style hex literals (fasmg's `"$"` immediately followed by a hex digit) not being
+  recognized as numbers by the language server, unlike the syntax highlighter which already handled
+  them correctly — could pollute find-references/rename-symbol results with a bogus, never-defined
+  entry for the literal itself.
+- Fixed hover and syntax highlighting mislabeling `match` and `emit` as CALM-instruction-only
+  commands, when both are primarily ordinary directives (a `match`/`end match` control block; the
+  `emit`/`dbx` data directive) that only additionally have a distinct CALM-specific form. Syntax
+  highlighting had the same issue for `element`, `postpone`, and `rawmatch`/`rmatch`.
+- Documented the `postpone ?` variant (defers a block even later than a plain `postpone`, e.g. for
+  computing a final checksum of the assembled output) in its hover text.
+- Fixed signature help miscounting which argument the cursor is in when a macro call used fasmg's
+  `<...>` syntax to group an argument containing a comma (e.g. `data example, <'abc',10>`).
+- Fixed the editor not auto-indenting, auto-dedenting, or offering a fold arrow for `struc`,
+  `match`, `rawmatch`/`rmatch`, and `postpone` blocks.
+- Fixed the debugger (hover/Watch during a debug session) not resolving the address or size of a
+  label defined via the `emit`/`dbx` data directive (e.g. `counter emit 2: 0,1000,2000`).
+
 ## 0.28.0
 
 - Fixed bogus "symbol undefined"/"bits64 or higher required" errors appearing on a fragment file
