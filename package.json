@@ -1,7 +1,7 @@
 {
   "name": "fasm2-studio",
   "private": true,
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "VS Code tooling for flat assembler (fasm2/fasmg and fasm1)",
   "license": "MIT",
   "workspaces": [

@@ -400,6 +400,13 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
   try {
     const uri = e.document.uri;
     workspace.removeDocument(uri);
+    // indexWorkspace skips a uri that's already open, trusting the live buffer as the
+    // authoritative copy instead of also keeping a disk-read one in indexedDocuments — so closing
+    // a document that was open during the initial scan would otherwise erase its parsed state
+    // (its symbols, and any include edge into it) from the workspace entirely until something
+    // edits it or the file watcher fires. reindexFile is a no-op if something reopened it in the
+    // meantime (it re-checks openDocuments itself), so this is safe to fire unconditionally.
+    void workspace.reindexFile(uri, resolveDialect).catch((err) => logHandlerError('reindexFile (onDidClose)', err));
     dialectCache.delete(uri);
     diagnosticGenerations.delete(uri);
     const timer = diagnosticTimers.get(uri);

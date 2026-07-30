@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.28.0
+
+- Fixed bogus "symbol undefined"/"bits64 or higher required" errors appearing on a fragment file
+  (no `format` directive of its own) when it was opened after its own entry point/includer had
+  been closed — most commonly hit by single-clicking a source file (opening it in VS Code's reused
+  "preview" tab) and then debug-stepping into a fragment it includes, which replaces that preview
+  tab and closes it. Closing a document that happened to be open during the very first workspace
+  scan used to erase its parsed state entirely, since that initial scan trusts an already-open
+  document's live buffer instead of also keeping a disk-read fallback copy of it — so once closed,
+  nothing else in the workspace was known to include the fragment anymore, and it got compiled
+  standalone instead of through the real program. Closing a document now always falls back to
+  re-indexing it from disk.
+
 ## 0.27.0
 
 - Fixed diagnostics on a fragment file (no `format` directive of its own) opened moments after VS

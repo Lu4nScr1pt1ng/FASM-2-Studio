@@ -140,6 +140,27 @@ describe('Workspace indexing', () => {
     assert.strictEqual(ws.findWorkspaceSymbols('DISK_NAME').length, 1);
   });
 
+  it('findEntryFile survives its includer being open during the initial scan and later closed, once reindexFile catches up', async () => {
+    const uriEntry = await writeFile('entry.asm', "format binary\ninclude 'fragment.inc'\n");
+    const uriFragment = await writeFile('fragment.inc', 'FRAG = 1\n');
+
+    const ws = new Workspace();
+    // entry.asm is already open (e.g. the user had it open) *before* the initial workspace scan
+    // runs — indexWorkspace skips a uri that's already open (see its own doc comment), so no
+    // indexed-from-disk fallback copy of entry.asm is ever created.
+    ws.updateDocument(uriEntry, 1, "format binary\ninclude 'fragment.inc'\n", 'fasm2');
+    await ws.indexWorkspace([uriEntry, uriFragment], dialectAlwaysFasm2);
+    assert.strictEqual(ws.findEntryFile(uriFragment), uriEntry);
+
+    // Closing entry.asm (e.g. its preview tab gets reused/replaced by another file) removes the
+    // only parse of it the workspace has — without a disk-read fallback, the fragment's include
+    // edge back into it would vanish and it would start compiling standalone. server.ts's
+    // onDidClose handler always follows removeDocument with reindexFile for exactly this reason.
+    ws.removeDocument(uriEntry);
+    await ws.reindexFile(uriEntry, dialectAlwaysFasm2);
+    assert.strictEqual(ws.findEntryFile(uriFragment), uriEntry);
+  });
+
   it('retracts only the names a changed document no longer contributes, keeping unrelated ones intact', async () => {
     const uriA = await writeFile('multi.asm', 'FIRST = 1\nSECOND = 2\n');
     const uriB = await writeFile('other.asm', 'THIRD = 3\n');
