@@ -411,6 +411,39 @@ describe('fasm TextMate grammar', () => {
     assert.strictEqual(doublePercentScopes[doublePercentScopes.length - 1], 'variable.language.special.fasm', `expected a bare "%%" to still be tagged special, got: ${doublePercentScopes}`);
   });
 
+  it('does not tag the trailing "$"/"$%"/"$%%" of an ordinary name as the current-address/output-offset pseudo-variable, but still tags a genuinely bare one', async function () {
+    // Mirrors a real, confirmed bug found in fasm2's own source/listing.inc, which defines
+    // "collected_$"/"collected_$%"/"collected_$%%" and later refers back to them bare (e.g.
+    // "take $%, collected_$%") -- the trailing "$"/"$%"/"$%%" run of each name was lighting up as
+    // the unrelated built-in pseudo-variable of the same spelling, exactly the same class of bug
+    // "BackupRead%" above already covers for "%" alone, just never extended to the "$" alternatives.
+    this.timeout(10000);
+    const lines = await tokenizeLines(
+      ['collected_$ = $', 'collected_$% = $%', 'collected_$%% = $%%', 'take $%, collected_$%'].join('\n'),
+    );
+
+    for (const [lineIdx, name] of [
+      [0, 'collected_$'],
+      [1, 'collected_$%'],
+      [2, 'collected_$%%'],
+    ] as const) {
+      const nameToken = lines[lineIdx].find((t) => t.text.includes(name));
+      assert.ok(nameToken, `expected a token containing ${JSON.stringify(name)}, got: ${JSON.stringify(lines[lineIdx].map((t) => t.text))}`);
+      assert.ok(!nameToken.scopes.some((s) => s.includes('special')), `${JSON.stringify(name)} must not be tagged as a special pseudo-variable, got: ${nameToken.scopes}`);
+    }
+
+    const refToken = lines[3].find((t) => t.text.includes('collected_$%') && !t.text.includes('%%'));
+    assert.ok(refToken, `expected a token containing "collected_$%", got: ${JSON.stringify(lines[3].map((t) => t.text))}`);
+    assert.ok(!refToken.scopes.some((s) => s.includes('special')), `"collected_$%" reference must not be tagged special, got: ${refToken.scopes}`);
+
+    const bareDollarScopes = scopesOf(lines[0], '$');
+    assert.strictEqual(bareDollarScopes[bareDollarScopes.length - 1], 'variable.language.special.fasm', `expected a genuinely bare "$" to still be tagged special, got: ${bareDollarScopes}`);
+    const bareDollarPercentScopes = scopesOf(lines[1], '$%');
+    assert.strictEqual(bareDollarPercentScopes[bareDollarPercentScopes.length - 1], 'variable.language.special.fasm', `expected a genuinely bare "$%" to still be tagged special, got: ${bareDollarPercentScopes}`);
+    const bareDollarPercentPercentScopes = scopesOf(lines[2], '$%%');
+    assert.strictEqual(bareDollarPercentPercentScopes[bareDollarPercentPercentScopes.length - 1], 'variable.language.special.fasm', `expected a genuinely bare "$%%" to still be tagged special, got: ${bareDollarPercentPercentScopes}`);
+  });
+
   it('tags "bappend"/"lengthof"/"elementof"/"scaleof"/"metadataof" as operators, mirroring listing2.inc\'s own "text bappend line bappend 13 bappend 10"', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines(['text bappend line', 'n = lengthof s', 'x = 1 elementof p', 'y = 1 scaleof p', 'z = 0 metadataof v'].join('\n'));
