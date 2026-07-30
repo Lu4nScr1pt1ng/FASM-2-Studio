@@ -30,7 +30,7 @@ const SYMBOL_KIND_TO_COMPLETION: Record<SymbolKind, CompletionItemKind> = {
   [SymbolKind.Section]: CompletionItemKind.Module,
 };
 
-let staticItemsCache: { dialect: Dialect; items: CompletionItem[] } | undefined;
+let staticItemsCache: { dialect: Dialect; items: CompletionItem[]; labels: Set<string> } | undefined;
 
 function buildStaticItems(dialect: Dialect): CompletionItem[] {
   const items: CompletionItem[] = [];
@@ -94,16 +94,22 @@ function buildStaticItems(dialect: Dialect): CompletionItem[] {
   return items;
 }
 
-function getStaticItems(dialect: Dialect): CompletionItem[] {
+/** Memoized alongside the static items themselves — labels is derived purely from `items`, so
+ * rebuilding it from scratch on every completion request (this fires on every identifier
+ * keystroke) would repeat the same ~1600-entry scan for a result that never changes between
+ * dialect switches. */
+function getStaticItemsCache(dialect: Dialect): { items: CompletionItem[]; labels: Set<string> } {
   if (staticItemsCache?.dialect !== dialect) {
-    staticItemsCache = { dialect, items: buildStaticItems(dialect) };
+    const items = buildStaticItems(dialect);
+    staticItemsCache = { dialect, items, labels: new Set(items.map((i) => i.label)) };
   }
-  return staticItemsCache.items;
+  return staticItemsCache;
 }
 
 export function getCompletions(workspace: Workspace, uri: string, dialect: Dialect): CompletionItem[] {
-  const items = [...getStaticItems(dialect)];
-  const seen = new Set<string>(items.map((i) => i.label));
+  const { items: staticItems, labels } = getStaticItemsCache(dialect);
+  const items = [...staticItems];
+  const seen = new Set<string>(labels);
 
   const doc: ParsedDocument | undefined = workspace.getDocument(uri);
   if (!doc) return items;

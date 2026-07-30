@@ -10,10 +10,6 @@
 // where you actually want to look.
 import * as vscode from 'vscode';
 import { TokenType, tokenizeLine } from '@fasm2-studio/server/src/parser/tokenizer';
-import directivesData from '@fasm2-studio/server/src/data/directives.json';
-import formatKeywordsData from '@fasm2-studio/server/src/data/formatKeywords.json';
-import instructionsData from '@fasm2-studio/server/src/data/instructions.json';
-import sizeSpecifiersData from '@fasm2-studio/server/src/data/sizeSpecifiers.json';
 
 // mov/add/db/dword/... can never be a register or a source label's value — asking gdb to evaluate
 // one always fails ("No symbol table is loaded"/"No symbol \"mov\" in current context"). VS Code
@@ -22,12 +18,28 @@ import sizeSpecifiersData from '@fasm2-studio/server/src/data/sizeSpecifiers.jso
 // don't get a wall of expected-but-noisy rejections every single step, which is confusing to see
 // even when harmless. Register names (eax, ebx, ...) are deliberately *not* in this list — those
 // are exactly what should still be evaluated.
-const NEVER_A_VALUE = new Set<string>([
-  ...(instructionsData as Array<{ mnemonic: string }>).map((i) => i.mnemonic.toLowerCase()),
-  ...(directivesData as Array<{ name: string }>).flatMap((d) => d.name.toLowerCase().split(' ')),
-  ...(formatKeywordsData as Array<{ name: string }>).map((k) => k.name.toLowerCase()),
-  ...(sizeSpecifiersData as Array<{ name: string }>).map((s) => s.name.toLowerCase()),
-]);
+//
+// Built lazily (on the first actual inline-values request, i.e. the first time a debug session
+// stops at a breakpoint) rather than at module scope: the four data files behind it total ~250KB
+// of JSON, and building this eagerly would mean every extension activation — including ones that
+// never start a debug session — pays that parse/Set-construction cost as part of startup.
+let neverAValue: Set<string> | undefined;
+
+function getNeverAValue(): Set<string> {
+  if (!neverAValue) {
+    const directivesData = require('@fasm2-studio/server/src/data/directives.json') as Array<{ name: string }>;
+    const formatKeywordsData = require('@fasm2-studio/server/src/data/formatKeywords.json') as Array<{ name: string }>;
+    const instructionsData = require('@fasm2-studio/server/src/data/instructions.json') as Array<{ mnemonic: string }>;
+    const sizeSpecifiersData = require('@fasm2-studio/server/src/data/sizeSpecifiers.json') as Array<{ name: string }>;
+    neverAValue = new Set<string>([
+      ...instructionsData.map((i) => i.mnemonic.toLowerCase()),
+      ...directivesData.flatMap((d) => d.name.toLowerCase().split(' ')),
+      ...formatKeywordsData.map((k) => k.name.toLowerCase()),
+      ...sizeSpecifiersData.map((s) => s.name.toLowerCase()),
+    ]);
+  }
+  return neverAValue;
+}
 
 export class FasmInlineValuesProvider implements vscode.InlineValuesProvider {
   provideInlineValues(document: vscode.TextDocument, _viewPort: vscode.Range, context: vscode.InlineValueContext): vscode.InlineValue[] {
@@ -36,7 +48,8 @@ export class FasmInlineValuesProvider implements vscode.InlineValuesProvider {
     const line = context.stoppedLocation.end.line;
     if (line < 0 || line >= document.lineCount) return [];
 
-    const tokens = tokenizeLine(document.lineAt(line).text, line).filter((t) => t.type === TokenType.Ident && !NEVER_A_VALUE.has(t.text.toLowerCase()));
+    const neverAValue = getNeverAValue();
+    const tokens = tokenizeLine(document.lineAt(line).text, line).filter((t) => t.type === TokenType.Ident && !neverAValue.has(t.text.toLowerCase()));
     return tokens.map((t) => new vscode.InlineValueEvaluatableExpression(new vscode.Range(line, t.startChar, line, t.endChar)));
   }
 }

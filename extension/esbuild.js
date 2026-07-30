@@ -56,6 +56,7 @@ const options = {
   format: 'cjs',
   target: 'node24',
   sourcemap: true,
+  minify: !watch,
   external: ['vscode'],
 };
 
