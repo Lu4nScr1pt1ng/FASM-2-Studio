@@ -49,6 +49,29 @@ describe('symbolIndex', () => {
     assert.strictEqual(doc.formatDirective, 'binary');
   });
 
+  it('does not mistake a data directive for the name argument of "label NAME at EXPR", e.g. a macro\'s own parameter named "label" written back literally as "label dd ..."', () => {
+    // Real, confirmed bug found validating fasmg's own packages/x86/include/macro/resource.inc's
+    // "dialog" macro ("macro dialog label,title,... / label dd RVA data,size,0,0 / ...") and
+    // macro/import64.inc's "import?" macro ("iterate <label,string>, definitions / ... / label dq
+    // ..."): both shadow the "label" directive with a same-named macro parameter/loop variable, so
+    // the body's own literal, unexpanded "label dd ..."/"label dq ..." reads exactly like this
+    // parser's "label NAME at EXPR" directive handling naming "dd"/"dq" as the declared label —
+    // stealing the data directive's own token and creating a bogus "dd"/"dq" label symbol, the same
+    // bug class already fixed in the syntax-highlight grammar for this exact pair of real files.
+    const src = 'format binary\nlabel dd RVA data,size,0,0\ndata dd 1\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    assert.ok(!doc.symbols.some((s) => s.name === 'dd'), `"dd" must never be indexed as a label, got: ${JSON.stringify(doc.symbols.map((s) => s.name))}`);
+    assert.strictEqual(doc.symbols.find((s) => s.name === 'data')?.kind, SymbolKind.Label);
+  });
+
+  it('still indexes a genuine "label NAME at EXPR" directive when the name is not a data directive', () => {
+    const src = 'format binary\nstart:\nlabel alias at start\n';
+    const doc = parseDocument('file:///synthetic.asm', 1, src, 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'alias');
+    assert.strictEqual(sym?.kind, SymbolKind.Label);
+    assert.strictEqual(sym?.value, 'start');
+  });
+
   it('indexes a name containing "%" as one identifier, not splitting it into a shorter name plus a stray "%" token', () => {
     // Mirrors a real, confirmed bug: fasmg's own packages/x86/include/pcount/kernel32.inc defines
     // "BackupRead% =  7" -- fasmg's tokenization rule (manual.txt's "Fundamental syntax rules")

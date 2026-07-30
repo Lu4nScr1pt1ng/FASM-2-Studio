@@ -364,7 +364,16 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       }
 
       // --- label NAME [size] at EXPR ---
-      if (kw0 === 'label' && tokens[1] && tokens[1].type === TokenType.Ident) {
+      // tokens[1] must not itself be a data directive: fasmg's own packages/x86/include/macro/
+      // resource.inc's "dialog" macro and macro/import64.inc's "import?" macro both have a macro
+      // parameter literally named "label" (shadowing the directive within that macro's body), and
+      // write it back as e.g. "label dd RVA data,size,0,0" / "label dq RVA name.label" — the
+      // *implicit* data-label pattern below, not an invocation of this "label" directive at all.
+      // Without this guard, "dd"/"dq" (a TokenType.Ident, same as any name) got misindexed as the
+      // label's own declared name, both hiding the real definition and polluting workspace symbol
+      // search/completion with a bogus "dd"/"dq" label — the same bug class already fixed in the
+      // syntax-highlight grammar for this exact pair of real files.
+      if (kw0 === 'label' && tokens[1] && tokens[1].type === TokenType.Ident && !DATA_DIRECTIVES.has(lower(tokens[1]))) {
         const nameTok = tokens[1];
         const atIdx = tokens.findIndex((t) => lower(t) === 'at');
         const value = atIdx >= 0 ? tokens.slice(atIdx + 1).map((t) => t.text).join(' ') : undefined;
