@@ -791,6 +791,43 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('a second "next" fired before the first has finished stepping is dropped, not a race that corrupts where the first one lands', async function () {
+    this.timeout(30000);
+
+    // Regression test for FasmDebugSession's `stepping` reentrancy guard: waitForNextStop's
+    // `once('stopped', ...)` has no way to correlate a stop back to the specific exec command that
+    // caused it, so two overlapping "next" requests could each register their own listener and have
+    // the wrong one consume the other's stop. Firing both without awaiting the first (as a very fast
+    // double-click, or a client not yet disabling the step control, plausibly could) exercises
+    // exactly that window. If the guard works, only the *first* request's step actually runs and the
+    // second is a no-op — landing on line 8 ("mov ebx, 2"), one line past the breakpoint, not line 9
+    // ("add eax, ebx") as it would if both steps had actually executed.
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir });
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath }, breakpoints: [{ line: 7 }] }); // "mov eax, 1"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const first = client.sendRequest('next', { threadId: 1 });
+      const second = client.sendRequest('next', { threadId: 1 });
+      await Promise.all([first, second]); // both DAP requests succeed regardless — sendResponse() fires before the guard check
+
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'step');
+      const stackTrace = await client.sendRequest<{ stackFrames: Array<{ line: number }> }>('stackTrace', { threadId: 1 });
+      assert.strictEqual(stackTrace.stackFrames[0].line, 8, 'the overlapping second "next" must be dropped, leaving exactly one real step taken');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } finally {
+      proc.kill();
+    }
+  });
+
   it('supports instruction-granularity stepping and exposes instructionPointerReference, backing VS Code\'s Disassembly View', async function () {
     this.timeout(30000);
 

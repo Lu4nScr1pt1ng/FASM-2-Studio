@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.26.0
+
+- Fixed a real syntax-highlighting bug: the built-in `$`/`$%`/`$%%` pseudo-variable rule had a
+  guard against firing inside an ordinary name for `%`/`%%` (e.g. `BackupRead%`) but never applied
+  the same guard to `$`/`$%`/`$%%` — so a name ending in one of those (e.g. fasm2's own
+  `source/listing.inc`: `collected_$`, `collected_$%`, `collected_$%%`) had its tail wrongly
+  recolored as the unrelated built-in of the same spelling.
+- Fixed rename and find-references ignoring `local`-scoped macro variables' own scoping, unlike
+  hover/go-to-definition which already respected it: renaming or finding references to a common
+  `local` name (e.g. `value`, declared `local` in dozens of unrelated macros in real fasmg code)
+  used to touch every macro's own private variable across the whole workspace instead of just the
+  one actually in scope at the cursor.
+- Completion now offers a struct field whose name happens to spell a real directive/register (e.g.
+  `segment`), matching the carve-out hover already had — such a field used to never appear in
+  completion at all.
+- `FASM: Debug` no longer builds the program twice — the command used to build once itself and
+  then have the debug configuration resolver build a second time.
+- Fixed a debugger race where a second step (Next/Step In/Step Out) fired before the first had
+  finished stepping could have its stop consumed by the wrong step, desyncing where the debugger
+  reported landing.
+- The debug console/target output now correctly decodes GDB's `\ooo` octal escapes for
+  non-printable/high bytes, instead of corrupting everything after one.
+- Build/debug tasks with a relative `file`/`output` path now resolve against the correct workspace
+  folder in a multi-root workspace, instead of always guessing the first one.
+- A malformed `tasks.json` "fasm" task or `launch.json` field now shows a clear error instead of a
+  confusing downstream shell-execution failure.
+
 ## 0.25.0
 
 - Hover and go-to-definition now resolve struct *instances*, not just the struct type itself:

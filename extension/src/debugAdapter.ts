@@ -102,6 +102,16 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       }
     }
 
+    // launch.json's values are typed "any" by VS Code — a hand-edited config with e.g. a numeric
+    // "program" would otherwise flow silently into getListingPath/path.dirname below and fail with
+    // an obscure downstream error instead of a clear one naming the actual bad field.
+    for (const key of ['program', 'listingFile', 'cwd'] as const) {
+      if (config[key] !== undefined && typeof config[key] !== 'string') {
+        void vscode.window.showErrorMessage(`FASM debug: "${key}" in launch.json must be a string.`);
+        return undefined;
+      }
+    }
+
     const program = (config.program as string) ?? getDefaultOutputPath(asmFile);
     config.program = program;
     config.listingFile = (config.listingFile as string) ?? getListingPath(program);

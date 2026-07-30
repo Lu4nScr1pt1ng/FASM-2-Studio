@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { Hover, MarkupKind } from 'vscode-languageserver/node';
 import { Dialect, SymbolKind } from '../types';
-import { pickInScopeSymbol, Workspace } from '../workspace';
+import { isLocalInScope, pickInScopeSymbol, Workspace } from '../workspace';
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
@@ -53,7 +53,7 @@ const SPECIAL_SYMBOLS: Record<string, string> = {
 // The logical operators used inside "if"/"while"/CALM "check" conditions — a *different*
 // expression class from ordinary arithmetic, with its own operators. Only "&" overlaps with
 // anything else in the language: on the *last parameter of a macro/struct/calminstruction
-// definition* it means something else entirely (see PARAM_MODIFIERS) — real, easy-to-conflate
+// definition* it means something else entirely (see paramModifierNotes) — real, easy-to-conflate
 // ambiguity confirmed against fasmg's own real code, where both usages appear side by side.
 export const LOGICAL_OPERATORS: Record<string, string> = {
   '~': 'Logical negation, evaluated first (higher precedence than "&"/"|"). `if ~ used name` is true when `name` is *not* used. Only valid inside a logical expression (`if`/`while` condition, CALM `check` argument) — not a general bitwise-NOT for ordinary arithmetic (use the `not` operator there instead).',
@@ -141,9 +141,7 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
   // without this check first, such a local's own hover would be permanently shadowed by the
   // mnemonic's, no matter where you hover it.
   const currentDoc = workspace.getDocument(uri);
-  const localHere = currentDoc?.symbols.find(
-    (s) => s.name === word && s.localScope && line >= s.localScope.startLine && line <= s.localScope.endLine,
-  );
+  const localHere = currentDoc?.symbols.find((s) => s.name === word && isLocalInScope(s, uri, line));
   if (localHere) return markdown(renderSymbol(localHere, uri, false));
 
   // A struct field is likewise unambiguous — it can never mean anything else — so it takes the

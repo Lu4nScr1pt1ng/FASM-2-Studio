@@ -1,21 +1,7 @@
-import { DocumentSymbol, Range as LspRange, SymbolKind as LspSymbolKind } from 'vscode-languageserver/node';
+import { DocumentSymbol } from 'vscode-languageserver/node';
+import { toLspRange } from '../lspUtils';
 import { ParsedDocument, SymbolKind } from '../types';
-
-const KIND_MAP: Record<SymbolKind, LspSymbolKind> = {
-  [SymbolKind.Label]: LspSymbolKind.Function,
-  [SymbolKind.LocalLabel]: LspSymbolKind.Field,
-  [SymbolKind.Constant]: LspSymbolKind.Constant,
-  [SymbolKind.Macro]: LspSymbolKind.Method,
-  [SymbolKind.Struct]: LspSymbolKind.Struct,
-  [SymbolKind.Section]: LspSymbolKind.Namespace,
-};
-
-function toLspRange(r: { startLine: number; startChar: number; endLine: number; endChar: number }): LspRange {
-  return {
-    start: { line: r.startLine, character: r.startChar },
-    end: { line: r.endLine, character: r.endChar },
-  };
-}
+import { SYMBOL_KIND_MAP } from './symbolKindMap';
 
 export function getDocumentSymbols(doc: ParsedDocument): DocumentSymbol[] {
   const globals: DocumentSymbol[] = [];
@@ -29,7 +15,7 @@ export function getDocumentSymbols(doc: ParsedDocument): DocumentSymbol[] {
 
     const lspSym: DocumentSymbol = {
       name: sym.name,
-      kind: KIND_MAP[sym.kind],
+      kind: SYMBOL_KIND_MAP[sym.kind],
       range: toLspRange(sym.range),
       selectionRange: toLspRange(sym.nameRange),
       detail: sym.params ?? sym.value,

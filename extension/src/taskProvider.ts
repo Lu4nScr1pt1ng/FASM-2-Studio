@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { resolveCompiler } from './compilerDiscovery';
 import { detectDialect } from './dialect';
+import { validateTaskDefinition } from './taskValidation';
 import { Dialect } from './types';
 
 export const FASM_TASK_TYPE = 'fasm';
@@ -71,15 +72,19 @@ export async function dialectFor(sourceFsPath: string, override?: Dialect): Prom
   }
 }
 
-function resolveWorkspacePath(raw: string): string {
+/** Resolves a task-definition-relative path against `folder` (the task's own owning workspace
+ * folder, when known) rather than always guessing `workspaceFolders[0]` — in a multi-root
+ * workspace, a task defined in the second or third folder's own tasks.json otherwise had its
+ * relative "file"/"output" resolved against a completely unrelated folder. */
+function resolveWorkspacePath(raw: string, folder?: vscode.WorkspaceFolder): string {
   if (path.isAbsolute(raw)) return raw;
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  return folder ? path.join(folder.uri.fsPath, raw) : raw;
+  const base = folder ?? vscode.workspace.workspaceFolders?.[0];
+  return base ? path.join(base.uri.fsPath, raw) : raw;
 }
 
-export async function buildTask(def: FasmTaskDefinition, name: string): Promise<vscode.Task> {
-  const sourceFsPath = resolveWorkspacePath(def.file);
-  const outputFsPath = def.output ? resolveWorkspacePath(def.output) : getDefaultOutputPath(sourceFsPath);
+export async function buildTask(def: FasmTaskDefinition, name: string, folder?: vscode.WorkspaceFolder): Promise<vscode.Task> {
+  const sourceFsPath = resolveWorkspacePath(def.file, folder);
+  const outputFsPath = def.output ? resolveWorkspacePath(def.output, folder) : getDefaultOutputPath(sourceFsPath);
   const dialect = await dialectFor(sourceFsPath, def.dialect);
 
   if (def.debugBuild && dialect !== 'fasm2') {
@@ -186,9 +191,20 @@ export class FasmTaskProvider implements vscode.TaskProvider {
 
   async resolveTask(task: vscode.Task): Promise<vscode.Task | undefined> {
     const def = task.definition as FasmTaskDefinition;
-    if (!def.file) return undefined;
+    if (def.file === undefined) return undefined; // no "file" at all — not a task this provider handles
+
+    const validationError = validateTaskDefinition(def);
+    if (validationError) {
+      void vscode.window.showErrorMessage(`FASM2 Studio: invalid "fasm" task in tasks.json — ${validationError}`);
+      return undefined;
+    }
+
+    // A task from a workspace folder's own tasks.json carries that folder as task.scope (as
+    // opposed to the vscode.TaskScope.Workspace/Global enum values) — the right base for a
+    // relative "file"/"output" in a multi-root workspace, see resolveWorkspacePath.
+    const folder = typeof task.scope === 'object' ? task.scope : undefined;
     try {
-      return await buildTask(def, task.name || 'Build');
+      return await buildTask(def, task.name || 'Build', folder);
     } catch (err) {
       void vscode.window.showErrorMessage((err as Error).message);
       return undefined;

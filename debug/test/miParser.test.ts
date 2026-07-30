@@ -54,6 +54,20 @@ describe('parseMILine (against a real captured gdb --interpreter=mi3 session)', 
     assert.strictEqual(r.data, 'Breakpoint 1, 0x0000000000400082 in ?? ()\n');
   });
 
+  it('decodes GDB\'s "\\ooo" octal escapes for non-printable/high bytes, not just the named ones', () => {
+    // Mirrors GDB's own MI string encoder (fputstr_filtered), which escapes every non-printable
+    // byte as a zero-padded 3-digit octal -- plausible in real target/console output (e.g. a raw
+    // syscall buffer). Before this fix, "\007" decoded as the literal characters '0' then "07",
+    // silently corrupting everything that followed it in the same string.
+    const r = parseMILine('~"bel:\\007end\\n"');
+    assert.strictEqual(r.data, `bel:${String.fromCharCode(7)}end\n`);
+  });
+
+  it('decodes a short (1-2 digit) octal escape too, stopping at the first non-octal character', () => {
+    const r = parseMILine('~"a\\1b\\0c"');
+    assert.strictEqual(r.data, `a${String.fromCharCode(1)}b${String.fromCharCode(0)}c`);
+  });
+
   it('treats "(gdb)" prompt lines as a distinct, harmless record type', () => {
     assert.strictEqual(parseMILine('(gdb) ').type, 'prompt');
   });

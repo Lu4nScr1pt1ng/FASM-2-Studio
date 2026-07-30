@@ -434,7 +434,7 @@ connection.onReferences((params: ReferenceParams): Location[] => {
     if (!doc) return [];
     const word = getWordAtPosition(doc, params.position);
     if (!word) return [];
-    return getReferences(workspace, word, params.context?.includeDeclaration ?? false);
+    return getReferences(workspace, params.textDocument.uri, params.position.line, word, params.context?.includeDeclaration ?? false);
   } catch (err) {
     logHandlerError('onReferences', err);
     return [];
@@ -446,7 +446,7 @@ connection.onPrepareRename((params: PrepareRenameParams): Range | undefined => {
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return undefined;
     const word = getWordAtPosition(doc, params.position);
-    if (!word || !isRenameable(workspace, word)) return undefined;
+    if (!word || !isRenameable(workspace, params.textDocument.uri, params.position.line, word)) return undefined;
     return getWordRangeAtPosition(doc, params.position);
   } catch (err) {
     logHandlerError('onPrepareRename', err);
@@ -460,7 +460,7 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | undefined => 
     if (!doc) return undefined;
     const word = getWordAtPosition(doc, params.position);
     if (!word) return undefined;
-    return getRenameEdit(workspace, word, params.newName);
+    return getRenameEdit(workspace, params.textDocument.uri, params.position.line, word, params.newName);
   } catch (err) {
     logHandlerError('onRenameRequest', err);
     return undefined;

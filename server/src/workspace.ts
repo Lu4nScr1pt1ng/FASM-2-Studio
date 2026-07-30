@@ -549,6 +549,13 @@ export class Workspace {
   }
 }
 
+/** True if `s` is a `local`-scoped symbol (see SymbolDefinition.localScope) whose one enclosing
+ * macro body actually contains `uri`/`line` — shared by every feature that needs to tell an
+ * in-scope local apart from a same-named local declared in a different, unrelated macro. */
+export function isLocalInScope(s: SymbolDefinition, uri: string, line: number): boolean {
+  return !!s.localScope && s.uri === uri && line >= s.localScope.startLine && line <= s.localScope.endLine;
+}
+
 /**
  * Picks the one `candidates` entry actually visible at `uri`/`line`: a `local`-scoped candidate
  * (see SymbolDefinition.localScope) only counts when the query is inside the very macro body that
@@ -558,9 +565,7 @@ export class Workspace {
  * since showing it would misattribute an unrelated macro's private variable.
  */
 export function pickInScopeSymbol(candidates: SymbolDefinition[], uri: string, line: number): SymbolDefinition | undefined {
-  const inScope = candidates.find(
-    (s) => s.localScope && s.uri === uri && line >= s.localScope.startLine && line <= s.localScope.endLine,
-  );
+  const inScope = candidates.find((s) => isLocalInScope(s, uri, line));
   if (inScope) return inScope;
   return candidates.find((s) => !s.localScope);
 }

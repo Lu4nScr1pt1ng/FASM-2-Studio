@@ -7,7 +7,7 @@ import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
-import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
+import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, runBuildTask } from './taskProvider';
 import { Dialect } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
 
@@ -67,21 +67,17 @@ function registerCommands(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('fasm2Studio.debug', async () => {
       const file = activeFasmFile();
       if (!file) return;
-      const entryFile = await resolveActiveEntryFile(file);
-      if (!entryFile) return;
 
-      const exitCode = await runBuildTask(entryFile, true);
-      if (exitCode !== 0) return;
-
-      const program = getDefaultOutputPath(entryFile);
-      await vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(entryFile)), {
+      // Deliberately not resolved/built here: passing the raw active file through with no
+      // "program"/"listingFile" leaves FasmDebugConfigurationProvider.resolveDebugConfiguration as
+      // the *one* place that resolves the entry point and builds, the same path F5/a launch.json
+      // already goes through. Doing either step here too used to mean every "FASM: Debug" run
+      // resolved and compiled the program twice.
+      await vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file)), {
         type: FASM_DEBUG_TYPE,
         request: 'launch',
         name: 'Debug FASM program',
-        asmFile: entryFile,
-        program,
-        listingFile: getListingPath(program),
-        cwd: path.dirname(entryFile),
+        asmFile: file,
         stopOnEntry: true,
       });
     }),
@@ -135,9 +131,10 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
     },
   };
 
-  const languageClient = new LanguageClient('fasm2Studio', 'FASM2 Studio Language Server', serverOptions, clientOptions);
-  context.subscriptions.push({ dispose: () => void languageClient.stop() });
-  return languageClient;
+  // Not disposed via context.subscriptions: deactivate() below is the one place that stops it,
+  // awaited — VS Code calls deactivate() *and* disposes context.subscriptions on shutdown, so
+  // registering a second, fire-and-forget stop() here raced the same client through two shutdowns.
+  return new LanguageClient('fasm2Studio', 'FASM2 Studio Language Server', serverOptions, clientOptions);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {

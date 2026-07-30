@@ -27,24 +27,32 @@ async function pickEntryPoint(fileFsPath: string, entryUris: string[], placeHold
 
 export async function resolveEntryPointFsPath(client: LanguageClient, fileFsPath: string): Promise<string | undefined> {
   const uri = vscode.Uri.file(fileFsPath).toString();
-  const response = await client.sendRequest<{ entryUri?: string; ambiguousEntryUris?: string[] }>('fasm2Studio/resolveEntryPoint', { uri });
+  try {
+    const response = await client.sendRequest<{ entryUri?: string; ambiguousEntryUris?: string[] }>('fasm2Studio/resolveEntryPoint', { uri });
 
-  if (response.entryUri) return vscode.Uri.parse(response.entryUri).fsPath;
+    if (response.entryUri) return vscode.Uri.parse(response.entryUri).fsPath;
 
-  if (response.ambiguousEntryUris) {
-    return pickEntryPoint(fileFsPath, response.ambiguousEntryUris, `"${path.basename(fileFsPath)}" is included by more than one project — which one is this for?`);
-  }
+    if (response.ambiguousEntryUris) {
+      return pickEntryPoint(fileFsPath, response.ambiguousEntryUris, `"${path.basename(fileFsPath)}" is included by more than one project — which one is this for?`);
+    }
 
-  // Not reachable from any known entry point at all (a genuinely orphaned fragment, or one whose
-  // includer hasn't been opened/indexed yet) — fall back to every entry point known in the
-  // workspace, rather than failing outright, in case the user knows a relationship we don't.
-  const { entryUris } = await client.sendRequest<{ entryUris: string[] }>('fasm2Studio/listEntryPoints', {});
-  if (entryUris.length === 0) {
-    void vscode.window.showErrorMessage(
-      `FASM2 Studio: no entry point found for "${path.basename(fileFsPath)}". It has no "format" directive of its own, and isn't reachable via \`include\` from any file that does.`,
-    );
+    // Not reachable from any known entry point at all (a genuinely orphaned fragment, or one whose
+    // includer hasn't been opened/indexed yet) — fall back to every entry point known in the
+    // workspace, rather than failing outright, in case the user knows a relationship we don't.
+    const { entryUris } = await client.sendRequest<{ entryUris: string[] }>('fasm2Studio/listEntryPoints', {});
+    if (entryUris.length === 0) {
+      void vscode.window.showErrorMessage(
+        `FASM2 Studio: no entry point found for "${path.basename(fileFsPath)}". It has no "format" directive of its own, and isn't reachable via \`include\` from any file that does.`,
+      );
+      return undefined;
+    }
+    if (entryUris.length === 1) return vscode.Uri.parse(entryUris[0]).fsPath;
+    return pickEntryPoint(fileFsPath, entryUris, `"${path.basename(fileFsPath)}" isn't reachable from any known entry point — which project is this for?`);
+  } catch (err) {
+    // The client being up doesn't guarantee a given request succeeds (server crash mid-request, a
+    // malformed response) — every other failure mode here already shows a clear message, so a raw
+    // request rejection shouldn't be the one way this silently surfaces as nothing happening at all.
+    void vscode.window.showErrorMessage(`FASM2 Studio: failed to resolve the entry point for "${path.basename(fileFsPath)}": ${(err as Error).message}`);
     return undefined;
   }
-  if (entryUris.length === 1) return vscode.Uri.parse(entryUris[0]).fsPath;
-  return pickEntryPoint(fileFsPath, entryUris, `"${path.basename(fileFsPath)}" isn't reachable from any known entry point — which project is this for?`);
 }

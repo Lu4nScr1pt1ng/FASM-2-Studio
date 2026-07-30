@@ -1,21 +1,18 @@
-import { Range as LspRange, TextEdit, WorkspaceEdit } from 'vscode-languageserver/node';
+import { TextEdit, WorkspaceEdit } from 'vscode-languageserver/node';
+import { findScopedReferences } from './references';
+import { toLspRange } from '../lspUtils';
 import { Workspace } from '../workspace';
 
-function toLspRange(r: { startLine: number; startChar: number; endLine: number; endChar: number }): LspRange {
-  return {
-    start: { line: r.startLine, character: r.startChar },
-    end: { line: r.endLine, character: r.endChar },
-  };
-}
-
 /** True if `word` resolves to a user-defined symbol we actually know how to rename (as opposed
- * to a bare instruction/register/directive keyword, which isn't in the symbol table at all). */
-export function isRenameable(workspace: Workspace, word: string): boolean {
-  return workspace.findReferences(word, true).length > 0;
+ * to a bare instruction/register/directive keyword, which isn't in the symbol table at all).
+ * Position-aware via findScopedReferences so a `local`-scoped name only counts as renameable
+ * where it's actually in scope — see getRenameEdit. */
+export function isRenameable(workspace: Workspace, uri: string, line: number, word: string): boolean {
+  return findScopedReferences(workspace, uri, line, word, true).length > 0;
 }
 
-export function getRenameEdit(workspace: Workspace, word: string, newName: string): WorkspaceEdit | undefined {
-  const entries = workspace.findReferences(word, true);
+export function getRenameEdit(workspace: Workspace, uri: string, line: number, word: string, newName: string): WorkspaceEdit | undefined {
+  const entries = findScopedReferences(workspace, uri, line, word, true);
   if (entries.length === 0) return undefined;
 
   const changes: Record<string, TextEdit[]> = {};

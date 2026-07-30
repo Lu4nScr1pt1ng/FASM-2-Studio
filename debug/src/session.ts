@@ -21,11 +21,11 @@
 //     in one statement-granularity Step.
 import { ContinuedEvent, DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
-import * as fs from 'fs';
 import * as path from 'path';
 import { readElfEntryPoint } from './elfEntry';
 import { GdbDriver } from './gdbDriver';
-import { AddressLineMap, buildCandidateSequence, correlateListing, parseListingFile } from './listingMap';
+import { AddressLineMap, buildAddressLineMap } from './listingMap';
+import { miData } from './miParser';
 import {
   decodeEflags,
   formatRegisterValue,
@@ -146,6 +146,17 @@ export class FasmDebugSession extends DebugSession {
    * have no runtime address at all, so gdb can't answer "what's the value of FD_STDERR" either
    * (fails with "No symbol table is loaded"); resolved statically instead, same as symbolMap. */
   private constantMap: Map<string, ConstantSymbol> = new Map();
+  /** True from the moment stepToNextLine/stepOneInstruction sends its exec command until it's
+   * done awaiting the resulting stop. waitForNextStop's `once('stopped', ...)` has no way to tell
+   * *which* in-flight exec command a given stop actually belongs to (MI's *stopped async records
+   * carry no token correlating them to the command that caused them) — a second overlapping
+   * next/stepIn/stepOut arriving before the first has finished stepping would register a second
+   * such listener and could have its own loop's stop consumed by the first step's still-running
+   * loop (or vice versa), desyncing "did we land on a new line" from the command that actually
+   * produced the stop. Continue/Pause are deliberately not gated by this: neither of them calls
+   * waitForNextStop itself (Pause in particular must always be free to interrupt an in-flight step).
+   */
+  private stepping = false;
 
   public constructor() {
     super();
@@ -179,9 +190,8 @@ export class FasmDebugSession extends DebugSession {
 
   protected async launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchArgs): Promise<void> {
     try {
-      const listingEntries = parseListingFile(fs.readFileSync(args.listingFile, 'utf8'));
-      const candidates = buildCandidateSequence(path.resolve(args.asmFile));
-      this.addressMap = correlateListing(listingEntries, candidates);
+      const { entries: listingEntries, ...addressMap } = buildAddressLineMap(args.listingFile, path.resolve(args.asmFile));
+      this.addressMap = addressMap;
       this.sortedAddresses = [...this.addressMap.addressToLocation.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       this.symbolMap = buildSymbolAddressMap(listingEntries);
       this.constantMap = buildConstantMap(listingEntries);
@@ -219,7 +229,7 @@ export class FasmDebugSession extends DebugSession {
       // resolved in the background — nothing actually needs to wait for it here.
       void this.gdb.sendCommand('-data-list-register-names').then(
         (namesResult) => {
-          const rawNames = (namesResult.data as Record<string, unknown> | undefined)?.['register-names'];
+          const rawNames = miData(namesResult)?.['register-names'];
           if (Array.isArray(rawNames)) this.registerGroups = resolveRegisterGroups(rawNames as string[]);
         },
         () => {
@@ -298,7 +308,7 @@ export class FasmDebugSession extends DebugSession {
       }
       try {
         const result = await this.gdb.sendCommand(`-break-insert *0x${address.toString(16)}`);
-        const bkpt = (result.data as Record<string, unknown> | undefined)?.bkpt as Record<string, unknown> | undefined;
+        const bkpt = miData(result)?.bkpt as Record<string, unknown> | undefined;
         const number = bkpt?.number !== undefined ? String(bkpt.number) : undefined;
         if (number) this.rememberBreakpoint(sourcePath, number);
         breakpoints.push({ verified: true, line: bp.line });
@@ -371,7 +381,7 @@ export class FasmDebugSession extends DebugSession {
   private async evaluateToBigInt(expr: string): Promise<bigint | undefined> {
     if (!this.gdb) return undefined;
     const result = await this.gdb.sendCommand(`-data-evaluate-expression ${expr}`);
-    const value = (result.data as Record<string, unknown> | undefined)?.value;
+    const value = miData(result)?.value;
     if (typeof value !== 'string') return undefined;
     const hexMatch = /0x[0-9a-fA-F]+/.exec(value);
     if (!hexMatch) return undefined;
@@ -468,7 +478,7 @@ export class FasmDebugSession extends DebugSession {
   private async disassembleRawRange(startAddr: bigint, endAddr: bigint): Promise<Array<{ address: bigint; opcodes?: string; inst?: string }>> {
     if (!this.gdb) return [];
     const result = await this.gdb.sendCommand(`-data-disassemble -s 0x${startAddr.toString(16)} -e 0x${endAddr.toString(16)} -- 2`);
-    const raw = (result.data as Record<string, unknown> | undefined)?.['asm_insns'];
+    const raw = miData(result)?.['asm_insns'];
     if (!Array.isArray(raw)) return [];
 
     const out: Array<{ address: bigint; opcodes?: string; inst?: string }> = [];
@@ -684,7 +694,7 @@ export class FasmDebugSession extends DebugSession {
     try {
       const castType = unsignedCastType(bits);
       const result = await this.gdb.sendCommand(`-data-evaluate-expression "(${castType})$${name}"`);
-      const raw = (result.data as Record<string, unknown> | undefined)?.value;
+      const raw = miData(result)?.value;
       if (typeof raw !== 'string') return undefined;
       const match = /^\d+/.exec(raw);
       if (!match) return undefined;
@@ -706,7 +716,7 @@ export class FasmDebugSession extends DebugSession {
     if (name === this.registerGroups.eflagsName) {
       try {
         const flagsResult = await this.gdb.sendCommand(`-data-evaluate-expression $${name}`);
-        const flagsValue = (flagsResult.data as Record<string, unknown> | undefined)?.value;
+        const flagsValue = miData(flagsResult)?.value;
         if (typeof flagsValue === 'string') text += `  ${flagsValue}`;
       } catch {
         // cosmetic addition only — the numeric formatting above already stands on its own
@@ -723,7 +733,7 @@ export class FasmDebugSession extends DebugSession {
     if (!this.gdb || count <= 0) return undefined;
     try {
       const result = await this.gdb.sendCommand(`-data-read-memory-bytes ${addressHex} ${count}`);
-      const memory = (result.data as Record<string, unknown> | undefined)?.memory;
+      const memory = miData(result)?.memory;
       const first = Array.isArray(memory) ? (memory[0] as Record<string, unknown> | undefined) : undefined;
       const contents = first?.contents;
       return typeof contents === 'string' ? parseHexBytes(contents) : undefined;
@@ -739,7 +749,7 @@ export class FasmDebugSession extends DebugSession {
     try {
       const castType = unsignedCastType(bits);
       const result = await this.gdb.sendCommand(`-data-evaluate-expression "*(${castType}*)${addressHex}"`);
-      const raw = (result.data as Record<string, unknown> | undefined)?.value;
+      const raw = miData(result)?.value;
       const match = typeof raw === 'string' ? /^\d+/.exec(raw) : null;
       return match ? BigInt(match[0]) : undefined;
     } catch {
@@ -845,32 +855,38 @@ export class FasmDebugSession extends DebugSession {
   private async stepToNextLine(response: DebugProtocol.Response, miCommand: StepMiCommand): Promise<void> {
     this.sendResponse(response);
     if (!this.gdb || !this.addressMap) return;
+    if (this.stepping) return; // a step is already in flight — see `stepping`'s own doc comment
+    this.stepping = true;
 
-    const startLoc = await this.currentLocation();
+    try {
+      const startLoc = await this.currentLocation();
 
-    for (let i = 0; i < MAX_STEP_INSTRUCTIONS; i++) {
-      let result;
-      try {
-        result = await this.gdb.sendCommand(miCommand);
-      } catch (err) {
-        this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
-        return;
+      for (let i = 0; i < MAX_STEP_INSTRUCTIONS; i++) {
+        let result;
+        try {
+          result = await this.gdb.sendCommand(miCommand);
+        } catch (err) {
+          this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
+          return;
+        }
+        if (result.klass !== 'running') return; // program likely exited or errored; a stop/exit event will follow separately
+
+        const stoppedOnce = await this.waitForNextStop();
+        if (!stoppedOnce) return; // process exited or errored mid-step
+
+        const loc = await this.currentLocation();
+        if (!loc) continue; // landed on an unmapped address (e.g. inside padding/data) — keep stepping
+        if (!startLoc || loc.fsPath !== startLoc.fsPath || loc.line !== startLoc.line) {
+          this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
+          return;
+        }
       }
-      if (result.klass !== 'running') return; // program likely exited or errored; a stop/exit event will follow separately
-
-      const stoppedOnce = await this.waitForNextStop();
-      if (!stoppedOnce) return; // process exited or errored mid-step
-
-      const loc = await this.currentLocation();
-      if (!loc) continue; // landed on an unmapped address (e.g. inside padding/data) — keep stepping
-      if (!startLoc || loc.fsPath !== startLoc.fsPath || loc.line !== startLoc.line) {
-        this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
-        return;
-      }
+      // Safety net: never got to a new mapped line (e.g. an unmapped infinite region) — still
+      // report *something* rather than leaving the UI hung waiting for a stopped event forever.
+      this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
+    } finally {
+      this.stepping = false;
     }
-    // Safety net: never got to a new mapped line (e.g. an unmapped infinite region) — still
-    // report *something* rather than leaving the UI hung waiting for a stopped event forever.
-    this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
   }
 
   /** Instruction-granularity step (VS Code's Disassembly View "Step"): exactly one machine
@@ -880,17 +896,23 @@ export class FasmDebugSession extends DebugSession {
   private async stepOneInstruction(response: DebugProtocol.Response, miCommand: StepMiCommand): Promise<void> {
     this.sendResponse(response);
     if (!this.gdb) return;
-    let result;
+    if (this.stepping) return; // a step is already in flight — see `stepping`'s own doc comment
+    this.stepping = true;
     try {
-      result = await this.gdb.sendCommand(miCommand);
-    } catch (err) {
-      this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
-      return;
+      let result;
+      try {
+        result = await this.gdb.sendCommand(miCommand);
+      } catch (err) {
+        this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
+        return;
+      }
+      if (result.klass !== 'running') return;
+      const stoppedOnce = await this.waitForNextStop();
+      if (!stoppedOnce) return;
+      this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
+    } finally {
+      this.stepping = false;
     }
-    if (result.klass !== 'running') return;
-    const stoppedOnce = await this.waitForNextStop();
-    if (!stoppedOnce) return;
-    this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
   }
 
   /**
@@ -1059,7 +1081,7 @@ export class FasmDebugSession extends DebugSession {
       // as several arguments instead of one and rejected with a "Usage: ..." error.
       const quoted = args.expression.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       const result = await this.gdb.sendCommand(`-data-evaluate-expression "${quoted}"`);
-      const value = (result.data as Record<string, unknown> | undefined)?.value;
+      const value = miData(result)?.value;
       response.body = { result: typeof value === 'string' ? value : '<no value>', variablesReference: 0 };
       this.sendResponse(response);
     } catch (err) {

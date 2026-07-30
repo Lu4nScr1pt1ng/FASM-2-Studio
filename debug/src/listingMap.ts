@@ -152,9 +152,16 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
   return { addressToLocation, locationToAddress };
 }
 
-export function buildAddressLineMap(listingFsPath: string, entrySourceFsPath: string): AddressLineMap {
+export interface BuiltAddressLineMap extends AddressLineMap {
+  /** The listing's own raw entries, alongside the correlated map built from them — callers that
+   * also need to derive a symbol/constant map from the same listing (see session.ts) would
+   * otherwise have no way to get both without re-running parseListingFile a second time. */
+  entries: ListingEntry[];
+}
+
+export function buildAddressLineMap(listingFsPath: string, entrySourceFsPath: string): BuiltAddressLineMap {
   const content = fs.readFileSync(listingFsPath, 'utf8');
   const entries = parseListingFile(content);
   const candidates = buildCandidateSequence(entrySourceFsPath);
-  return correlateListing(entries, candidates);
+  return { ...correlateListing(entries, candidates), entries };
 }

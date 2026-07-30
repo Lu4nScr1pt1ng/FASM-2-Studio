@@ -1,13 +1,7 @@
-import { Location, Range as LspRange } from 'vscode-languageserver/node';
+import { Location } from 'vscode-languageserver/node';
+import { toLspRange } from '../lspUtils';
 import { Dialect, Range, SymbolDefinition } from '../types';
-import { Workspace } from '../workspace';
-
-function toLspRange(r: { startLine: number; startChar: number; endLine: number; endChar: number }): LspRange {
-  return {
-    start: { line: r.startLine, character: r.startChar },
-    end: { line: r.endLine, character: r.endChar },
-  };
-}
+import { isLocalInScope, Workspace } from '../workspace';
 
 function positionInRange(position: { line: number; character: number }, range: Range): boolean {
   return position.line === range.startLine && position.character >= range.startChar && position.character <= range.endChar;
@@ -24,7 +18,7 @@ function positionInRange(position: { line: number; character: number }, range: R
  */
 function filterToInScope(candidates: SymbolDefinition[], uri: string, line: number | undefined): SymbolDefinition[] {
   if (line !== undefined) {
-    const inScope = candidates.find((s) => s.localScope && s.uri === uri && line >= s.localScope.startLine && line <= s.localScope.endLine);
+    const inScope = candidates.find((s) => isLocalInScope(s, uri, line));
     if (inScope) return [inScope];
   }
   return candidates.filter((s) => !s.localScope);

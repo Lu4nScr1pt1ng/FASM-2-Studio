@@ -16,6 +16,16 @@ export interface MIRecord {
   data?: Record<string, MIValue> | string;
 }
 
+/** `result.data` narrowed to a loosely-typed key/value bag, or undefined for a stream record
+ * (whose `data` is a plain decoded string, not a payload — only 'console'/'target'/'log' records
+ * ever get one, never the 'result' records every sendCommand() response actually is) or a record
+ * with no data at all. Centralizes the same cast every result-record consumer in session.ts
+ * otherwise repeated individually, with an actual runtime check backing it instead of a blind
+ * `as`, so a stream record's string payload can't be misread as if it had object fields. */
+export function miData(result: MIRecord): Record<string, unknown> | undefined {
+  return typeof result.data === 'object' && result.data !== null ? (result.data as Record<string, unknown>) : undefined;
+}
+
 class ValueParser {
   private pos = 0;
   constructor(private readonly s: string) {}
@@ -57,7 +67,20 @@ class ValueParser {
             out += esc;
             break;
           default:
-            out += esc;
+            // GDB's own MI string encoder (fputstr_filtered) escapes every non-printable/high byte
+            // as a zero-padded "\ooo" octal, not just the handful of named escapes above -- real,
+            // plausible target output (a raw syscall buffer, non-ASCII console/target text) can
+            // contain those. Without this, e.g. "\007" (BEL) decoded as the literal digit '0'
+            // followed by the two-character string "07", silently corrupting everything after it.
+            if (esc >= '0' && esc <= '7') {
+              let octal = esc;
+              while (octal.length < 3 && !this.eof() && this.peek() >= '0' && this.peek() <= '7') {
+                octal += this.s[this.pos++];
+              }
+              out += String.fromCharCode(parseInt(octal, 8));
+            } else {
+              out += esc;
+            }
         }
       } else {
         out += ch;

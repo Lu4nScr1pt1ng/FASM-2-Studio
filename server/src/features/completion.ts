@@ -111,7 +111,12 @@ export function getCompletions(workspace: Workspace, uri: string, dialect: Diale
   for (const parsed of workspace.walkIncludeGraph(uri, dialect)) {
     for (const sym of parsed.symbols) {
       const key = `${sym.kind}:${sym.name}`;
-      if (seen.has(key) || seen.has(sym.name)) continue;
+      if (seen.has(key)) continue;
+      // A struct field is unambiguous even when it happens to spell a real directive/register (e.g.
+      // "segment"/"offset", both real field names in fasmg's own packages/x86/projects/challenger/
+      // challenger.asm) — same carve-out hover.ts/symbolIndex.ts already give it ahead of the
+      // context-free keyword lookup. Without this, such a field never appeared in completion at all.
+      if (!sym.isStructField && seen.has(sym.name)) continue;
       seen.add(key);
       items.push({
         label: sym.name,
