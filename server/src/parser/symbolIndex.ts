@@ -13,10 +13,14 @@ import { Token, TokenType, tokenizeDocument, unquoteString } from './tokenizer';
 
 // Data-defining directives that, when immediately preceded by a bare identifier on the same line
 // (no colon needed), implicitly define a label at that point — e.g. "tok_type rb TOK_CAP" or
-// "err_open_prefix db 'message'" are equivalent to "tok_type: rb TOK_CAP".
+// "err_open_prefix db 'message'" are equivalent to "tok_type: rb TOK_CAP". Mirrors manual.txt's
+// own "Generating data" table exactly (every directive in it "is paired with a labeled instruction
+// of the same name") — "emit" (synonym "dbx") is the table's variable-unit-size entry and gets the
+// same implicit-label treatment as db/dw/etc., e.g. "counter emit 2: 0,1000,2000".
 const DATA_DIRECTIVES: ReadonlySet<string> = new Set([
   'db', 'dw', 'dd', 'dp', 'df', 'dq', 'dt', 'ddq', 'dqq', 'ddqq', 'du',
   'rb', 'rw', 'rd', 'rp', 'rf', 'rq', 'rt', 'rdq', 'rqq', 'rdqq', 'file',
+  'emit', 'dbx',
 ]);
 
 /** fasmg's own built-in pseudo-variables ($, $$, $@, $%, $%%, %, %%) are always case-insensitive
