@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0
+
+- Added 114 real x86 mnemonics/prefixes that hover, completion, and syntax highlighting had never
+  heard of, found by exhaustively diffing every instruction table in fasmg's own
+  `packages/x86/include/cpu/*.inc` against this extension's mnemonic list. Includes the `jna`/
+  `jnae`/`jnb`/`jnbe`/`jng`/`jnge`/`jnl`/`jnle`/`jpe`/`jpo` conditional-jump synonyms, the
+  `loop`/`loope`/`loopne` "z"/"nz" synonyms and explicit 16/32/64-bit counter-size variants,
+  explicit operand-size variants of `push`/`pop`/`pushf`/`popf`/`ret`/`retn`/`retf`/`iret`,
+  privileged/system instructions (`clts`, `invd`, `wbinvd`, `rdpmc`, `rsm`, `lgdt`, `lidt`, `sgdt`,
+  `sidt`, `lldt`, `sldt`, `ltr`, `str`, `verr`, `verw`, `lmsw`, `smsw`, `lar`, `lsl`, `int1`,
+  `swapgs`, `sysexit`/`sysexitq`, `sysret`/`sysretq`), prefix synonyms (`repnz`/`repz`, `lahf`/
+  `sahf`, `lds`/`les`/`lfs`/`lgs`/`lss`), and several x87 FPU instructions (`fchs`, `fcos`,
+  `fdecstp`, `fld1`/`fldl2e`/`fldlg2`/`fldz`, `fpatan`, `fprem`, `fscale`, `fsincos`, `fsqrt`,
+  `ftst`, `fwait`, `fyl2x`, and more).
+
 ## 1.0.0
 
 - Fixed `"repeat"`/`"end repeat"`/`"irp"`/`"irpv"` hover and completion being withheld under the
