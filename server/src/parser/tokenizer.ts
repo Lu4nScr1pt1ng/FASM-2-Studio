@@ -64,6 +64,10 @@ function isNumberPart(code: number): boolean {
   return isIdentPart(code) || code === 0x27; // '
 }
 
+function isHexDigit(code: number): boolean {
+  return isDigit(code) || (code >= 0x41 && code <= 0x46) || (code >= 0x61 && code <= 0x66); // 0-9, A-F, a-f
+}
+
 /** Tokenizes a single line. Strings and comments never span lines in fasm syntax. */
 export function tokenizeLine(text: string, line: number): Token[] {
   const tokens: Token[] = [];
@@ -104,6 +108,21 @@ export function tokenizeLine(text: string, line: number): Token[] {
     }
 
     const code = text.charCodeAt(i);
+
+    // manual.txt's "Fundamental syntax rules": a token is also numeric when it begins with "$"
+    // followed by *any* hexadecimal digit (not just when it begins with a decimal digit) — e.g.
+    // "$FF" is the number 255, not an identifier. Bare "$"/"$$"/"$@"/"$%"/"$%%" (fasmg's built-in
+    // pseudo-variables) are unaffected: none of their second characters is a hex digit, so they
+    // still fall through to the identifier branch below. The syntax-highlighting grammar
+    // (fasm.tmLanguage.json's "numbers" rule) already accounts for this; this tokenizer previously
+    // did not, so e.g. "db $FF" indexed "$FF" as a bogus, never-defined symbol reference.
+    if (code === 0x24 && isHexDigit(text.charCodeAt(i + 1))) {
+      const start = i;
+      i++;
+      while (i < len && isNumberPart(text.charCodeAt(i))) i++;
+      tokens.push({ type: TokenType.Number, text: text.slice(start, i), line, startChar: start, endChar: i });
+      continue;
+    }
 
     if (isDigit(code)) {
       const start = i;

@@ -37,6 +37,19 @@ describe('signatureHelp', () => {
     assert.strictEqual(help!.activeParameter, 2);
   });
 
+  it('does not miscount a comma inside a "<...>" grouped argument (manual.txt section 8: the standard way to pass one argument containing a comma)', () => {
+    const ws = new Workspace();
+    const uri = 'file:///macros3.asm';
+    ws.updateDocument(uri, 1, 'macro data? name*,value*\nend macro\n', 'fasm2');
+
+    // "<'abc',10>" is one argument; the comma inside it must not advance activeParameter.
+    const stillFirstArg = getSignatureHelp(ws, uri, 'fasm2', "data example, <'abc',10");
+    assert.strictEqual(stillFirstArg!.activeParameter, 1);
+
+    const secondArg = getSignatureHelp(ws, uri, 'fasm2', "data example, <'abc',10>, ");
+    assert.strictEqual(secondArg!.activeParameter, 2);
+  });
+
   it('falls back to static instruction operand data for known mnemonics', () => {
     const ws = new Workspace();
     const help = getSignatureHelp(ws, 'file:///none.asm', 'fasm2', 'mov ');

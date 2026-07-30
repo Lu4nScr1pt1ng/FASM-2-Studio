@@ -125,14 +125,23 @@ describe('fasm TextMate grammar', () => {
 
   it('tags CALM sub-language commands distinctly from ordinary directives and instructions', async function () {
     // Mirrors fasmg's own real calminstruction bodies (e.g. packages/x86/include/cpu/x86.inc):
-    // match/check/emit/jyes/exit are CALM commands, a genuinely different sublanguage from both
-    // regular directives and x86 mnemonics — hover already tags them as "CALM command" distinctly;
-    // the grammar should color them distinctly too instead of lumping them in as generic keywords.
+    // check/jyes/exit are CALM-only commands, a genuinely different sublanguage from both regular
+    // directives and x86 mnemonics — hover already tags them as "CALM command" distinctly; the
+    // grammar should color them distinctly too instead of lumping them in as generic keywords.
     this.timeout(10000);
-    const lines = await tokenizeLines('calminstruction foo?\n\tmatch a,b\n\tcheck a eq b\n\tjyes done\n\temit 1\n\texit\n    done:\nend calminstruction\n');
-    for (const [lineIdx, word] of [[0, 'calminstruction'], [1, 'match'], [2, 'check'], [3, 'jyes'], [4, 'emit'], [5, 'exit']] as const) {
+    const lines = await tokenizeLines('calminstruction foo?\n\tcheck a eq b\n\tjyes done\n\texit\n    done:\nend calminstruction\n');
+    for (const [lineIdx, word] of [[0, 'calminstruction'], [1, 'check'], [2, 'jyes'], [3, 'exit']] as const) {
       const scopes = scopesOf(lines[lineIdx], word);
       assert.strictEqual(scopes[scopes.length - 1], 'keyword.other.calm.fasm', `expected "${word}" to be a CALM command, got: ${scopes}`);
+    }
+  });
+
+  it('tags "match"/"emit"/"element" as ordinary directives, not CALM commands, since each is primarily (or, for "element", exclusively) a base-language construct per manual.txt — same reasoning as hover.ts\'s own CALM_COMMANDS exclusion', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['match a,b', 'emit 1', 'element A'].join('\n'));
+    for (const [lineIdx, word] of [[0, 'match'], [1, 'emit'], [2, 'element']] as const) {
+      const scopes = scopesOf(lines[lineIdx], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.control.directive.fasm', `expected "${word}" to be an ordinary directive, not a CALM command, got: ${scopes}`);
     }
   });
 
@@ -453,15 +462,15 @@ describe('fasm TextMate grammar', () => {
     }
   });
 
-  it('tags "relativeto" as an operator and "rawmatch"/"rmatch" alongside "match", found while validating against fasmg.txt/manual.txt', async function () {
+  it('tags "relativeto" as an operator and "rawmatch"/"rmatch" alongside "match" (an ordinary directive, not a CALM command — manual.txt section 12), found while validating against fasmg.txt/manual.txt', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines(['if a relativeto b & a > b', 'rawmatch text, instruction', 'rmatch text, instruction'].join('\n'));
     const relScopes = scopesOf(lines[0], 'relativeto');
     assert.strictEqual(relScopes[relScopes.length - 1], 'keyword.operator.fasm', `expected "relativeto" to be tagged as an operator, got: ${relScopes}`);
     const rawmatchScopes = scopesOf(lines[1], 'rawmatch');
-    assert.strictEqual(rawmatchScopes[rawmatchScopes.length - 1], 'keyword.other.calm.fasm', `expected "rawmatch" to be tagged like "match", got: ${rawmatchScopes}`);
+    assert.strictEqual(rawmatchScopes[rawmatchScopes.length - 1], 'keyword.control.directive.fasm', `expected "rawmatch" to be tagged like "match", got: ${rawmatchScopes}`);
     const rmatchScopes = scopesOf(lines[2], 'rmatch');
-    assert.strictEqual(rmatchScopes[rmatchScopes.length - 1], 'keyword.other.calm.fasm', `expected "rmatch" to be tagged like "match", got: ${rmatchScopes}`);
+    assert.strictEqual(rmatchScopes[rmatchScopes.length - 1], 'keyword.control.directive.fasm', `expected "rmatch" to be tagged like "match", got: ${rmatchScopes}`);
   });
 
   it('tags "esc" as a directive and "elementsof"/"trunc" as operators, found on a final pass through manual.txt', async function () {

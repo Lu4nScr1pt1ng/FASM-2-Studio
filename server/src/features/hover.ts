@@ -269,9 +269,15 @@ const DATA_DIRECTIVE_TO_SIZE: Record<string, string> = {
 
 /** A handful of directives are really CALM (the low-level code-emission language used inside a
  * "calminstruction" block) sub-commands rather than ordinary top-level directives — a more
- * specific, more useful tag than "directive" for exactly these. */
+ * specific, more useful tag than "directive" for exactly these. "match" and "emit" are
+ * deliberately left out despite also being CALM commands (manual.txt sections 15/16): both are
+ * primarily ordinary base-language directives ("match"/"end match" control blocks; "emit"/"dbx"
+ * as the Table 1 variable-unit-size data directive in section 6) that only *additionally* gained a
+ * CALM-specific variant, so tagging them "CALM command" would mislabel their overwhelmingly more
+ * common everyday use — the same reasoning that already keeps dual-meaning "load"/"store" out of
+ * this set. */
 const CALM_COMMANDS: ReadonlySet<string> = new Set([
-  'match', 'assemble', 'arrange', 'compute', 'check', 'emit',
+  'assemble', 'arrange', 'compute', 'check',
   'jump', 'jyes', 'jno', 'exit', 'publish', 'transform', 'stringify', 'take', 'taketext', 'call', 'initsym',
 ]);
 

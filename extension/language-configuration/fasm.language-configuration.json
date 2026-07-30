@@ -23,12 +23,12 @@
   ],
   "wordPattern": "(-?\\d+\\.\\d+)|([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)",
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(macro|struct|virtual|if(?!.*\\bend\\s)|while|repeat|rept|irp|irpv|iterate|namespace|calminstruction)\\b(?!.*\\bend(\\s+\\w+)?\\s*$).*$",
-    "decreaseIndentPattern": "^\\s*(end\\s+(macro|virtual|if|while|repeat|namespace|calminstruction|iterate)|ends|else)\\b"
+    "increaseIndentPattern": "^\\s*(macro|struct|struc|virtual|if(?!.*\\bend\\s)|while|repeat|rept|irp|irpv|iterate|namespace|calminstruction|match|rawmatch|rmatch|postpone)\\b(?!.*\\bend(\\s+\\w+)?\\s*$).*$",
+    "decreaseIndentPattern": "^\\s*(end\\s+(macro|virtual|if|while|repeat|namespace|calminstruction|iterate|struc|match|rawmatch|postpone)|ends|else)\\b"
   },
   "folding": {
     "markers": {
-      "start": "^\\s*(macro|struct|virtual|if|while|repeat|rept|irp|irpv|iterate|namespace|calminstruction)\\b",
+      "start": "^\\s*(macro|struct|struc|virtual|if|while|repeat|rept|irp|irpv|iterate|namespace|calminstruction|match|rawmatch|rmatch|postpone)\\b",
       "end": "^\\s*(end\\s+\\w+|ends|end\\s+if|end\\s+while|end\\s+repeat)\\b"
     }
   }

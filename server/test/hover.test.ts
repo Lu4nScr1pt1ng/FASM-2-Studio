@@ -143,7 +143,12 @@ describe('getHover', () => {
   });
 
   it('tags a CALM sub-command distinctly from an ordinary directive', () => {
-    assert.match(value(getHover(ws, uri, 'fasm2', 'match')), /\*\*match\*\* — \*CALM command\*/);
+    assert.match(value(getHover(ws, uri, 'fasm2', 'arrange')), /\*\*arrange\*\* — \*CALM command\*/);
+  });
+
+  it('tags "match"/"emit" as ordinary directives despite also being CALM commands, since that dual meaning is documented in their summary text instead (same reasoning as "load"/"store")', () => {
+    assert.match(value(getHover(ws, uri, 'fasm2', 'match')), /\*\*match\*\* — \*directive\*/);
+    assert.match(value(getHover(ws, uri, 'fasm2', 'emit')), /\*\*emit\*\* — \*fasm2 directive\*/);
   });
 
   it('recognizes the CALM flow-control commands (jump/jyes/exit), found missing against the real fasmg source tree', () => {

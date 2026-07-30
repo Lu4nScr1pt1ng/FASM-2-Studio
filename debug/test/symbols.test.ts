@@ -80,6 +80,41 @@ describe('buildSymbolAddressMap', () => {
     assert.strictEqual(symbols.get('x')!.address, 0x100n);
   });
 
+  describe('"emit"/"dbx" (manual.txt Table 1\'s variable-unit-size data directive)', () => {
+    it('resolves "counter emit 2: 0,1000,2000" to a 16-bit, 3-element array, colon-separated size', () => {
+      const entries = [entry(0x100, 'counter emit 2: 0,1000,2000')];
+      const symbols = buildSymbolAddressMap(entries);
+      const counter = symbols.get('counter')!;
+      assert.ok(counter);
+      assert.strictEqual(counter.address, 0x100n);
+      assert.strictEqual(counter.elementSizeBytes, 2);
+      assert.strictEqual(counter.elementCount, 3);
+    });
+
+    it('resolves the same, comma-separated instead of colon-separated ("emit 2, 0,1000,2000")', () => {
+      const entries = [entry(0x100, 'counter emit 2, 0,1000,2000')];
+      const symbols = buildSymbolAddressMap(entries);
+      assert.strictEqual(symbols.get('counter')!.elementSizeBytes, 2);
+      assert.strictEqual(symbols.get('counter')!.elementCount, 3);
+    });
+
+    it('resolves "dbx" the same way, as the documented synonym for "emit"', () => {
+      const entries = [entry(0x100, 'flag dbx 1: 5')];
+      const symbols = buildSymbolAddressMap(entries);
+      assert.strictEqual(symbols.get('flag')!.elementSizeBytes, 1);
+      assert.strictEqual(symbols.get('flag')!.elementCount, 1);
+    });
+
+    it('still records the address (with no size) when the unit size is a symbolic expression, not a plain literal', () => {
+      const entries = [entry(0x100, 'counter emit UNIT_SIZE: 0,1000,2000')];
+      const symbols = buildSymbolAddressMap(entries);
+      const counter = symbols.get('counter')!;
+      assert.ok(counter);
+      assert.strictEqual(counter.address, 0x100n);
+      assert.strictEqual(counter.elementSizeBytes, undefined);
+    });
+  });
+
   it('ignores ordinary instruction lines and comments entirely', () => {
     const entries = [entry(0, 'mov eax, 1'), entry(3, 'add eax, ebx'), entry(6, 'nop')];
     const symbols = buildSymbolAddressMap(entries);

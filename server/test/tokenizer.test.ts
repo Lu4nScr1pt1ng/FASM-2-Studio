@@ -60,6 +60,28 @@ describe('tokenizer', () => {
     assert.strictEqual(tokens[2].type, TokenType.Number);
   });
 
+  it('classifies "$" followed by a hex digit as a number, not an identifier', () => {
+    // manual.txt's "Fundamental syntax rules": a token is numeric when it begins with a decimal
+    // digit *or* with "$" followed by any hexadecimal digit — e.g. "$FF" is the number 255.
+    const tokens = tokenizeLine('db $FF', 0);
+    const num = tokens.find((t) => t.text === '$FF');
+    assert.strictEqual(num?.type, TokenType.Number);
+  });
+
+  it('still treats bare "$"/"$$"/"$@" pseudo-variables as identifiers, not numbers', () => {
+    // None of their second characters ("$", "@") is a hex digit, so the "$" + hex-digit rule
+    // above must not swallow fasmg's own built-in current-address symbols.
+    for (const [line, expected] of [
+      ['x = $', '$'],
+      ['size = $ - $$', '$$'],
+      ['base = $@', '$@'],
+    ] as const) {
+      const tokens = tokenizeLine(line, 0);
+      const tok = tokens.find((t) => t.text === expected);
+      assert.strictEqual(tok?.type, TokenType.Ident, `expected "${expected}" in "${line}" to be an identifier`);
+    }
+  });
+
   it('still starts a real string at a quote not preceded by an in-progress number', () => {
     const tokens = tokenizeLine(`s = 'hello'`, 0);
     const str = tokens.find((t) => t.type === TokenType.String);

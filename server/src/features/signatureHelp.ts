@@ -18,9 +18,13 @@ const IDENT_RE = /[A-Za-z_.@$?][A-Za-z0-9_.@$?]*/;
 
 /**
  * Splits a comma-separated parameter/argument list on only its top-level commas — i.e. not ones
- * nested inside (), [], {} or a quoted string. A single forward pass with a depth counter and a
- * quote-state flag; O(n) in the length of the (always short, single-line) text with no
- * backtracking, so it's cheap to re-run on every keystroke while the user is typing a call.
+ * nested inside (), [], {}, <> or a quoted string. "<" and ">" are tracked alongside the other
+ * bracket pairs because manual.txt section 8 documents them as fasmg's own way to pass a single
+ * macro argument that itself contains a comma ("data example, <'abc',10>" is two arguments, not
+ * three) — without this, the cursor sitting inside such a group counted as a later parameter than
+ * it really is. A single forward pass with a depth counter and a quote-state flag; O(n) in the
+ * length of the (always short, single-line) text with no backtracking, so it's cheap to re-run on
+ * every keystroke while the user is typing a call.
  */
 function splitTopLevelCommas(text: string): string[] {
   const parts: string[] = [];
@@ -36,9 +40,9 @@ function splitTopLevelCommas(text: string): string[] {
     }
     if (ch === "'" || ch === '"') {
       quote = ch;
-    } else if (ch === '(' || ch === '[' || ch === '{') {
+    } else if (ch === '(' || ch === '[' || ch === '{' || ch === '<') {
       depth++;
-    } else if (ch === ')' || ch === ']' || ch === '}') {
+    } else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') {
       depth = Math.max(0, depth - 1);
     } else if (ch === ',' && depth === 0) {
       parts.push(text.slice(start, i));

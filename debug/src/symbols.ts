@@ -146,6 +146,29 @@ export function buildSymbolAddressMap(entries: readonly ListingEntry[]): Map<str
         symbols.set(name, { name, address: entry.address, elementSizeBytes: reserveSizeBytes, elementCount });
         continue;
       }
+
+      // "NAME emit size: value[, value...]" (synonym "dbx") — manual.txt Table 1's variable-unit-
+      // size data directive, the one entry in that table DATA_DIRECTIVE_SIZE_BYTES can't cover with
+      // a fixed width, since the unit size is itself the first argument (e.g.
+      // "counter emit 2: 0,1000,2000" defines "counter" as a labeled array of three 16-bit values).
+      // The size may be separated from the value list with either ":" or "," (manual.txt section 6).
+      if (directive === 'emit' || directive === 'dbx') {
+        const sizeTok = tokens[2];
+        if (sizeTok?.type === TokenType.Number) {
+          const n = Number(sizeTok.text);
+          if (Number.isInteger(n) && n > 0) {
+            const sepTok = tokens[3];
+            const isSep = sepTok?.type === TokenType.Punct && (sepTok.text === ':' || sepTok.text === ',');
+            const { elementCount, stringLengthBytes } = analyzeValueList(tokens.slice(isSep ? 4 : 3), n);
+            symbols.set(name, { name, address: entry.address, elementSizeBytes: n, elementCount, stringLengthBytes });
+            continue;
+          }
+        }
+        // The unit size isn't a plain literal this lightweight scan can read (e.g. a symbolic
+        // "emit UNIT_SIZE: ...") — still record the address, same fallback as an unresolved "rb" count.
+        symbols.set(name, { name, address: entry.address });
+        continue;
+      }
     }
 
     // "NAME:" or "NAME::" — an ordinary or area code label. Address-only: no size to show.
