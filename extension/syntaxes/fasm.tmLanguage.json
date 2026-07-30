@@ -47,15 +47,15 @@
       ]
     },
     "numbers": {
-      "comment": "manual.txt's \"Fundamental syntax rules\" allows a single quote as a digit separator/padding, same as \"_\" (e.g. \"1'000'000\") -- since \"'\" is otherwise the string-quote character, every numeric alternative below now accepts it too, matching the same fix applied to the standalone tokenizer (tokenizer.ts's NUMBER_PART). The float pattern also now covers the two \"f\"-suffixed forms the manual documents that don't require a \".\": a bare exponent with no decimal point (\"5e10\") and a plain integer marked as float purely by a trailing \"f\" (\"5f\", the *only* way to mark a dot-less, exponent-less literal as floating-point) -- neither matched before, nor did a trailing \"d\" (an explicit, optional decimal-number suffix, analogous to \"h\"/\"b\"/\"o\"/\"q\") on an otherwise plain decimal.",
+      "comment": "manual.txt's \"Fundamental syntax rules\" allows a single quote as a digit separator/padding, same as \"_\" (e.g. \"1'000'000\") -- since \"'\" is otherwise the string-quote character, every numeric alternative below now accepts it too, matching the same fix applied to the standalone tokenizer (tokenizer.ts's NUMBER_PART). The float pattern also now covers the two \"f\"-suffixed forms the manual documents that don't require a \".\": a bare exponent with no decimal point (\"5e10\") and a plain integer marked as float purely by a trailing \"f\" (\"5f\", the *only* way to mark a dot-less, exponent-less literal as floating-point) -- neither matched before, nor did a trailing \"d\" (an explicit, optional decimal-number suffix, analogous to \"h\"/\"b\"/\"o\"/\"q\") on an otherwise plain decimal. Every alternative's boundary is now the same explicit identifier-char class the \"special-symbols\" rule below uses ([A-Za-z0-9_.@$?%]), not a plain \"\\b\": \"\\b\" only treats [A-Za-z0-9_] as word characters, but fasmg's own tokenization rule (manual.txt's \"Fundamental syntax rules\") doesn't split a token on \"$\"/\"%\"/\"@\" either -- a number only starts at the *beginning* of a token, so e.g. \"note$AB\" or \"flag@0x1F\" are each a single Name token (matching tokenizer.ts's isIdentStart/isIdentPart), not a Name followed by a hex-number token. Verified empirically against the same vscode-textmate/oniguruma engine grammar.test.ts uses: before this fix \"note$AB\" tokenized as Name(\"note\") + Number(\"$AB\").",
       "patterns": [
-        { "name": "constant.numeric.float.fasm", "match": "\\b[0-9][0-9_']*(?:\\.[0-9][0-9_']*(?:[eE][+-]?[0-9]+)?[fF]?|(?:[eE][+-]?[0-9]+)[fF]?|[fF])\\b" },
-        { "name": "constant.numeric.hex.fasm", "match": "\\b0[xX][0-9A-Fa-f_']+\\b" },
-        { "name": "constant.numeric.hex.fasm", "match": "\\$[0-9A-Fa-f_']+\\b" },
-        { "name": "constant.numeric.hex.fasm", "match": "\\b[0-9][0-9A-Fa-f_']*[hH]\\b" },
-        { "name": "constant.numeric.binary.fasm", "match": "\\b[01][01_']*[bB]\\b" },
-        { "name": "constant.numeric.octal.fasm", "match": "\\b[0-7][0-7_']*[oOqQ]\\b" },
-        { "name": "constant.numeric.decimal.fasm", "match": "\\b[0-9][0-9_']*[dD]?\\b" }
+        { "name": "constant.numeric.float.fasm", "match": "(?<![A-Za-z0-9_.@$?%])[0-9][0-9_']*(?:\\.[0-9][0-9_']*(?:[eE][+-]?[0-9]+)?[fF]?|(?:[eE][+-]?[0-9]+)[fF]?|[fF])(?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.hex.fasm", "match": "(?<![A-Za-z0-9_.@$?%])0[xX][0-9A-Fa-f_']+(?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.hex.fasm", "match": "(?<![A-Za-z0-9_.@$?%])\\$[0-9A-Fa-f_']+(?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.hex.fasm", "match": "(?<![A-Za-z0-9_.@$?%])[0-9][0-9A-Fa-f_']*[hH](?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.binary.fasm", "match": "(?<![A-Za-z0-9_.@$?%])[01][01_']*[bB](?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.octal.fasm", "match": "(?<![A-Za-z0-9_.@$?%])[0-7][0-7_']*[oOqQ](?![A-Za-z0-9_.@$?%])" },
+        { "name": "constant.numeric.decimal.fasm", "match": "(?<![A-Za-z0-9_.@$?%])[0-9][0-9_']*[dD]?(?![A-Za-z0-9_.@$?%])" }
       ]
     },
     "include-directive": {

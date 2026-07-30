@@ -136,6 +136,13 @@ describe('getHover', () => {
     assert.match(v, /\*\*format\*\* — \*directive\*/);
   });
 
+  it('offers hover for "repeat"/"irp"/"irpv" under fasm1 too, since fasm1 has its own native versions of them (flat assembler 1.73 manual, 2.3.5/2.3.7), not just fasm2', () => {
+    for (const name of ['repeat', 'irp', 'irpv']) {
+      const v = value(getHover(ws, uri, 'fasm1', name));
+      assert.match(v, new RegExp(`\\*\\*${name}\\*\\* — \\*directive\\*`), `expected hover for "${name}" under fasm1`);
+    }
+  });
+
   it('documents both meanings of "executable" (format-level ET_EXEC vs. segment PF_X attribute)', () => {
     const v = value(getHover(ws, uri, 'fasm2', 'executable'));
     assert.match(v, /ET_EXEC/);

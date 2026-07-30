@@ -491,6 +491,21 @@ describe('fasm TextMate grammar', () => {
     assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.fasm', `expected "#" to be tagged as an operator, got: ${scopes}`);
   });
 
+  it('does not split a name whose tail happens to look like a number ("$"/"%"/"@" are not token separators per manual.txt\'s "Fundamental syntax rules")', async function () {
+    // A token is only numeric when it *begins* with a digit or "$"+hexdigit (manual.txt section 1)
+    // -- "note$AB" starts with a letter, so the whole thing is one Name, never a Name followed by a
+    // hex-number token. The old patterns used a plain "\b", which (unlike fasmg's real tokenizer)
+    // treats "$"/"%"/"@" as always splitting a word, so "note$AB" wrongly tokenized as unstyled
+    // "note" + constant.numeric.hex "$AB".
+    this.timeout(10000);
+    const lines = await tokenizeLines(['note$AB', 'flag@0x1F', 'x%10', 'a$b'].join('\n'));
+    for (const [lineIdx, whole] of [[0, 'note$AB'], [1, 'flag@0x1F'], [2, 'x%10'], [3, 'a$b']] as const) {
+      assert.strictEqual(lines[lineIdx].length, 1, `expected "${whole}" to tokenize as one token, got: ${JSON.stringify(lines[lineIdx].map((t) => t.text))}`);
+      const scopes = lines[lineIdx][0].scopes;
+      assert.ok(!scopes.some((s) => s.includes('numeric')), `"${whole}" must not contain a numeric-scoped sub-token, got: ${scopes}`);
+    }
+  });
+
   it('tags every real x86 mnemonic from instructions.json as keyword.other.mnemonic, so the grammar never silently drifts behind hover/completion\'s own instruction list', async function () {
     // Found by checking a real gap first: calculator.asm's own "lodsb" (packages/x86/projects/
     // calculator/calculator.asm) had no color at all, because the grammar's #mnemonics list was a
