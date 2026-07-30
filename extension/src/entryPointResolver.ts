@@ -7,6 +7,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
+import { MESSAGE_PREFIX } from './config';
+import { errorMessage } from './errorMessage';
 
 interface EntryPointItem extends vscode.QuickPickItem {
   fsPath: string;
@@ -42,7 +44,7 @@ export async function resolveEntryPointFsPath(client: LanguageClient, fileFsPath
     const { entryUris } = await client.sendRequest<{ entryUris: string[] }>('fasm2Studio/listEntryPoints', {});
     if (entryUris.length === 0) {
       void vscode.window.showErrorMessage(
-        `FASM2 Studio: no entry point found for "${path.basename(fileFsPath)}". It has no "format" directive of its own, and isn't reachable via \`include\` from any file that does.`,
+        `${MESSAGE_PREFIX}no entry point found for "${path.basename(fileFsPath)}". It has no "format" directive of its own, and isn't reachable via \`include\` from any file that does.`,
       );
       return undefined;
     }
@@ -52,7 +54,7 @@ export async function resolveEntryPointFsPath(client: LanguageClient, fileFsPath
     // The client being up doesn't guarantee a given request succeeds (server crash mid-request, a
     // malformed response) — every other failure mode here already shows a clear message, so a raw
     // request rejection shouldn't be the one way this silently surfaces as nothing happening at all.
-    void vscode.window.showErrorMessage(`FASM2 Studio: failed to resolve the entry point for "${path.basename(fileFsPath)}": ${(err as Error).message}`);
+    void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}failed to resolve the entry point for "${path.basename(fileFsPath)}": ${errorMessage(err)}`);
     return undefined;
   }
 }

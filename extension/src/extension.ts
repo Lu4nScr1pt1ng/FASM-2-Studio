@@ -1,22 +1,25 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
+import { getDefaultOutputPath } from './buildPaths';
 import { invalidateCompilerCache } from './compilerDiscovery';
+import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
-import { FASM_TASK_TYPE, FasmTaskProvider, getDefaultOutputPath, runBuildTask } from './taskProvider';
-import { Dialect } from './types';
+import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
+import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
 
 let client: LanguageClient | undefined;
 
 function activeFasmFile(): string | undefined {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'fasm') {
-    void vscode.window.showWarningMessage('FASM2 Studio: open a .asm/.inc file first.');
+  const editor = activeFasmEditor();
+  if (!editor) {
+    void vscode.window.showWarningMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
     return undefined;
   }
   return editor.document.uri.fsPath;
@@ -30,25 +33,29 @@ function activeFasmFile(): string | undefined {
  */
 async function resolveActiveEntryFile(file: string): Promise<string | undefined> {
   if (!client) {
-    void vscode.window.showErrorMessage('FASM2 Studio: the language server is not ready yet — try again in a moment.');
+    void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}the language server is not ready yet — try again in a moment.`);
     return undefined;
   }
   return resolveEntryPointFsPath(client, file);
 }
 
+/** Active file → resolved build entry point, or undefined if either step failed (each already
+ * shows its own error/warning). Shared preamble for the build/buildAndRun/run commands. */
+async function resolveBuildTarget(): Promise<string | undefined> {
+  const file = activeFasmFile();
+  if (!file) return undefined;
+  return resolveActiveEntryFile(file);
+}
+
 function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('fasm2Studio.build', async () => {
-      const file = activeFasmFile();
-      if (!file) return;
-      const entryFile = await resolveActiveEntryFile(file);
+      const entryFile = await resolveBuildTarget();
       if (entryFile) await runBuildTask(entryFile);
     }),
 
     vscode.commands.registerCommand('fasm2Studio.buildAndRun', async () => {
-      const file = activeFasmFile();
-      if (!file) return;
-      const entryFile = await resolveActiveEntryFile(file);
+      const entryFile = await resolveBuildTarget();
       if (!entryFile) return;
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
@@ -57,9 +64,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('fasm2Studio.run', async () => {
-      const file = activeFasmFile();
-      if (!file) return;
-      const entryFile = await resolveActiveEntryFile(file);
+      const entryFile = await resolveBuildTarget();
       if (!entryFile) return;
       await runOutputBinary(getDefaultOutputPath(entryFile));
     }),
@@ -84,10 +89,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('fasm2Studio.selectCompiler', async () => {
       const dialect = await vscode.window.showQuickPick<{ label: string; dialect: Dialect }>(
-        [
-          { label: 'fasm2 / fasmg', dialect: 'fasm2' },
-          { label: 'fasm1 (classic)', dialect: 'fasm1' },
-        ],
+        (Object.keys(DIALECT_LABEL) as Dialect[]).map((d) => ({ label: DIALECT_LABEL[d], dialect: d })),
         { placeHolder: 'Which dialect are you configuring a compiler path for?' },
       );
       if (!dialect) return;
@@ -100,10 +102,10 @@ function registerCommands(context: vscode.ExtensionContext): void {
       });
       if (!picked || picked.length === 0) return;
 
-      const key = dialect.dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath';
-      await vscode.workspace.getConfiguration('fasm2Studio').update(key, picked[0].fsPath, vscode.ConfigurationTarget.Global);
+      const key = COMPILER_PATH_SETTING[dialect.dialect];
+      await fasmConfig().update(key, picked[0].fsPath, vscode.ConfigurationTarget.Global);
       invalidateCompilerCache();
-      void vscode.window.showInformationMessage(`FASM2 Studio: ${dialect.label} compiler set to ${picked[0].fsPath}`);
+      void vscode.window.showInformationMessage(`${MESSAGE_PREFIX}${dialect.label} compiler set to ${picked[0].fsPath}`);
     }),
   );
 }
@@ -124,7 +126,7 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
       { scheme: 'untitled', language: 'fasm' },
     ],
     synchronize: {
-      configurationSection: 'fasm2Studio',
+      configurationSection: CONFIG_SECTION,
       // Forwards create/change/delete events to the server as workspace/didChangeWatchedFiles,
       // keeping the workspace index in sync with files nobody has opened as an editor tab.
       fileEvents: fileWatcher,
@@ -150,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('fasm2Studio.fasm2CompilerPath') || e.affectsConfiguration('fasm2Studio.fasm1CompilerPath')) {
+      if (Object.values(COMPILER_PATH_SETTING).some((key) => e.affectsConfiguration(`${CONFIG_SECTION}.${key}`))) {
         invalidateCompilerCache();
       }
     }),
@@ -158,7 +160,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   client = startLanguageClient(context);
   await client.start();
-  void indexWorkspace(client).catch((err) => console.error('FASM2 Studio: workspace indexing failed', err));
+  void indexWorkspace(client).catch((err) => console.error(`${MESSAGE_PREFIX}workspace indexing failed`, err));
 }
 
 export async function deactivate(): Promise<void> {

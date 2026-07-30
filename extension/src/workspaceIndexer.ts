@@ -5,8 +5,12 @@
 // reusing it avoids duplicating that traversal — and worse, duplicating it *badly*.
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
+import packageJson from '../package.json';
 
-export const FASM_FILE_GLOB = '**/*.{asm,inc,fasm,fas,alm}';
+// Built from package.json's own "fasm" language contribution rather than a second hardcoded
+// list, so the two can't silently drift apart when a file extension is added/removed there.
+const FASM_EXTENSIONS = packageJson.contributes.languages[0].extensions.map((ext) => ext.replace(/^\./, ''));
+export const FASM_FILE_GLOB = `**/*.{${FASM_EXTENSIONS.join(',')}}`;
 
 export function createFasmFileWatcher(): vscode.FileSystemWatcher {
   return vscode.workspace.createFileSystemWatcher(FASM_FILE_GLOB);

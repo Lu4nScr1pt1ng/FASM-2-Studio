@@ -1,9 +1,12 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { activeFasmEditor } from './activeEditor';
+import { dialectFor, getDefaultOutputPath } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
-import { detectDialect } from './dialect';
+import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
+import { errorMessage } from './errorMessage';
 import { validateTaskDefinition } from './taskValidation';
-import { Dialect } from './types';
+import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
 
 export const FASM_TASK_TYPE = 'fasm';
 
@@ -20,21 +23,6 @@ export interface FasmTaskDefinition extends vscode.TaskDefinition {
   debugBuild?: boolean;
 }
 
-function defaultOutputFor(sourceFsPath: string): string {
-  const { dir, name } = path.parse(sourceFsPath);
-  return path.join(dir, name);
-}
-
-/** fasm2Studio.buildOutputPath, resolved against the source file's own directory (as documented),
- * not the workspace root — so e.g. "../bin/cc" from a source file in "src/" lands in "<root>/bin/",
- * letting build/debug output be redirected somewhere already covered by a project's .gitignore
- * instead of sitting next to the source it was built from. */
-function configuredOutputFor(sourceFsPath: string): string | undefined {
-  const configured = vscode.workspace.getConfiguration('fasm2Studio').get<string>('buildOutputPath', '').trim();
-  if (!configured) return undefined;
-  return path.isAbsolute(configured) ? configured : path.resolve(path.dirname(sourceFsPath), configured);
-}
-
 /**
  * fasm2Studio.includePath as a ShellExecutionOptions.env override, or undefined if unset (VS Code
  * merges a provided env with the parent process' own, so this only needs to carry INCLUDE itself).
@@ -45,12 +33,8 @@ function configuredOutputFor(sourceFsPath: string): string | undefined {
  * packages/x86/examples/windows/make.bat does `set include=..\..\include` before building).
  */
 function configuredIncludePathEnv(): { [key: string]: string } | undefined {
-  const configured = vscode.workspace.getConfiguration('fasm2Studio').get<string>('includePath', '').trim();
+  const configured = fasmConfig().get<string>('includePath', '').trim();
   return configured ? { INCLUDE: configured } : undefined;
-}
-
-export function getListingPath(outputFsPath: string): string {
-  return `${outputFsPath}.lst`;
 }
 
 /** Path to the listing.inc macro bundled with the extension (see extension/esbuild.js's
@@ -58,18 +42,6 @@ export function getListingPath(outputFsPath: string): string {
  * regardless of where the extension is installed. */
 function bundledListingIncPath(): string {
   return path.join(__dirname, 'debug-support', 'listing.inc');
-}
-
-export async function dialectFor(sourceFsPath: string, override?: Dialect): Promise<Dialect> {
-  if (override) return override;
-  const config = vscode.workspace.getConfiguration('fasm2Studio');
-  const fallback = config.get<Dialect>('defaultDialect', 'fasm2');
-  try {
-    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(sourceFsPath));
-    return detectDialect(Buffer.from(bytes).toString('utf8'), fallback);
-  } catch {
-    return fallback;
-  }
 }
 
 /** Resolves a task-definition-relative path against `folder` (the task's own owning workspace
@@ -88,14 +60,14 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   const dialect = await dialectFor(sourceFsPath, def.dialect);
 
   if (def.debugBuild && dialect !== 'fasm2') {
-    throw new Error('FASM: Debug currently only supports fasm2/fasmg sources (fasm1 listing format is not supported).');
+    throw new Error(`${MESSAGE_PREFIX}Debug currently only supports fasm2/fasmg sources (fasm1 listing format is not supported).`);
   }
 
   const compiler = await resolveCompiler(dialect);
   if (!compiler) {
     throw new Error(
-      `Could not find a ${dialect === 'fasm1' ? 'fasm1' : 'fasm2/fasmg'} executable on PATH. ` +
-        `Set "fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'}" or install it.`,
+      `${MESSAGE_PREFIX}Could not find a ${DIALECT_LABEL[dialect]} executable on PATH. ` +
+        `Set "${CONFIG_SECTION}.${COMPILER_PATH_SETTING[dialect]}" or install it.`,
     );
   }
 
@@ -130,10 +102,6 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   return task;
 }
 
-export function getDefaultOutputPath(sourceFsPath: string): string {
-  return configuredOutputFor(sourceFsPath) ?? defaultOutputFor(sourceFsPath);
-}
-
 export const DEBUG_BUILD_TASK_NAME = 'Debug build (active file)';
 
 /**
@@ -149,7 +117,7 @@ export async function runBuildTask(file: string, debugBuild = false): Promise<nu
   try {
     task = await buildTask(def, debugBuild ? DEBUG_BUILD_TASK_NAME : 'Build active file');
   } catch (err) {
-    void vscode.window.showErrorMessage((err as Error).message);
+    void vscode.window.showErrorMessage(errorMessage(err));
     return undefined;
   }
 
@@ -166,8 +134,8 @@ export async function runBuildTask(file: string, debugBuild = false): Promise<nu
 
 export class FasmTaskProvider implements vscode.TaskProvider {
   async provideTasks(): Promise<vscode.Task[]> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'fasm') return [];
+    const editor = activeFasmEditor();
+    if (!editor) return [];
 
     const file = editor.document.uri.fsPath;
 
@@ -195,7 +163,7 @@ export class FasmTaskProvider implements vscode.TaskProvider {
 
     const validationError = validateTaskDefinition(def);
     if (validationError) {
-      void vscode.window.showErrorMessage(`FASM2 Studio: invalid "fasm" task in tasks.json — ${validationError}`);
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}invalid "fasm" task in tasks.json — ${validationError}`);
       return undefined;
     }
 
@@ -206,7 +174,7 @@ export class FasmTaskProvider implements vscode.TaskProvider {
     try {
       return await buildTask(def, task.name || 'Build', folder);
     } catch (err) {
-      void vscode.window.showErrorMessage((err as Error).message);
+      void vscode.window.showErrorMessage(errorMessage(err));
       return undefined;
     }
   }

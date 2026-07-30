@@ -1,10 +1,18 @@
 {
   "name": "@fasm2-studio/server",
   "private": true,
-  "version": "0.26.0",
+  "version": "0.27.0",
   "description": "Language Server for FASM2 (fasmg) and FASM1",
   "license": "MIT",
   "main": "dist/server.js",
+  "exports": {
+    ".": "./dist/server.js",
+    "./src/parser/tokenizer": "./src/parser/tokenizer.ts",
+    "./src/data/directives.json": "./src/data/directives.json",
+    "./src/data/formatKeywords.json": "./src/data/formatKeywords.json",
+    "./src/data/instructions.json": "./src/data/instructions.json",
+    "./src/data/sizeSpecifiers.json": "./src/data/sizeSpecifiers.json"
+  },
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",

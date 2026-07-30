@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.27.0
+
+- Fixed diagnostics on a fragment file (no `format` directive of its own) opened moments after VS
+  Code starts sometimes reporting bogus "symbol undefined"/"bits64 or higher required" errors that
+  vanished again once the initial workspace scan caught up and re-diagnosed it — the scan hadn't
+  reached the fragment's includer yet, so it was compiled standalone in the meantime.
+- Fixed error messages from a failed build, "fasm" task, or entry-point resolution occasionally
+  showing "undefined" instead of the actual failure, when the underlying error wasn't a real
+  `Error` instance.
+- Documented `.alm` as a supported extension in the README (already recognized by the extension,
+  just not mentioned there).
+- CI now retries the macOS/Windows extension integration test job on failure, working around a
+  known `@vscode/test-electron` flaky-zip-extraction issue instead of failing the whole run on it.
+- Internal cleanup: split `extension.ts` and `taskProvider.ts`'s shared "active FASM editor",
+  "build output path", and "workspace config" helpers out into their own modules
+  (`activeEditor.ts`, `buildPaths.ts`, `config.ts`), and centralized the `fasm2Studio.` config
+  section name, message prefix, and compiler-path setting keys that were previously hand-copied
+  as literal strings across several files. The fasm2/fasm1 dialect list and labels are now defined
+  in one place too, instead of three separately hand-maintained copies that had already drifted
+  (the compiler-picker's labels no longer matched the status bar's).
+
 ## 0.26.0
 
 - Fixed a real syntax-highlighting bug: the built-in `$`/`$%`/`$%%` pseudo-variable rule had a

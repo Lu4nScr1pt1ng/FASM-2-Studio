@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
+import { isFasmDocument } from './activeEditor';
+import { dialectFor } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
-import { dialectFor } from './taskProvider';
 
 export function createStatusBarItem(context: vscode.ExtensionContext): vscode.StatusBarItem {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -8,7 +9,7 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
   context.subscriptions.push(item);
 
   const refresh = async (editor: vscode.TextEditor | undefined) => {
-    if (!editor || editor.document.languageId !== 'fasm') {
+    if (!editor || !isFasmDocument(editor.document)) {
       item.hide();
       return;
     }

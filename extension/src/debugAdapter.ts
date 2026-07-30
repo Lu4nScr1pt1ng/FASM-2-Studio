@@ -2,8 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
+import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
+import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
+import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { resolveEntryPointFsPath } from './entryPointResolver';
-import { dialectFor, getDefaultOutputPath, getListingPath, runBuildTask } from './taskProvider';
+import { runBuildTask } from './taskProvider';
 
 export const FASM_DEBUG_TYPE = 'fasm';
 
@@ -54,9 +57,9 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
   ): Promise<vscode.DebugConfiguration | undefined> {
     if (!config.type && !config.request) {
       // Launched via F5 with no launch.json at all: fall back to the active editor.
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'fasm') {
-        void vscode.window.showErrorMessage('FASM debug: open a .asm file first.');
+      const editor = activeFasmEditor();
+      if (!editor) {
+        void vscode.window.showErrorMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
         return undefined;
       }
       config = this.provideDebugConfigurations()[0];
@@ -65,7 +68,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
 
     let asmFile = config.asmFile as string;
     if (!asmFile) {
-      void vscode.window.showErrorMessage('FASM debug: no source file specified (set "asmFile" in launch.json).');
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no source file specified (set "asmFile" in launch.json).`);
       return undefined;
     }
 
@@ -82,7 +85,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
 
     const dialect = await dialectFor(asmFile);
     if (dialect !== 'fasm2') {
-      void vscode.window.showErrorMessage('FASM debug currently only supports fasm2/fasmg sources.');
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}Debug currently only supports fasm2/fasmg sources.`);
       return undefined;
     }
 
@@ -97,7 +100,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
 
       const expectedListing = getListingPath(getDefaultOutputPath(asmFile));
       if (!(await waitForFile(expectedListing))) {
-        void vscode.window.showErrorMessage(`FASM debug: build succeeded but the expected listing file was not found: ${expectedListing}`);
+        void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}build succeeded but the expected listing file was not found: ${expectedListing}`);
         return undefined;
       }
     }
@@ -107,7 +110,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     // an obscure downstream error instead of a clear one naming the actual bad field.
     for (const key of ['program', 'listingFile', 'cwd'] as const) {
       if (config[key] !== undefined && typeof config[key] !== 'string') {
-        void vscode.window.showErrorMessage(`FASM debug: "${key}" in launch.json must be a string.`);
+        void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}"${key}" in launch.json must be a string.`);
         return undefined;
       }
     }
@@ -117,7 +120,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     config.listingFile = (config.listingFile as string) ?? getListingPath(program);
     config.cwd = (config.cwd as string) ?? path.dirname(asmFile);
     if (!config.gdbPath) {
-      const configuredGdb = vscode.workspace.getConfiguration('fasm2Studio').get<string>('gdbPath');
+      const configuredGdb = fasmConfig().get<string>('gdbPath');
       if (configuredGdb) config.gdbPath = configuredGdb;
     }
     return config;

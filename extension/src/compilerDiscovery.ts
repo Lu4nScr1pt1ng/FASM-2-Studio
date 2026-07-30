@@ -17,8 +17,8 @@
 import { spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
-import * as vscode from 'vscode';
-import { Dialect } from './types';
+import { fasmConfig } from './config';
+import { COMPILER_PATH_SETTING, Dialect } from './types';
 
 const CANDIDATES: Record<Dialect, string[]> = {
   fasm2: ['fasm2', 'fasmg'],
@@ -57,9 +57,7 @@ const cache = new Map<Dialect, CompilerResolution | null>();
 const inFlight = new Map<Dialect, Promise<CompilerResolution | undefined>>();
 
 function configuredPath(dialect: Dialect): string {
-  const config = vscode.workspace.getConfiguration('fasm2Studio');
-  const key = dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath';
-  return (config.get<string>(key) ?? '').trim();
+  return (fasmConfig().get<string>(COMPILER_PATH_SETTING[dialect]) ?? '').trim();
 }
 
 function probe(candidate: string): Promise<boolean> {

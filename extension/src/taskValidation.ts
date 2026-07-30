@@ -1,4 +1,4 @@
-import { Dialect } from './types';
+import { Dialect, DIALECT_LABEL } from './types';
 
 // Kept vscode-free (like dialect.ts) so it's plain-mocha unit-testable without an Extension Host.
 interface TaskDefinitionShape {
@@ -9,7 +9,9 @@ interface TaskDefinitionShape {
   debugBuild?: unknown;
 }
 
-const DIALECTS: Dialect[] = ['fasm2', 'fasm1'];
+// Derived from DIALECT_LABEL rather than restated as its own literal, so a dialect added there
+// can't silently go unvalidated here.
+const DIALECTS = Object.keys(DIALECT_LABEL) as Dialect[];
 
 /**
  * A "fasm" task's definition comes straight from a user-hand-edited tasks.json, with no schema

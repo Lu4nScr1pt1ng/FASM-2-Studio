@@ -75,6 +75,19 @@ const dialectCache = new Map<string, Dialect>();
 const diagnosticTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const diagnosticGenerations = new Map<string, number>();
 
+/** Resolves once the workspace scan kicked off by 'fasm2Studio/indexWorkspaceFiles' finishes;
+ * undefined when no scan is currently running. See its use in runDiagnosticsFor. */
+let indexingInFlight: Promise<void> | undefined;
+
+/** How long a fragment's diagnostics wait for an in-flight workspace scan to reach its includer(s)
+ * before giving up and compiling it standalone anyway — bounds the wait so a stalled or unusually
+ * large scan can't hang a single file's diagnostics indefinitely. */
+const INDEX_WAIT_TIMEOUT_MS = 5000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function logHandlerError(context: string, err: unknown): void {
   const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
   connection.console.error(`fasm2-studio: ${context} failed: ${detail}`);
@@ -114,7 +127,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
  * batched/yielded (see Workspace.indexWorkspace), off the interactive request path.
  */
 connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: string[] }) => {
-  workspace
+  const scan = workspace
     .indexWorkspace(params.uris ?? [], resolveDialect)
     .then(({ indexed, skipped }) => {
       connection.console.info(`fasm2-studio: indexed ${indexed} workspace file(s), skipped ${skipped}.`);
@@ -125,7 +138,11 @@ connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: st
         scheduleDiagnostics(doc.uri);
       }
     })
-    .catch((err) => logHandlerError('indexWorkspaceFiles', err));
+    .catch((err) => logHandlerError('indexWorkspaceFiles', err))
+    .finally(() => {
+      if (indexingInFlight === scan) indexingInFlight = undefined;
+    });
+  indexingInFlight = scan;
 });
 
 /**
@@ -279,7 +296,19 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   // this file.
   if (isRealFile) {
     let targetFsPath = fsPath!;
-    const entryUri = workspace.findEntryFile(uri);
+    let entryUri = workspace.findEntryFile(uri);
+    if (!entryUri && indexingInFlight) {
+      // The initial workspace scan may not have reached this file's includer(s) yet — a fragment
+      // opened this early (e.g. stepping into it moments into a debug session started right after
+      // VS Code launched, before the async scan catches up) would otherwise get compiled standalone
+      // here and report bogus "symbol undefined"/"bits64 or higher required" errors that vanish
+      // again as soon as indexing finishes and re-diagnoses it anyway. Wait for it — bounded, so a
+      // stalled or unusually large scan can't hang this file's diagnostics indefinitely — then
+      // re-check before falling back to standalone compilation.
+      await Promise.race([indexingInFlight, delay(INDEX_WAIT_TIMEOUT_MS)]);
+      if (diagnosticGenerations.get(uri) !== generation) return;
+      entryUri = workspace.findEntryFile(uri);
+    }
     if (entryUri && entryUri !== uri) {
       try {
         targetFsPath = URI.parse(entryUri).fsPath;
