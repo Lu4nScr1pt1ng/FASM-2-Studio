@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.2.0
+
+- **Fixed diagnostics being completely broken for fasm1.** Every compiler run passed fasmg's `-e`
+  flag, which fasm1 does not have (its whole option set is `-m`/`-p`/`-d`/`-s`) — so fasm1 printed
+  its usage banner, assembled nothing, and the empty output parsed as zero problems. Compounding
+  it, fasm1 writes `error:`/`warning:` in lowercase where fasmg writes `Error:`, and the message
+  pattern only matched the capitalized form, so even a correctly invoked fasm1 reported nothing.
+  Both are fixed; the integration tests now cover fasm1, fasm2 and raw fasmg rather than fasm2
+  alone, which is how this went unnoticed.
+- **Fixed x86 support switching itself off in macro-heavy x86 projects.** Instruction-set
+  detection judged a file by what its include graph defines, which cannot tell a foreign
+  instruction set from an ordinary helper-macro library: KolibriOS's `macros.inc` defines 73 macros
+  of which only 5 spell x86 mnemonics, so files across a large, entirely x86 project lost `mov`
+  hover and every x86 register in completion. Detection now also weighs what the file actually
+  executes — an x86 mnemonic in instruction position that the graph never defines can only come
+  from an instruction set loaded outside the source, which is exactly how fasm2 and fasm1 work.
+  Measured against 749 hand-labelled real files, this classifies 743 correctly.
+- **A failing build no longer looks clean.** When the assembler stops on an error inside an
+  `include` it never reaches a line of the file you have open, and filtering errors down to that
+  file left nothing at all to show — a red build with a green editor. The real cause is now
+  reported, naming the failing file and line. Two parsing bugs fed the same silence: an error
+  header with no trailing colon (which fasmg emits when it has no source line to quote, e.g.
+  "Custom error: NO OUTPUT FILE.") was skipped entirely, and an include-chain header
+  ("prog.asm [18] support/win64.inc [14]:") was attributed to the outer file instead of the
+  innermost one where the error actually is. Found by checking the extension's verdict against the
+  real assembler's on 279 entry points across 20 real projects; agreement went from 249/279 to
+  279/279.
+- **Hover, completion and signature help no longer assume x86.** fasmg has no built-in instruction
+  set — every mnemonic comes from an `include`d package — so applying this extension's hardcoded
+  x86 tables to, say, an aarch64 file was not merely unhelpful but wrong: `mov` was answered with
+  x86's meaning instead of the macro actually in scope, and completion offered all ~1400 x86
+  mnemonics plus `rax`/`eax`/`xmm0`, none of which exist on that CPU. The instruction set is now
+  derived from the file's own include graph, so any ISA package works — fasmg's bundled aarch64,
+  or a private in-house one — with no per-ISA data shipped. Ordinary x86 files are unaffected.
+- Fixed the 23 mnemonics that fasmg's x86 and aarch64 packages spell identically (`mov`, `add`,
+  `cmp`, `ret`, `nop`, `str`, `sub`, ...) always resolving to x86. Completion was worse: it
+  silently *dropped* a package's own `mov`/`add`/`ret` for colliding with a built-in entry, so a
+  non-x86 file could not complete its most common instructions at all.
+- A definition in the file you are looking at now outranks the built-in x86 table, so your own
+  `macro mov` wrapper hovers as your macro instead of as x86's instruction.
+- `element` declarations are now indexed, and the `repeat N, i:0` + `element NAME#i` idiom that
+  instruction-set packages use to generate register names in bulk is expanded — so an ISA
+  package's registers (`x0`–`x30`, `w0`–`w30`, ... in aarch64's case) get hover, completion and
+  go-to-definition even though those names appear nowhere literally in the source.
+- Pointing the extension at a bare `fasmg` binary no longer produces a wall of up to 200
+  "illegal instruction" errors that never name the cause. `fasm2` is only `fasmg` plus a wrapper
+  that preloads the x86 package, and the two ship byte-identical executables printing identical
+  banners, so they are now told apart by a functional probe. The single real cause is reported
+  instead, and the new `fasm2Studio.fasm2Preload` setting supplies the preload for anyone who
+  wants fasm2 behaviour from a raw `fasmg`. The preload is never applied automatically — fasmg's
+  own aarch64 and webassembly examples are valid projects that must not have x86 forced into them.
+- **ISA-aware syntax highlighting**, via LSP semantic tokens. A TextMate grammar matches one file
+  at a time with no knowledge of what it includes, so it has to pick a single answer for the whole
+  language — but `bl` is a register in x86 and a branch-with-link instruction in aarch64, and `mov`
+  is a different instruction on every CPU that has one. The server already knows the include graph,
+  so it now colours identifiers accordingly: `bl` reads as an instruction in an aarch64 file and as
+  a register in an x86 one. The grammar stays the fallback for everything else, so nothing that
+  highlighted before stops highlighting. Both bundled themes opt in (`semanticHighlighting`), as do
+  VS Code's built-in themes.
+- **Whole instruction families are indexed for the first time.** fasmg packages generate names in
+  bulk by naming a macro after a loop variable — `iterate <instr,opcode>, jo,70h, jno,71h, ...` with
+  a `calminstruction instr?` body is how 8086.inc defines all 30 conditional jumps, and
+  `macro instr#ps?` is how sse.inc builds `addps`/`mulps`/`subps`/… — so none of those names appear
+  literally in the source and none of them had a definition. Expanding this idiom (including
+  headers wrapped across lines with a trailing `\`) took the x86 package from 267 recognized macros
+  to 1,649, and closed the last ISA-detection gap: fasmg's webassembly package is now correctly
+  recognized as non-x86 rather than falling back to x86.
+- `fasm2Studio.fasm2Preload` is honoured by the language server, not just the compiler. Real fasmg
+  projects don't write their instruction set into the source — a wrapper script preloads it, which
+  is how `fasm2` supplies x86 and how ISA ports like fasm68k (`fasmg -i"Include 'm68k.inc'"`)
+  supply theirs. Setting this alongside `fasm2Studio.includePath` now gives hover, completion and
+  go-to-definition for the preloaded instruction set, which was previously invisible to the editor
+  entirely. Validated against fasm68k and fasmg-ebc: `move`/`moveq`/`MOVREL` resolve, and the
+  projects are correctly recognized as non-x86.
+
 ## 1.1.0
 
 - Added 114 real x86 mnemonics/prefixes that hover, completion, and syntax highlighting had never
