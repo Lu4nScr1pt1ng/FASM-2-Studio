@@ -39,6 +39,37 @@ next to the including file (common in fasmg's own bundled examples), set `fasm2S
 to the extra directories to search — the same directories you'd otherwise export via the
 compiler's `INCLUDE` environment variable.
 
+### fasm2 vs. bare fasmg
+
+`fasm2` is not a separate assembler: it is the `fasmg` binary plus a small wrapper script that
+preloads the standard x86 package. The two ship byte-identical executables and print the same
+banner. This matters if you point `fasm2Studio.fasm2CompilerPath` at a raw `fasmg` instead of the
+`fasm2` wrapper — bare fasmg has no instruction set at all, so every x86 line in your file is
+rejected as an illegal instruction. The extension detects this and tells you, rather than showing
+you hundreds of errors that don't name the cause. To use a raw `fasmg` anyway, set
+`fasm2Studio.fasm2Preload` to `fasm2.inc` and point `fasm2Studio.includePath` at fasm2's `include`
+directory.
+
+Because fasmg's instruction set always comes from an `include`d package, this extension works out
+what instructions exist by reading your project's include graph rather than assuming x86. A file
+that includes a non-x86 package — fasmg's own `packages/aarch64`, or an instruction set of your
+own — gets hover, completion and go-to-definition for *that* package's mnemonics and registers, and
+is not offered x86 ones. Nothing per-ISA is bundled; it all comes from the packages you include.
+
+If your project's instruction set is preloaded by a wrapper script instead of being `include`d in
+the source — the standard fasmg arrangement, used by `fasm2` for x86 and copied by ISA ports like
+[fasm68k](https://github.com/fredrik-hjarner/fasm68k), whose launcher is
+`fasmg -i"Include 'm68k.inc'"` — set `fasm2Studio.fasm2Preload` to that include and
+`fasm2Studio.includePath` to the directory holding it. The language server follows the preload the
+same way the compiler does, so those instructions get full hover and completion instead of being
+invisible.
+
+Highlighting follows the same rule. The TextMate grammar can only ever commit to one instruction
+set for the whole language, so the language server supplies semantic tokens on top of it: in an
+aarch64 file `bl` is coloured as a branch instruction, while in an x86 file the very same spelling
+stays coloured as a register. This needs a theme that opts into semantic highlighting — the two
+bundled FASM2 Studio themes do, as do all of VS Code's built-in themes.
+
 ## What you get
 
 Open a `.asm`/`.inc`/`.fasm`/`.fas` file and it's highlighted and editable immediately. Behind

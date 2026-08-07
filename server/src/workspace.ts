@@ -2,6 +2,7 @@ import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
+import { invalidateIsaCache } from './isa';
 import { parseDocument } from './parser/symbolIndex';
 import { Dialect, ParsedDocument, PossibleInstance, SymbolDefinition, SymbolKind, SymbolReference } from './types';
 
@@ -69,10 +70,22 @@ export class Workspace {
    * memoized resolutions, instead of that same pass per BFS node per request. */
   private includersByTarget: Map<string, string[]> | null = null;
 
+  /** See setPreloadInclude. */
+  private preloadInclude = '';
+
   setIncludeSearchPaths(paths: string[]): void {
     this.includeSearchPaths = paths;
     this.includeResolutionCache.clear();
     this.includersByTarget = null;
+    // Changing where includes resolve to can change which ISA package the graph reaches.
+    invalidateIsaCache();
+  }
+
+  /** fasm2Studio.fasm2Preload — an include every file is compiled with, supplied on the command
+   * line rather than written in the source (see walkIncludeGraph). Empty string disables it. */
+  setPreloadInclude(preload: string): void {
+    this.preloadInclude = preload;
+    invalidateIsaCache();
   }
 
   updateDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
@@ -364,6 +377,19 @@ export class Workspace {
     const visited = new Set<string>();
     const queue: Array<{ uri: string; depth: number }> = [{ uri: startUri, depth: 0 }];
 
+    // The configured preload behaves as though every file began with `include '<preload>'`, which
+    // is exactly what it does at build time: fasmg has no built-in instruction set, so real
+    // projects supply one through a wrapper script's `-i` flag rather than writing it in the
+    // source. fasm2 itself does this for x86, and third-party ISA ports copy the idiom verbatim
+    // (fasm68k's launcher is `fasmg -i"Include 'm68k.inc'"` with INCLUDE pointing at its src/).
+    // Without this the instruction set is invisible to the server: no hover, no completion, and
+    // nothing for ISA detection to go on.
+    const preloadFsPath = this.preloadInclude ? this.resolveIncludePath(startUri, this.preloadInclude) : undefined;
+    if (preloadFsPath) {
+      const preloadDoc = this.loadForInclude(preloadFsPath, dialect);
+      if (preloadDoc) queue.push({ uri: preloadDoc.uri, depth: 0 });
+    }
+
     for (let head = 0; head < queue.length; head++) {
       const { uri: currentUri, depth } = queue[head];
       if (visited.has(currentUri) || depth > MAX_INCLUDE_DEPTH) continue;
@@ -447,6 +473,9 @@ export class Workspace {
     // Every document mutation (open/edit/index/close/remove/external-load) flows through here —
     // the one choke point where the reverse-include index can go stale.
     this.includersByTarget = null;
+    // Same reasoning for the ISA classification: it is derived from the include graph, so any
+    // edit that adds or removes an `include` edge can change it.
+    invalidateIsaCache();
     this.retractFromGlobalIndex(uri);
     const doc = this.openDocuments.get(uri) ?? this.indexedDocuments.get(uri) ?? this.externalDiskCache.get(uri) ?? undefined;
     if (doc) this.addToGlobalIndex(doc);

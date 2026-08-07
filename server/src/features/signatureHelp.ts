@@ -1,5 +1,6 @@
 import { ParameterInformation, SignatureHelp, SignatureInformation } from 'vscode-languageserver/node';
 import instructionsData from '../data/instructions.json';
+import { detectIsa } from '../isa';
 import { Dialect, InstructionEntry, SymbolKind } from '../types';
 import { Workspace } from '../workspace';
 
@@ -106,7 +107,11 @@ export function getSignatureHelp(workspace: Workspace, uri: string, dialect: Dia
       return { signatures: [signature], activeSignature: 0, activeParameter };
     }
 
-    const ins = instructionByMnemonic.get(callee.name.toLowerCase());
+    // Reached only when no macro of this name is in scope, or one is but declares no parameters.
+    // Gated on the ISA for the same reason as hover/completion: in a file whose include graph
+    // brings its own instruction set, x86's operand list for a coincidentally-shared spelling
+    // describes a different instruction on a different CPU.
+    const ins = detectIsa(workspace, uri, dialect) === 'x86' ? instructionByMnemonic.get(callee.name.toLowerCase()) : undefined;
     if (ins && ins.operands) {
       const paramLabels = ins.operands.split(',').map((p) => p.trim());
       const signature: SignatureInformation = {

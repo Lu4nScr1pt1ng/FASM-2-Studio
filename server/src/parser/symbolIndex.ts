@@ -114,6 +114,176 @@ interface MacroFrame {
   pendingSymbols: SymbolDefinition[];
 }
 
+/**
+ * One open loop block (`repeat` or `iterate`) and the concrete values its control variables take.
+ *
+ * fasmg packages define whole families of names in bulk by concatenating a loop variable onto a
+ * stem with `#`, so the names a programmer actually writes exist nowhere literally in the source.
+ * Both loop forms are reduced to the same thing here — a variable bound to an ordered list of
+ * values — because the two idioms differ only in where those values come from:
+ *
+ *     repeat 31, i:0                     iterate <instr,opcode>, jo,70h, jno,71h, ...
+ *         element x#i : ...                  calminstruction instr? dest*
+ *     end repeat                         end iterate
+ *     -> x0 ... x30                      -> jo, jno, ...
+ *
+ * Tracked separately from `blockStack` so that recognizing these here cannot change how the
+ * existing block tracking classifies a top-level `format`/`org`.
+ */
+interface LoopFrame {
+  values: Map<string, string[]>;
+}
+
+/** Upper bound on how many names one loop may contribute. Real instruction/register families are
+ * small (aarch64's largest register file is 32; x86's biggest conditional-jump table is 30), while
+ * `repeat` in ordinary code routinely runs thousands of iterations to generate data — expanding
+ * one of those would flood completion with junk, so an over-long loop is skipped entirely rather
+ * than partially expanded. */
+const MAX_LOOP_EXPANSION = 256;
+
+/** Looks a loop variable up across the open loops, innermost first. */
+function loopValues(frames: LoopFrame[], varName: string): string[] | undefined {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const values = frames[i].values.get(varName);
+    if (values) return values;
+  }
+  return undefined;
+}
+
+/**
+ * Collects a declared name written as `#`-concatenated parts starting at `startIdx`, e.g. the
+ * `instr#ps?` of `macro instr#ps? dest*,src*`. Adjacency is required (no spaces), which is what
+ * separates a concatenated name from the parameter list that follows it.
+ */
+function concatenatedNameParts(tokens: Token[], startIdx: number): Token[] {
+  const parts: Token[] = [];
+  let i = startIdx;
+  while (tokens[i] && tokens[i].type === TokenType.Ident) {
+    parts.push(tokens[i]);
+    const hash = tokens[i + 1];
+    const next = tokens[i + 2];
+    const joined =
+      hash?.type === TokenType.Punct && hash.text === '#' &&
+      next?.type === TokenType.Ident &&
+      hash.startChar === tokens[i].endChar && next.startChar === hash.endChar;
+    if (!joined) break;
+    i += 2;
+  }
+  return parts;
+}
+
+/**
+ * Expands a `#`-concatenated declared name against the open loops, returning one entry per
+ * iteration. Exactly one of the parts may be a loop variable — every real use names a family by
+ * varying a single value (`x#i`, `instr#ps`, `uint#N`) — so anything more involved is left
+ * unexpanded rather than guessed at.
+ */
+function expandLoopName(parts: Token[], frames: LoopFrame[]): Array<{ name: string; value: string }> | undefined {
+  // A declared name may carry fasmg's trailing "?" weak marker directly on the loop variable
+  // ("calminstruction instr? dest*", how 8086.inc declares all 30 conditional jumps), so the
+  // marker has to be stripped before the variable can be recognized.
+  const varNameOf = (p: Token): string | undefined => {
+    if (loopValues(frames, p.text)) return p.text;
+    const stripped = baseName(p.text);
+    return loopValues(frames, stripped) ? stripped : undefined;
+  };
+
+  const varNames = parts.map(varNameOf);
+  const bound = varNames.filter((n): n is string => n !== undefined);
+  if (bound.length !== 1) return undefined;
+
+  const values = loopValues(frames, bound[0])!;
+  if (values.length > MAX_LOOP_EXPANSION) return undefined;
+
+  return values.map((value) => ({
+    name: baseName(parts.map((p, i) => (varNames[i] !== undefined ? value : p.text)).join('')),
+    value,
+  }));
+}
+
+/** Splits a comma-separated token run on its top-level commas only, joining each group's text.
+ * Bracket depth is tracked so a nested `<a,b>` group counts as one item. */
+function splitLoopValues(tokens: Token[]): string[] {
+  const items: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const t of tokens) {
+    if (t.type === TokenType.Punct && '<([{'.includes(t.text)) depth++;
+    else if (t.type === TokenType.Punct && '>)]}'.includes(t.text)) depth--;
+    else if (t.type === TokenType.Punct && t.text === ',' && depth === 0) {
+      items.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += t.text;
+  }
+  items.push(current.trim());
+  return items.filter((s) => s.length > 0);
+}
+
+/**
+ * Parses an `iterate` header into its variable bindings, or undefined when the value list is not
+ * a literal one. Both shapes appear in real packages:
+ *
+ *     iterate N, 8,16,32                              -> N = 8, 16, 32
+ *     iterate <instr,opcode>, jo,70h, jno,71h         -> instr = jo, jno   opcode = 70h, 71h
+ *
+ * `iterate arg, args` (a list held in a variable) is deliberately rejected: its values are only
+ * known once macros are expanded, which this parser never does.
+ */
+function parseIterateHeader(tokens: Token[]): LoopFrame | undefined {
+  let vars: string[];
+  let rest: Token[];
+
+  if (tokens[1]?.type === TokenType.Punct && tokens[1].text === '<') {
+    const close = tokens.findIndex((t, i) => i > 1 && t.type === TokenType.Punct && t.text === '>');
+    if (close === -1) return undefined;
+    vars = tokens.slice(2, close).filter((t) => t.type === TokenType.Ident).map((t) => t.text);
+    rest = tokens.slice(close + 2); // skip ">" and the "," after it
+  } else {
+    if (tokens[1]?.type !== TokenType.Ident) return undefined;
+    vars = [tokens[1].text];
+    rest = tokens.slice(3); // skip the variable and the "," after it
+  }
+
+  if (vars.length === 0) return undefined;
+  const items = splitLoopValues(rest);
+  // A single item for a single variable is a list held in a variable, not a literal list.
+  if (items.length === vars.length && vars.length === 1) return undefined;
+  if (items.length === 0 || items.length % vars.length !== 0) return undefined;
+
+  const values = new Map<string, string[]>();
+  vars.forEach((name, offset) => {
+    const bound: string[] = [];
+    for (let i = offset; i < items.length; i += vars.length) bound.push(items[i]);
+    values.set(name, bound);
+  });
+  return { values };
+}
+
+/** Parses a `repeat <count>[, <var>:<start>]` header into the same binding form. A non-literal
+ * count yields an empty frame, so nothing expands but nesting stays balanced against
+ * `end repeat`. */
+function parseRepeatHeader(tokens: Token[]): LoopFrame {
+  const countTok = tokens[1];
+  const varTok = tokens[3];
+  const startTok = tokens[5];
+  const count = countTok?.type === TokenType.Number ? Number(countTok.text) : NaN;
+  const start = startTok?.type === TokenType.Number ? Number(startTok.text) : NaN;
+  const hasCounter =
+    varTok?.type === TokenType.Ident &&
+    tokens[2]?.type === TokenType.Punct && tokens[2].text === ',' &&
+    tokens[4]?.type === TokenType.Punct && tokens[4].text === ':' &&
+    Number.isSafeInteger(count) && Number.isSafeInteger(start) &&
+    count >= 0 && count <= MAX_LOOP_EXPANSION;
+
+  const values = new Map<string, string[]>();
+  if (hasCounter) {
+    values.set(varTok.text, Array.from({ length: count }, (_, i) => String(start + i)));
+  }
+  return { values };
+}
+
 export function parseDocument(uri: string, version: number, text: string, dialect: Dialect): ParsedDocument {
   const symbols: SymbolDefinition[] = [];
   const references: SymbolReference[] = [];
@@ -121,10 +291,17 @@ export function parseDocument(uri: string, version: number, text: string, dialec
   const possibleInstances: PossibleInstance[] = [];
   let formatDirective: string | undefined;
   let hasTopLevelOrg = false;
+  /** See ParsedDocument.statementWords. */
+  const statementWords = new Set<string>();
   let inImportList = false;
 
   const blockStack: string[] = [];
   const macroFrames: MacroFrame[] = [];
+  const loopFrames: LoopFrame[] = [];
+  /** Accumulated tokens of an `iterate` header still being continued across lines with a trailing
+   * "\" — its value list is regularly long enough to be wrapped (fasmg's own 8086.inc splits the
+   * 30-entry conditional-jump table over two lines). */
+  let pendingIterate: Token[] | undefined;
   let lastGlobalLabel: string | undefined;
   /** The outermost currently-open `struct ... ends` block's own name/nameRange — real fasmg's
    * struct package (macro/struct.inc) wraps a struct's *entire* body in `namespace <name>`, so
@@ -156,9 +333,31 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       const t0 = tokens[0];
       const kw0 = t0.type === TokenType.Ident ? t0.text.toLowerCase() : '';
 
+      // Whatever stands in instruction position on this line, recorded before any of the
+      // directive handlers below consume the line. "label: mnemonic" counts too, since the colon
+      // ends the label and what follows begins a statement.
+      if (kw0) statementWords.add(kw0);
+      if (tokens[1]?.type === TokenType.Punct && tokens[1].text === ':' && tokens[2]?.type === TokenType.Ident) {
+        statementWords.add(tokens[2].text.toLowerCase());
+      }
+
+      // --- continuation of an `iterate` header wrapped with a trailing "\" ---
+      if (pendingIterate) {
+        const last = tokens[tokens.length - 1];
+        const continues = last.type === TokenType.Punct && last.text === '\\';
+        pendingIterate.push(...(continues ? tokens.slice(0, -1) : tokens));
+        if (!continues) {
+          loopFrames.push(parseIterateHeader(pendingIterate) ?? { values: new Map() });
+          pendingIterate = undefined;
+        }
+        collectReferences(tokens, uri, references);
+        continue;
+      }
+
       // --- block end tracking (end macro / ends / end virtual / end namespace) ---
       if (kw0 === 'end' && tokens[1]) {
         const what = lower(tokens[1]);
+        if (what === 'repeat' || what === 'iterate') loopFrames.pop();
         // Normally `what` matches the stack top directly. It can legitimately not: fasmg's own
         // packages/x86/include/macro/proc64.inc has a macro ("initlocal") that opens a `virtual
         // at` block it *deliberately* leaves open across macro invocations — only a later,
@@ -287,26 +486,41 @@ export function parseDocument(uri: string, version: number, text: string, dialec
       if ((kw0 === 'macro' || kw0 === 'calminstruction' || kw0 === 'struc') && tokens[1] && tokens[1].type === TokenType.Ident) {
         const nameTok = tokens[1];
         const cleaned = baseName(nameTok.text);
-        const name = kw0 === 'calminstruction' ? (calmCommandBareName(cleaned) ?? cleaned) : cleaned;
         const isWeak = nameTok.text.length > 1 && nameTok.text.endsWith('?');
         const { tokens: paramTokens, isUnconditional } = paramsAfterMacroName(nameTok, tokens);
-        const sym: SymbolDefinition = {
-          name,
-          kind: SymbolKind.Macro,
-          range: lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar),
-          nameRange: tokenRange(nameTok),
-          params: paramsFromTokens(paramTokens),
-          isWeak,
-          isUnconditional,
-          uri,
-        };
-        symbols.push(sym);
-        // A macro defined *inside* another macro's body (e.g. fasmg's own packages/x86/include/
-        // macro/com64.inc's "comcall", which defines its own nested "call" macro) is only
-        // meaningfully in scope for the body of the macro that defines it — reuse the same
-        // localScope mechanism as `local` variables so it doesn't shadow, or get shadowed by, an
-        // unrelated same-named instruction or macro elsewhere in the file.
-        if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
+        const range = lineRange(nameTok.line, t0.startChar, tokens[tokens.length - 1].endChar);
+        const params = paramsFromTokens(paramTokens);
+
+        // Whole instruction families are declared by naming the macro after an enclosing loop's
+        // variable rather than spelling each one out — fasmg's own 8086.inc defines all 30
+        // conditional jumps as a single `calminstruction instr?` inside an `iterate`, and sse.inc
+        // builds addps/mulps/subps/... from `macro instr#ps?`. Without expanding these, the names
+        // real code writes have no definition at all.
+        const expanded = expandLoopName(concatenatedNameParts(tokens, 1), loopFrames);
+        const names = expanded
+          ? expanded.map((e) => e.name)
+          : [kw0 === 'calminstruction' ? (calmCommandBareName(cleaned) ?? cleaned) : cleaned];
+
+        for (const rawName of names) {
+          const name = kw0 === 'calminstruction' && !expanded ? rawName : (calmCommandBareName(rawName) ?? rawName);
+          const sym: SymbolDefinition = {
+            name,
+            kind: SymbolKind.Macro,
+            range,
+            nameRange: tokenRange(nameTok),
+            params,
+            isWeak,
+            isUnconditional,
+            uri,
+          };
+          symbols.push(sym);
+          // A macro defined *inside* another macro's body (e.g. fasmg's own packages/x86/include/
+          // macro/com64.inc's "comcall", which defines its own nested "call" macro) is only
+          // meaningfully in scope for the body of the macro that defines it — reuse the same
+          // localScope mechanism as `local` variables so it doesn't shadow, or get shadowed by, an
+          // unrelated same-named instruction or macro elsewhere in the file.
+          if (macroFrames.length > 0) macroFrames[macroFrames.length - 1].pendingSymbols.push(sym);
+        }
         blockStack.push(kw0);
         macroFrames.push({ startLine: t0.line, localNames: new Set(), pendingSymbols: [] });
         continue;
@@ -339,6 +553,25 @@ export function parseDocument(uri: string, version: number, text: string, dialec
 
       if (kw0 === 'virtual' || kw0 === 'namespace') {
         blockStack.push(kw0);
+        continue;
+      }
+
+      // --- repeat <count>[, <var>:<start>] / iterate <var>|<vars>, values... ---
+      // Tracked so that names generated inside the body (see expandLoopName) can be expanded. A
+      // frame is pushed for every loop, including forms nothing can be derived from, so that
+      // nesting stays balanced against the matching `end`; such a frame simply binds no variables.
+      if (kw0 === 'repeat' || kw0 === 'iterate') {
+        const last = tokens[tokens.length - 1];
+        const continues = kw0 === 'iterate' && last.type === TokenType.Punct && last.text === '\\';
+        if (continues) {
+          pendingIterate = tokens.slice(0, -1);
+        } else {
+          loopFrames.push(kw0 === 'repeat' ? parseRepeatHeader(tokens) : parseIterateHeader(tokens) ?? { values: new Map() });
+        }
+        // A non-literal count or list is usually a named constant or a macro parameter
+        // ("repeat BUFFER_SIZE", "iterate arg, args"), so the operands still carry real references
+        // even when nothing here defines a symbol.
+        collectReferences(tokens.slice(1), uri, references);
         continue;
       }
 
@@ -433,6 +666,54 @@ export function parseDocument(uri: string, version: number, text: string, dialec
         };
         symbols.push(sym);
         enclosingLocalFrame(name)?.pendingSymbols.push(sym);
+        continue;
+      }
+
+      // --- element NAME [: EXPR] / element NAME#<repeat var> [: EXPR] ---
+      // A core fasmg directive (manual.txt "Symbolic values") that declares a named term usable in
+      // expressions. Instruction-set packages use it to declare their register names — it's how
+      // every aarch64 register is defined (packages/aarch64/iset/aarch64.inc) — so without this
+      // none of them had a SymbolDefinition at all: no hover, no go-to-definition, and nothing to
+      // offer in completion, for the identifiers such code uses on nearly every line.
+      if (kw0 === 'element' && tokens[1] && tokens[1].type === TokenType.Ident) {
+        const nameTok = tokens[1];
+        // A real declaration is "element NAME", "element NAME : expr", or the generated
+        // "element NAME#var : expr" — the name is always either the whole line or immediately
+        // followed by ":". Requiring that shape keeps ordinary English prose from being read as a
+        // declaration: KolibriOS's libGUI/SRC/malloc.inc carries a ported dlmalloc doc comment
+        // with a line beginning "element may have a different size, and also that...", which
+        // otherwise defined a symbol named "may".
+        const nameParts = concatenatedNameParts(tokens, 1);
+        const expanded = expandLoopName(nameParts, loopFrames);
+        const afterHead = tokens[1 + (nameParts.length * 2 - 1)];
+        if (afterHead && !(afterHead.type === TokenType.Punct && afterHead.text === ':')) continue;
+
+        const colonIdx = tokens.findIndex((t) => t.type === TokenType.Punct && t.text === ':');
+        const valueTokens = colonIdx >= 0 ? tokens.slice(colonIdx + 1) : [];
+        const range = lineRange(t0.line, t0.startChar, tokens[tokens.length - 1].endChar);
+        const loopVar = expanded ? nameParts.find((p) => loopValues(loopFrames, p.text) !== undefined)?.text : undefined;
+
+        for (const { name, value: counter } of expanded ?? [{ name: baseName(nameTok.text), value: '' }]) {
+          if (BUILTIN_PSEUDO_VARIABLES.has(name)) continue;
+          // Substitute the loop counter into the displayed value, per token so a variable named
+          // "i" can't be rewritten inside an unrelated identifier that merely contains it. Without
+          // this, every generated register hovered as its raw source text — "x0 = aarch64.reg +
+          // (i shl 0) + ..." — showing an "i" that is nowhere in scope at the point of use.
+          const value =
+            valueTokens.map((t) => (loopVar && t.type === TokenType.Ident && t.text === loopVar ? counter : t.text)).join(' ') || undefined;
+          const sym: SymbolDefinition = {
+            name,
+            kind: SymbolKind.Constant,
+            range,
+            nameRange: tokenRange(nameTok),
+            value,
+            definedVia: 'element',
+            uri,
+          };
+          symbols.push(sym);
+          enclosingLocalFrame(name)?.pendingSymbols.push(sym);
+        }
+        if (colonIdx >= 0) collectReferences(valueTokens, uri, references);
         continue;
       }
 
@@ -587,7 +868,7 @@ export function parseDocument(uri: string, version: number, text: string, dialec
     // Never let a parse failure propagate — degrade to whatever was collected so far.
   }
 
-  return { uri, version, dialect, symbols, references, includes, possibleInstances, formatDirective, hasTopLevelOrg };
+  return { uri, version, dialect, symbols, references, includes, possibleInstances, formatDirective, hasTopLevelOrg, statementWords: [...statementWords] };
 }
 
 function collectReferences(tokens: Token[], uri: string, out: SymbolReference[]): void {

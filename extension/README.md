@@ -59,6 +59,7 @@ To use the debugger:
 | `fasm2Studio.fasm2CompilerPath` | Path to fasm2/fasmg. Leave empty to auto-detect on PATH. |
 | `fasm2Studio.fasm1CompilerPath` | Path to fasm1. Leave empty to auto-detect on PATH. |
 | `fasm2Studio.includePath` | Semicolon-separated extra directories to search for a bare `include 'foo.inc'` not found next to the including file (passed as the compiler's `INCLUDE` environment variable). Many real fasmg projects need this to build at all. |
+| `fasm2Studio.fasm2Preload` | Include file assembled before the source itself (fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source — how `fasm2` supplies x86, and how ISA ports like fasm68k supply theirs. The language server follows it too, so those instructions get hover and completion. Use `fasm2.inc` (with `includePath` pointing at fasm2's `include` directory) to drive a bare `fasmg` binary as if it were `fasm2`. |
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |

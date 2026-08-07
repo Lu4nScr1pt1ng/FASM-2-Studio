@@ -125,6 +125,11 @@
           "default": "",
           "description": "Semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that isn't found next to the including file, passed as the compiler's INCLUDE environment variable. Many real fasmg projects need this to build at all (e.g. fasmg's own Windows examples require setting it to their \"include\" package directory, exactly as their bundled make.bat does with `set include=...`). Leave empty to only use whatever INCLUDE (if any) your system environment already provides."
         },
+        "fasm2Studio.fasm2Preload": {
+          "type": "string",
+          "default": "",
+          "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and third-party ISA ports copy the idiom (fasm68k launches `fasmg -i\"Include 'm68k.inc'\"`). Set this together with fasm2Studio.includePath and the language server will follow the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Use \"fasm2.inc\" with fasm2Studio.includePath pointing at fasm2's `include` directory to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
+        },
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",

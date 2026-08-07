@@ -1,6 +1,7 @@
 {
   "name": "FASM2 Studio Dark",
   "type": "dark",
+  "semanticHighlighting": true,
   "colors": {
     "editor.background": "#0d0e16",
     "editor.foreground": "#c8ccdc",
@@ -25,6 +26,11 @@
     "editorGutter.modifiedBackground": "#7aa2f7",
     "editorGutter.addedBackground": "#9ece6a",
     "editorGutter.deletedBackground": "#f7768e"
+  },
+  "semanticTokenColors": {
+    "keyword.defaultLibrary": { "foreground": "#7aa2f7" },
+    "variable.defaultLibrary": { "foreground": "#2ac3de" },
+    "macro": { "foreground": "#c678dd" }
   },
   "tokenColors": [
     {

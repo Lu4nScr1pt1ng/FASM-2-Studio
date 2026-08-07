@@ -7,7 +7,7 @@ import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { invalidateCompilerCache, resolveCompilerOnPath } from '../src/compilerDiscovery';
+import { hasX86Preload, invalidateCompilerCache, resolveCompilerOnPath } from '../src/compilerDiscovery';
 
 describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () => {
   let tmpDir: string;
@@ -142,5 +142,66 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
       const result = await resolveCompilerOnPath('fasm2');
       assert.strictEqual(result, 'fasm2', 'expected the bare PATH-resolved name, not the ~/.local/bin full path');
     });
+  });
+});
+
+describe('hasX86Preload (against fake tools that do or do not know an instruction set)', () => {
+  // fasm2 is the fasmg binary plus a wrapper preloading the x86 package; the two executables are
+  // byte-identical and print the same banner, so only a functional probe distinguishes them.
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-preload-test-'));
+    invalidateCompilerCache();
+  });
+
+  afterEach(async () => {
+    invalidateCompilerCache();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeFakeTool(name: string, script: string): Promise<string> {
+    const fsPath = path.join(tmpDir, name);
+    await fs.writeFile(fsPath, `#!/bin/sh\n${script}\n`, 'utf8');
+    await fs.chmod(fsPath, 0o755);
+    return fsPath;
+  }
+
+  it('reports a preload for a tool that assembles the probe source', async () => {
+    const tool = await writeFakeTool('fasm2', 'echo "flat assembler  version g.fake"; echo "1 pass, 1 byte."; exit 0');
+    assert.strictEqual(await hasX86Preload(tool), true);
+  });
+
+  it('reports no preload for a tool that rejects the probe as an illegal instruction', async () => {
+    // Exactly what a bare fasmg does with "nop": it has no instruction set at all.
+    const tool = await writeFakeTool('fasmg', 'echo "flat assembler  version g.fake"; echo "Error: illegal instruction."; exit 2');
+    assert.strictEqual(await hasX86Preload(tool), false);
+  });
+
+  it('does not confuse an ordinary failure with a missing instruction set', async () => {
+    const tool = await writeFakeTool('fasm2', 'echo "Error: out of memory."; exit 2');
+    assert.strictEqual(await hasX86Preload(tool), true);
+  });
+
+  it('assumes a preload when the tool cannot be run at all, so a broken probe never becomes a false accusation', async () => {
+    assert.strictEqual(await hasX86Preload(path.join(tmpDir, 'does-not-exist')), true);
+  });
+
+  it('caches per path: a second call succeeds even after the tool is removed from disk', async () => {
+    const tool = await writeFakeTool('fasmg', 'echo "Error: illegal instruction."; exit 2');
+    assert.strictEqual(await hasX86Preload(tool), false);
+
+    await fs.rm(tool);
+    assert.strictEqual(await hasX86Preload(tool), false, 'expected the cached answer, not a fresh (now-failing) probe');
+  });
+
+  it('shares one in-flight probe across concurrent callers', async () => {
+    const counterFile = path.join(tmpDir, 'preload-invocations.txt');
+    const tool = await writeFakeTool('fasm2', `echo x >> ${counterFile}; exit 0`);
+
+    await Promise.all([hasX86Preload(tool), hasX86Preload(tool), hasX86Preload(tool)]);
+
+    const invocations = (await fs.readFile(counterFile, 'utf8')).trim().split('\n').length;
+    assert.strictEqual(invocations, 1, 'expected concurrent callers to share a single probe');
   });
 });

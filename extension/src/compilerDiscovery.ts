@@ -15,9 +15,11 @@
 // Windows whenever the real exit code didn't happen to be 127.
 
 import { spawn } from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fasmConfig } from './config';
+import { quoteForShell } from './shellQuote';
 import { COMPILER_PATH_SETTING, Dialect } from './types';
 
 const CANDIDATES: Record<Dialect, string[]> = {
@@ -127,4 +129,81 @@ export async function resolveCompiler(dialect: Dialect): Promise<CompilerResolut
 
 export function invalidateCompilerCache(): void {
   cache.clear();
+  preloadCache.clear();
+}
+
+// --- x86 preload detection ------------------------------------------------------------------
+//
+// Mirrors server/src/compilerDiscovery.ts's probe of the same name — see the long explanation
+// there. In short: "fasm2" is the fasmg binary plus a wrapper that preloads the x86 package, the
+// two executables are byte-identical, and they print the same banner, so only a functional probe
+// can tell a preload-equipped tool from a bare fasmg that will reject every x86 mnemonic.
+
+const PRELOAD_PROBE_TIMEOUT_MS = 5000;
+const preloadCache = new Map<string, boolean>();
+const preloadInFlight = new Map<string, Promise<boolean>>();
+
+const ILLEGAL_INSTRUCTION_RE = /illegal instruction/i;
+
+function runPreloadProbe(compilerPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const stem = path.join(os.tmpdir(), `fasm2-studio-preload-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const src = `${stem}.asm`;
+    const out = `${stem}.bin`;
+    const cleanup = () => {
+      fs.promises.unlink(src).catch(() => undefined);
+      fs.promises.unlink(out).catch(() => undefined);
+    };
+
+    let child;
+    try {
+      fs.writeFileSync(src, 'nop\n', 'utf8');
+      child = spawn([compilerPath, src, out].map(quoteForShell).join(' '), { shell: true, windowsHide: true });
+    } catch {
+      cleanup();
+      // Assume a preload is present when the probe itself can't run, so a probe failure never
+      // becomes a spurious warning on a working setup.
+      resolve(true);
+      return;
+    }
+
+    let output = '';
+    let settled = false;
+    const finish = (hasPreload: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve(hasPreload);
+    };
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(true);
+    }, PRELOAD_PROBE_TIMEOUT_MS);
+
+    child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString('utf8')));
+    child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString('utf8')));
+    child.on('error', () => finish(true));
+    child.on('close', () => finish(!ILLEGAL_INSTRUCTION_RE.test(output)));
+  });
+}
+
+/** Whether `compilerPath` already has an x86 instruction set loaded (fasm1, or fasmg via the
+ * fasm2 wrapper) rather than being a bare fasmg that rejects every x86 mnemonic. Cached per path. */
+export function hasX86Preload(compilerPath: string): Promise<boolean> {
+  const cached = preloadCache.get(compilerPath);
+  if (cached !== undefined) return Promise.resolve(cached);
+
+  const existing = preloadInFlight.get(compilerPath);
+  if (existing) return existing;
+
+  const promise = runPreloadProbe(compilerPath)
+    .then((result) => {
+      preloadCache.set(compilerPath, result);
+      return result;
+    })
+    .finally(() => preloadInFlight.delete(compilerPath));
+  preloadInFlight.set(compilerPath, promise);
+  return promise;
 }

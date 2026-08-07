@@ -502,6 +502,161 @@ describe('symbolIndex', () => {
     assert.ok(pointerSym?.localScope, 'expected "pointer" to still get a localScope despite the stray unclosed virtual block before it');
   });
 
+  // --- element / repeat expansion -------------------------------------------------------------
+  // fasmg instruction-set packages declare their register names with `element`, usually generated
+  // in bulk inside a `repeat` -- so the names a programmer actually writes appear nowhere literally
+  // in the source. Real shape, from fasmg's own packages/aarch64/iset/aarch64.inc.
+
+  it('indexes a plain `element` declaration', () => {
+    const doc = parseDocument('file:///e.inc', 1, 'element xzr : aarch64.reg + (31 shl 0)\n', 'fasm2');
+    const sym = doc.symbols.find((s) => s.name === 'xzr');
+    assert.ok(sym, 'expected "xzr" to be indexed');
+    assert.strictEqual(sym.kind, SymbolKind.Constant);
+  });
+
+  it('expands `element NAME#i` inside `repeat N, i:0` into the concrete generated names', () => {
+    const src = ['repeat 31, i:0', '    element x#i : aarch64.reg + (i shl 0)', 'end repeat'].join('\n');
+    const names = new Set(parseDocument('file:///e.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+
+    assert.ok(names.has('x0'), 'expected the first generated name');
+    assert.ok(names.has('x30'), 'expected the last generated name');
+    // "repeat 31, i:0" runs i = 0..30, so x31 must not exist -- aarch64 genuinely has no x31.
+    assert.ok(!names.has('x31'), 'expected the count to be exclusive of start+count');
+  });
+
+  it('substitutes the loop counter into the value shown for a generated element', () => {
+    const src = ['repeat 4, i:0', '    element x#i : base + (i shl 8)', 'end repeat'].join('\n');
+    const doc = parseDocument('file:///e.inc', 1, src, 'fasm2');
+    const x2 = doc.symbols.find((s) => s.name === 'x2');
+    assert.ok(x2, 'expected "x2" to be generated');
+    // Without substitution this read "base + ( i shl 8 )", showing a variable that is nowhere in
+    // scope at the point the register is actually used.
+    assert.match(x2.value ?? '', /2 shl 8/);
+    assert.doesNotMatch(x2.value ?? '', /\bi\b/);
+  });
+
+  it('honours a non-zero start value', () => {
+    const src = ['repeat 3, n:5', '    element r#n : n', 'end repeat'].join('\n');
+    const names = new Set(parseDocument('file:///e.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.deepStrictEqual([...names].filter((n) => n.startsWith('r')).sort(), ['r5', 'r6', 'r7']);
+  });
+
+  it('leaves a `repeat` whose count is not a literal alone, since its iterations are unknowable here', () => {
+    const src = ['repeat COUNT, i:0', '    element x#i : i', 'end repeat'].join('\n');
+    const names = new Set(parseDocument('file:///e.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(!names.has('x0'), 'expected no expansion without a literal count');
+  });
+
+  it('still records references on a `repeat` line, so a named count is findable', () => {
+    const doc = parseDocument('file:///e.inc', 1, 'repeat COUNT, i:0\nend repeat\n', 'fasm2');
+    assert.ok(doc.references.some((r) => r.name === 'COUNT'), 'expected "COUNT" to be collected as a reference');
+  });
+
+  it('refuses to expand an implausibly long `repeat`, which generates data rather than register names', () => {
+    const src = ['repeat 100000, i:0', '    element x#i : i', 'end repeat'].join('\n');
+    const doc = parseDocument('file:///e.inc', 1, src, 'fasm2');
+    assert.ok(doc.symbols.length < 100, 'expected an over-long repeat to be skipped, not expanded');
+  });
+
+  // --- iterate expansion ---------------------------------------------------------------------
+  // The other bulk-definition idiom: name the macro after the loop variable, so whole instruction
+  // families exist without any of their names appearing literally. fasmg's own 8086.inc declares
+  // all 30 conditional jumps this way.
+
+  it('expands a macro named after a single-variable `iterate`', () => {
+    const src = ['iterate instr, alpha, beta, gamma', '\tmacro instr dest*', '\tend macro', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.deepStrictEqual([...names].sort(), ['alpha', 'beta', 'gamma']);
+  });
+
+  it('expands the destructuring `iterate <instr,opcode>, name,value, ...` form', () => {
+    const src = ['iterate <instr,opcode>, jo,70h, jno,71h, jc,72h', '\tcalminstruction instr? dest*', '\tend calminstruction', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+
+    assert.ok(names.has('jo'));
+    assert.ok(names.has('jno'));
+    assert.ok(names.has('jc'));
+    // The opcodes are the *other* variable's values and must never become macro names.
+    assert.ok(!names.has('70h'), 'expected opcodes not to be mistaken for instruction names');
+  });
+
+  it('strips the weak "?" marker when matching the loop variable', () => {
+    // "calminstruction instr? dest*" is how 8086.inc really writes it; without stripping the "?"
+    // the variable goes unrecognized and the whole family stays undefined.
+    const src = ['iterate <instr,op>, aaa,1, bbb,2', '\tcalminstruction instr? dest*', '\tend calminstruction', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(names.has('aaa') && names.has('bbb'));
+  });
+
+  it('concatenates a suffix onto the loop variable (`macro instr#ps?`)', () => {
+    const src = ['iterate <instr,ext>, sqrt,51h, add,58h', '\tmacro instr#ps? dest*,src*', '\tend macro', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(names.has('sqrtps'), 'expected the suffix to be appended');
+    assert.ok(names.has('addps'));
+    assert.ok(!names.has('sqrt'), 'the bare loop value is not itself a declared name here');
+  });
+
+  it('concatenates a prefix onto the loop variable (`macro uint#N`)', () => {
+    const src = ['iterate N, 8,16,32', '\tmacro uint#N value', '\tend macro', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.deepStrictEqual([...names].sort(), ['uint16', 'uint32', 'uint8']);
+  });
+
+  it('joins an `iterate` header wrapped across lines with a trailing backslash', () => {
+    // 8086.inc splits its 30-entry conditional-jump table over two physical lines.
+    const src = ['iterate <instr,opcode>, jo,70h, jno,71h, \\', '\t\tjs,78h, jns,79h', '\tcalminstruction instr? dest*', '\tend calminstruction', 'end iterate'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(names.has('jo'), 'expected names from the first line');
+    assert.ok(names.has('jns'), 'expected names from the continued line');
+  });
+
+  it('does not expand an `iterate` whose list is a variable rather than literal values', () => {
+    // "iterate arg, args" gets its values only once macros are expanded, which this parser never
+    // does -- inventing a macro literally named "args" would be pure noise.
+    const src = ['macro outer args&', '\titerate arg, args', '\t\tmacro arg', '\t\tend macro', '\tend iterate', 'end macro'].join('\n');
+    const names = new Set(parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(!names.has('args'), `expected no bogus name from a variable list, got: ${[...names].join(', ')}`);
+  });
+
+  it('closes the loop at `end iterate`, so a later macro is not expanded against it', () => {
+    const src = ['iterate instr, alpha, beta', '\tmacro instr', '\tend macro', 'end iterate', 'macro instr', 'end macro'].join('\n');
+    const syms = parseDocument('file:///i.inc', 1, src, 'fasm2').symbols.map((s) => s.name);
+    assert.ok(syms.includes('instr'), 'the macro after "end iterate" keeps its own literal name');
+  });
+
+  it('refuses to expand an implausibly long value list', () => {
+    const values = Array.from({ length: 400 }, (_, i) => `v${i}`).join(', ');
+    const src = [`iterate instr, ${values}`, '\tmacro instr', '\tend macro', 'end iterate'].join('\n');
+    const syms = parseDocument('file:///i.inc', 1, src, 'fasm2').symbols;
+    assert.ok(syms.length < 100, 'expected an over-long list to be skipped, not expanded');
+  });
+
+  it('does not read English prose beginning with the word "element" as a declaration', () => {
+    // Real, from KolibriOS's programs/develop/libraries/libGUI/SRC/malloc.inc, which carries a
+    // ported dlmalloc doc comment. A declaration is always "element NAME", "element NAME : expr"
+    // or "element NAME#i : expr" -- the name is the whole line or is followed by ":".
+    const prose = 'element may have a different size, and also that it does not\n';
+    const names = parseDocument('file:///prose.inc', 1, prose, 'fasm1').symbols.map((s) => s.name);
+    assert.ok(!names.includes('may'), `expected no symbol from prose, got: ${names.join(', ')}`);
+  });
+
+  it('accepts every real `element` shape found in fasmg\'s own packages', () => {
+    const src = [
+      'element aarch64.reg', // bare
+      'element @', // bare, punctuation-ish name
+      'element ah? : x86.r8 + 4', // weak marker + value
+    ].join('\n');
+    const names = new Set(parseDocument('file:///e.inc', 1, src, 'fasm2').symbols.map((s) => s.name));
+    assert.ok(names.has('aarch64.reg'));
+    assert.ok(names.has('@'));
+    assert.ok(names.has('ah'));
+  });
+
+  it('does not expand when the concatenated variable belongs to no enclosing repeat', () => {
+    const names = new Set(parseDocument('file:///e.inc', 1, 'element x#j : 0\n', 'fasm2').symbols.map((s) => s.name));
+    assert.ok(!names.has('x0'));
+  });
+
   it('never throws on malformed or pathological input', () => {
     const pathological = [
       'macro',

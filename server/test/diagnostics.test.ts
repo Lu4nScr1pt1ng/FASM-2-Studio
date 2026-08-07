@@ -259,3 +259,228 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
     }
   });
 });
+
+describe('parseDiagnostics (header shapes seen in real project builds)', () => {
+  it('parses a header with no trailing colon, which fasmg emits when it quotes no source line', () => {
+    // Real, from bitRAKE/fasmg_playground's math/oeis/A000055.asm: the error is raised past the
+    // end of the file, so there is nothing to quote and the usual ":" is absent. Requiring it made
+    // this build look completely clean.
+    const output = ['/tmp/A000055.asm [66]', 'Custom error: NO OUTPUT FILE.'].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/A000055.asm');
+
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].range.start.line, 65);
+    assert.match(messageText(diags[0]), /NO OUTPUT FILE/);
+  });
+
+  it('does not mistake a macro call-stack trace for a header, even though it also ends in "[n]"', () => {
+    // The trace line between a header and its message ends in "[6]" exactly like a colon-less
+    // header does; reading it as one replaced the real location and dropped the diagnostic.
+    const output = [
+      'custom.asm [7]:',
+      '\tmovzx eax, byte [r12 + r11]',
+      'movzx? [30] x86.store_instruction@src [77] x86.require.bits64? [6]',
+      'Custom error: bits64 or higher required.',
+    ].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/custom.asm');
+
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].range.start.line, 6, 'expected the location from the real header, not the trace');
+  });
+
+  it('takes the innermost location from an include-chain header', () => {
+    // "prog.asm [18] support/win64.inc [14]:" means the error is at win64.inc line 14, reached
+    // from prog.asm line 18 — attributing it to prog.asm line 18 would point at the wrong file.
+    const output = ["prog.asm [18] support/win64.inc [14]:", "\tINCLUDE 'win64a.inc'", "Error: source file 'win64a.inc' not found."].join('\n');
+
+    assert.strictEqual(parseDiagnostics(output, '/tmp/prog.asm').length, 0, 'the error belongs to the include, not this file');
+    assert.strictEqual(parseDiagnostics(output, '/tmp/support/win64.inc').length, 1);
+  });
+});
+
+describe('a build that fails entirely inside an included file', () => {
+  it('reports the real cause instead of showing a clean file', async function () {
+    // Validating against real projects, this was every remaining case where the compiler and the
+    // editor disagreed: the assembler stops on a bad `include` before reaching any line of this
+    // document, so filtering to this file's own errors left nothing to show at all.
+    const compilerPath = [process.env.FASM2_STUDIO_TEST_FASM1, 'fasm1', 'fasm'].find((c) => {
+      if (!c) return false;
+      const probe = spawnSync(c, [], { timeout: 5000 });
+      return !probe.error;
+    });
+    if (!compilerPath) this.skip();
+    this.timeout(15000);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-foreign-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'base.inc'), "include 'does/not/exist.inc'\n");
+      const file = path.join(dir, 'prog.asm');
+      fs.writeFileSync(file, "format binary\ninclude 'base.inc'\n");
+
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, dialect: 'fasm1' });
+
+      assert.deepStrictEqual(result.diagnostics, [], 'the error is not on a line of this document');
+      assert.ok(result.toolError, 'a failing build must never look clean');
+      assert.match(result.toolError, /base\.inc/, 'expected the failing include to be named');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('parseDiagnostics (fasm1 output, which differs from fasmg in case)', () => {
+  it('parses a real fasm1 error block, whose keyword is lowercase unlike fasmg\'s', () => {
+    // Captured verbatim from flat assembler 1.73.32. The message keyword is "error:", not
+    // fasmg's "Error:" — matching only the capitalized form silently produced zero diagnostics
+    // for every fasm1 file.
+    const output = [
+      'flat assembler  version 1.73.32  (16384 kilobytes memory, x64)',
+      '/tmp/f1bad.asm [2]:',
+      'mov eax, undefinedsymbol',
+      'processed: mov eax,undefinedsymbol',
+      "error: undefined symbol 'undefinedsymbol'.",
+    ].join('\n');
+
+    const diags = parseDiagnostics(output, '/tmp/f1bad.asm');
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].severity, DiagnosticSeverity.Error);
+    assert.strictEqual(diags[0].range.start.line, 1);
+    assert.match(messageText(diags[0]), /undefinedsymbol/);
+  });
+
+  it('maps a lowercase fasm1 warning to Warning severity, not Error', () => {
+    const output = ['/tmp/w.asm [3]:', '\tdb 300', 'warning: value out of range.'].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/w.asm');
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].severity, DiagnosticSeverity.Warning);
+  });
+});
+
+describe('missing instruction set (bare fasmg used where fasm2 is expected)', () => {
+  // "fasm2" is only the fasmg binary plus a wrapper preloading the x86 package. Point the
+  // extension at a raw fasmg and every mnemonic in the file is rejected, producing up to -e's
+  // limit of errors, none of which name the cause.
+  function illegalInstructionOutput(lines: number): string {
+    const blocks: string[] = ['flat assembler  version g.fake'];
+    for (let i = 0; i < lines; i++) {
+      blocks.push(`prog.asm [${i + 1}]:`, '\tmov eax, 1', 'Error: illegal instruction.');
+    }
+    return blocks.join('\n');
+  }
+
+  it('parses each illegal-instruction error individually (the raw, ungrouped view)', () => {
+    const diags = parseDiagnostics(illegalInstructionOutput(6), '/tmp/prog.asm');
+    assert.strictEqual(diags.length, 6);
+    assert.ok(diags.every((d) => messageText(d).includes('illegal instruction')));
+  });
+
+  it('leaves a single illegal instruction alone — that is an ordinary typo, not a broken toolchain', () => {
+    const diags = parseDiagnostics(illegalInstructionOutput(1), '/tmp/prog.asm');
+    assert.strictEqual(diags.length, 1);
+  });
+});
+
+describe('runDiagnostics (integration, real assemblers)', () => {
+  // All three tools are the same family but behave differently here, so each is exercised
+  // directly. Every case skips itself when its binary is absent, so CI (which installs none of
+  // them) stays green.
+  function available(command: string): boolean {
+    const probe = spawnSync(command, [], { timeout: 5000 });
+    return !probe.error;
+  }
+
+  const FASM2 = process.env.FASM2_STUDIO_TEST_COMPILER ?? 'fasm2';
+  const FASMG = process.env.FASM2_STUDIO_TEST_FASMG ?? 'fasmg';
+  const FASM2_INCLUDE = process.env.FASM2_STUDIO_TEST_FASM2_INCLUDE;
+
+  const X86_PROGRAM = 'format ELF64 executable\nsegment readable executable\nentry $\n\tmov eax, 60\n\txor edi, edi\n\tsyscall\n';
+
+  function inTempDir<T>(name: string, content: string, run: (file: string, dir: string) => Promise<T>): Promise<T> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-isa-diag-'));
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, content);
+    return run(file, dir).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
+  }
+
+  it('accepts a valid x86 program under fasm2', async function () {
+    if (!available(FASM2)) this.skip();
+    this.timeout(15000);
+    await inTempDir('prog.asm', X86_PROGRAM, async (file, dir) => {
+      const result = await runDiagnostics({ compilerPath: FASM2, sourceFsPath: file, cwd: dir });
+      assert.strictEqual(result.toolError, undefined);
+      assert.deepStrictEqual(result.diagnostics, []);
+    });
+  });
+
+  it('explains the cause once, instead of flooding, when a bare fasmg is used for x86 source', async function () {
+    if (!available(FASMG)) this.skip();
+    this.timeout(20000);
+    await inTempDir('prog.asm', X86_PROGRAM, async (file, dir) => {
+      const result = await runDiagnostics({ compilerPath: FASMG, sourceFsPath: file, cwd: dir });
+      assert.ok(result.toolError, 'expected the real cause to be reported as a tool error');
+      assert.match(result.toolError, /no instruction set/);
+      assert.deepStrictEqual(result.diagnostics, [], 'expected the per-line noise to be suppressed');
+    });
+  });
+
+  it('assembles x86 source under a bare fasmg once a preload is configured', async function () {
+    if (!available(FASMG) || !FASM2_INCLUDE) this.skip();
+    this.timeout(20000);
+    await inTempDir('prog.asm', X86_PROGRAM, async (file, dir) => {
+      const result = await runDiagnostics({
+        compilerPath: FASMG,
+        sourceFsPath: file,
+        cwd: dir,
+        includePath: FASM2_INCLUDE,
+        preload: 'fasm2.inc',
+      });
+      assert.strictEqual(result.toolError, undefined);
+      assert.deepStrictEqual(result.diagnostics, []);
+    });
+  });
+
+  it('does not blame the toolchain for a genuine non-x86 fasmg project, whose compiler correctly has no x86 preload', async function () {
+    if (!available(FASMG)) this.skip();
+    this.timeout(20000);
+    // A real fasmg project for another target is valid: it brings its own instruction set. The
+    // preload advice must never fire here -- that is the case auto-preloading x86 would corrupt.
+    const pkg = Array.from({ length: 40 }, (_, i) => `macro zzq${i} a\n\tdb ${i}\nend macro\n`).join('');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-isa-diag-'));
+    fs.writeFileSync(path.join(dir, 'myisa.inc'), pkg);
+    const file = path.join(dir, 'prog.asm');
+    fs.writeFileSync(file, "include 'myisa.inc'\n\tzzq1 0\n\tzzq2 0\n\tzzq3 0\n");
+
+    try {
+      const result = await runDiagnostics({ compilerPath: FASMG, sourceFsPath: file, cwd: dir });
+      assert.strictEqual(result.toolError, undefined, 'a valid foreign-ISA project must not be blamed on the compiler');
+      assert.deepStrictEqual(result.diagnostics, []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a real error for x86 source under fasm1', async function () {
+    const compilerPath = [process.env.FASM2_STUDIO_TEST_FASM1, 'fasm1', 'fasm'].find((c) => c && available(c));
+    if (!compilerPath) this.skip();
+    this.timeout(15000);
+    await inTempDir('bad.asm', 'format binary\nmov eax, undefinedsymbol\n', async (file, dir) => {
+      // Passing dialect matters: fasm1 rejects fasmg's -e flag outright, printing its usage banner
+      // and assembling nothing, which parsed as zero diagnostics.
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, dialect: 'fasm1' });
+      assert.strictEqual(result.toolError, undefined);
+      assert.strictEqual(result.diagnostics.length, 1);
+      assert.match(messageText(result.diagnostics[0]), /undefinedsymbol/);
+    });
+  });
+
+  it('accepts a valid x86 program under fasm1', async function () {
+    const compilerPath = [process.env.FASM2_STUDIO_TEST_FASM1, 'fasm1', 'fasm'].find((c) => c && available(c));
+    if (!compilerPath) this.skip();
+    this.timeout(15000);
+    await inTempDir('ok.asm', 'format binary\nuse32\n\tmov eax, 1\n\tret\n', async (file, dir) => {
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, dialect: 'fasm1' });
+      assert.strictEqual(result.toolError, undefined);
+      assert.deepStrictEqual(result.diagnostics, []);
+    });
+  });
+});

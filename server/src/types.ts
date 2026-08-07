@@ -39,6 +39,9 @@ export interface SymbolDefinition {
    * - "define"   textual substitution like "equ", but does not evaluate symbolic variables in the
    *              text; preserves the previous value.
    * - "redefine" like "define", but discards the previous value like "reequ"/"=".
+   * - "element"  fasmg's `element` directive, which declares a named symbolic term. Instruction-set
+   *              packages use it to declare their register names, so this is what marks a symbol as
+   *              register-like (see features/semanticTokens.ts) as opposed to an ordinary constant.
    * - "struct-size" not a real fasmg keyword — synthesized by this parser itself for the
    *                 "sizeof.<StructName>" companion constant fasmg's struct package
    *                 (macro/struct.inc) auto-generates for every `struct ... ends` (its own
@@ -46,7 +49,7 @@ export interface SymbolDefinition {
    *                 holds the struct's own name for this variant.
    * Undefined for non-constant symbol kinds.
    */
-  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine' | 'load' | 'struct-size';
+  definedVia?: '=' | ':=' | '=:' | 'equ' | 'reequ' | 'define' | 'redefine' | 'load' | 'element' | 'struct-size';
   /**
    * Set for a label declared with "::" instead of ":" — a special "area label" fasmg uses only to
    * address `load`'s alternate addressing mode (`load NAME:size from AREA_LABEL:offset`), which
@@ -139,6 +142,14 @@ export interface ParsedDocument {
    * a fragment meant only to be `include`d.
    */
   hasTopLevelOrg?: boolean;
+  /**
+   * Distinct identifiers this document uses in instruction position — first on a line, or right
+   * after a `label:` — lowercased. This is what the file actually *executes*, as opposed to what
+   * its include graph happens to define, and telling those apart is what makes instruction-set
+   * detection reliable (see isa.ts): a big helper-macro library looks exactly like an instruction
+   * set from the graph alone.
+   */
+  statementWords?: string[];
 }
 
 export interface InstructionEntry {

@@ -19,6 +19,8 @@ import {
   Range,
   ReferenceParams,
   RenameParams,
+  SemanticTokens,
+  SemanticTokensParams,
   SignatureHelp,
   SignatureHelpParams,
   SymbolInformation,
@@ -41,6 +43,7 @@ import { getHover } from './features/hover';
 import { buildLiveShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
 import { getRenameEdit, isRenameable } from './features/rename';
+import { getSemanticTokens, SEMANTIC_TOKENS_LEGEND } from './features/semanticTokens';
 import { getSignatureHelp } from './features/signatureHelp';
 import { getWorkspaceSymbols } from './features/workspaceSymbols';
 import { Dialect } from './types';
@@ -53,6 +56,7 @@ interface FasmSettings {
   diagnosticsEnabled: boolean;
   diagnosticsDebounceMs: number;
   includePath: string;
+  fasm2Preload: string;
 }
 
 // Empty compiler path settings mean "auto-detect on PATH", resolved lazily via
@@ -64,6 +68,7 @@ const DEFAULT_SETTINGS: FasmSettings = {
   diagnosticsEnabled: true,
   diagnosticsDebounceMs: 400,
   includePath: '',
+  fasm2Preload: '',
 };
 
 const connection = createConnection(ProposedFeatures.all);
@@ -115,6 +120,9 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       renameProvider: { prepareProvider: true },
       workspaceSymbolProvider: true,
       signatureHelpProvider: { triggerCharacters: [' ', ','] },
+      // Full-document only: these are cheap to recompute (one tokenizer pass plus a set lookup per
+      // identifier) and a delta protocol would add real bookkeeping for no measurable gain.
+      semanticTokensProvider: { legend: SEMANTIC_TOKENS_LEGEND, full: true },
     },
   };
 });
@@ -198,6 +206,7 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
         .map((p) => p.trim())
         .filter((p) => p.length > 0),
     );
+    workspace.setPreloadInclude(settings.fasm2Preload.trim());
     // Dialect defaults may have changed; re-resolved lazily on next parse rather than eagerly here.
   } catch (err) {
     logHandlerError('onDidChangeConfiguration', err);
@@ -350,6 +359,10 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       cwd: cwd!,
       reportForFsPath,
       includePath: settings.includePath || undefined,
+      // fasm1 has its own built-in instruction set and no -i flag, so a preload is meaningless
+      // (and would be rejected) there.
+      preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
+      dialect,
     });
 
     // A newer edit (or diagnostics being disabled) arrived while the compiler was running; drop
@@ -524,6 +537,19 @@ connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | undefi
   } catch (err) {
     logHandlerError('onSignatureHelp', err);
     return undefined;
+  }
+});
+
+connection.languages.semanticTokens.on((params: SemanticTokensParams): SemanticTokens => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return { data: [] };
+    return getSemanticTokens(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), doc.getText());
+  } catch (err) {
+    logHandlerError('onSemanticTokens', err);
+    // An empty set leaves the TextMate grammar's own colouring in place, which is the right
+    // fallback: worse than ISA-aware highlighting, but never worse than having no highlighting.
+    return { data: [] };
   }
 });
 

@@ -81,6 +81,14 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   }
 
   const args: (string | vscode.ShellQuotedString)[] = [sourceFsPath, outputFsPath, ...(def.extraArgs ?? [])];
+  // fasm2Studio.fasm2Preload — supplies the x86 package to a bare `fasmg` binary the same way the
+  // official fasm2 wrapper script does. Added before the listing include below so that a debug
+  // build still gets both, in the order the preload expects (instruction set first). fasm1 has its
+  // own built-in instruction set and no -i flag, so this never applies there.
+  const preload = dialect === 'fasm2' ? fasmConfig().get<string>('fasm2Preload', '').trim() : '';
+  if (preload) {
+    args.push('-i', { value: `include "${preload.replace(/"/g, '""')}"`, quoting: vscode.ShellQuoting.Strong });
+  }
   if (def.debugBuild) {
     // vscode.ShellQuoting.Strong wraps this whole value in single quotes on POSIX shells but
     // does not escape single quotes *within* the value — so the fasm-level string must use

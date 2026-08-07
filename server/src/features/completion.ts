@@ -1,4 +1,5 @@
 import { CompletionItem, CompletionItemKind, InsertTextFormat } from 'vscode-languageserver/node';
+import { detectIsa, Isa } from '../isa';
 import { Dialect, ParsedDocument, SymbolKind } from '../types';
 import { Workspace } from '../workspace';
 import directivesData from '../data/directives.json';
@@ -30,26 +31,34 @@ const SYMBOL_KIND_TO_COMPLETION: Record<SymbolKind, CompletionItemKind> = {
   [SymbolKind.Section]: CompletionItemKind.Module,
 };
 
-let staticItemsCache: { dialect: Dialect; items: CompletionItem[]; labels: Set<string> } | undefined;
+let staticItemsCache: { dialect: Dialect; isa: Isa; items: CompletionItem[]; labels: Set<string> } | undefined;
 
-function buildStaticItems(dialect: Dialect): CompletionItem[] {
+function buildStaticItems(dialect: Dialect, isa: Isa): CompletionItem[] {
   const items: CompletionItem[] = [];
 
-  for (const ins of instructions) {
-    items.push({
-      label: ins.mnemonic,
-      kind: CompletionItemKind.Keyword,
-      detail: ins.operands ? `${ins.mnemonic} ${ins.operands}` : ins.mnemonic,
-      documentation: ins.isa ? `${ins.summary} (${ins.isa})` : ins.summary,
-    });
-  }
+  // The instruction and register tables are x86-specific, so a document whose include graph
+  // supplies its own instruction set must not be offered them: an aarch64 file was previously
+  // offered all ~1400 x86 mnemonics plus rax/eax/al/xmm0, none of which exist on that CPU, while
+  // its own `mov`/`add`/`ret` were dropped outright for colliding with those static labels (see
+  // the dedup in getCompletions). Everything below — directives, format keywords, size
+  // specifiers, operators — is fasmg engine syntax and applies to every ISA alike.
+  if (isa === 'x86') {
+    for (const ins of instructions) {
+      items.push({
+        label: ins.mnemonic,
+        kind: CompletionItemKind.Keyword,
+        detail: ins.operands ? `${ins.mnemonic} ${ins.operands}` : ins.mnemonic,
+        documentation: ins.isa ? `${ins.summary} (${ins.isa})` : ins.summary,
+      });
+    }
 
-  for (const reg of registers) {
-    items.push({
-      label: reg.name,
-      kind: CompletionItemKind.Variable,
-      detail: `${reg.group} register (${reg.bits}-bit)`,
-    });
+    for (const reg of registers) {
+      items.push({
+        label: reg.name,
+        kind: CompletionItemKind.Variable,
+        detail: `${reg.group} register (${reg.bits}-bit)`,
+      });
+    }
   }
 
   for (const dir of directives) {
@@ -98,16 +107,16 @@ function buildStaticItems(dialect: Dialect): CompletionItem[] {
  * rebuilding it from scratch on every completion request (this fires on every identifier
  * keystroke) would repeat the same ~1600-entry scan for a result that never changes between
  * dialect switches. */
-function getStaticItemsCache(dialect: Dialect): { items: CompletionItem[]; labels: Set<string> } {
-  if (staticItemsCache?.dialect !== dialect) {
-    const items = buildStaticItems(dialect);
-    staticItemsCache = { dialect, items, labels: new Set(items.map((i) => i.label)) };
+function getStaticItemsCache(dialect: Dialect, isa: Isa): { items: CompletionItem[]; labels: Set<string> } {
+  if (staticItemsCache?.dialect !== dialect || staticItemsCache.isa !== isa) {
+    const items = buildStaticItems(dialect, isa);
+    staticItemsCache = { dialect, isa, items, labels: new Set(items.map((i) => i.label)) };
   }
   return staticItemsCache;
 }
 
 export function getCompletions(workspace: Workspace, uri: string, dialect: Dialect): CompletionItem[] {
-  const { items: staticItems, labels } = getStaticItemsCache(dialect);
+  const { items: staticItems, labels } = getStaticItemsCache(dialect, detectIsa(workspace, uri, dialect));
   const items = [...staticItems];
   const seen = new Set<string>(labels);
 
