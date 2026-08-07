@@ -1,5 +1,267 @@
 # Changelog
 
+## 1.2.0
+
+- **Fixed diagnostics being completely broken for fasm1.** Every compiler run passed fasmg's `-e`
+  flag, which fasm1 does not have (its whole option set is `-m`/`-p`/`-d`/`-s`) — so fasm1 printed
+  its usage banner, assembled nothing, and the empty output parsed as zero problems. Compounding
+  it, fasm1 writes `error:`/`warning:` in lowercase where fasmg writes `Error:`, and the message
+  pattern only matched the capitalized form, so even a correctly invoked fasm1 reported nothing.
+  Both are fixed; the integration tests now cover fasm1, fasm2 and raw fasmg rather than fasm2
+  alone, which is how this went unnoticed.
+- **Fixed x86 support switching itself off in macro-heavy x86 projects.** Instruction-set
+  detection judged a file by what its include graph defines, which cannot tell a foreign
+  instruction set from an ordinary helper-macro library: KolibriOS's `macros.inc` defines 73 macros
+  of which only 5 spell x86 mnemonics, so files across a large, entirely x86 project lost `mov`
+  hover and every x86 register in completion. Detection now also weighs what the file actually
+  executes — an x86 mnemonic in instruction position that the graph never defines can only come
+  from an instruction set loaded outside the source, which is exactly how fasm2 and fasm1 work.
+  Measured against 749 hand-labelled real files, this classifies 743 correctly.
+- **A failing build no longer looks clean.** When the assembler stops on an error inside an
+  `include` it never reaches a line of the file you have open, and filtering errors down to that
+  file left nothing at all to show — a red build with a green editor. The real cause is now
+  reported, naming the failing file and line. Two parsing bugs fed the same silence: an error
+  header with no trailing colon (which fasmg emits when it has no source line to quote, e.g.
+  "Custom error: NO OUTPUT FILE.") was skipped entirely, and an include-chain header
+  ("prog.asm [18] support/win64.inc [14]:") was attributed to the outer file instead of the
+  innermost one where the error actually is. Found by checking the extension's verdict against the
+  real assembler's on 279 entry points across 20 real projects; agreement went from 249/279 to
+  279/279.
+- **Hover, completion and signature help no longer assume x86.** fasmg has no built-in instruction
+  set — every mnemonic comes from an `include`d package — so applying this extension's hardcoded
+  x86 tables to, say, an aarch64 file was not merely unhelpful but wrong: `mov` was answered with
+  x86's meaning instead of the macro actually in scope, and completion offered all ~1400 x86
+  mnemonics plus `rax`/`eax`/`xmm0`, none of which exist on that CPU. The instruction set is now
+  derived from the file's own include graph, so any ISA package works — fasmg's bundled aarch64,
+  or a private in-house one — with no per-ISA data shipped. Ordinary x86 files are unaffected.
+- Fixed the 23 mnemonics that fasmg's x86 and aarch64 packages spell identically (`mov`, `add`,
+  `cmp`, `ret`, `nop`, `str`, `sub`, ...) always resolving to x86. Completion was worse: it
+  silently *dropped* a package's own `mov`/`add`/`ret` for colliding with a built-in entry, so a
+  non-x86 file could not complete its most common instructions at all.
+- A definition in the file you are looking at now outranks the built-in x86 table, so your own
+  `macro mov` wrapper hovers as your macro instead of as x86's instruction.
+- `element` declarations are now indexed, and the `repeat N, i:0` + `element NAME#i` idiom that
+  instruction-set packages use to generate register names in bulk is expanded — so an ISA
+  package's registers (`x0`–`x30`, `w0`–`w30`, ... in aarch64's case) get hover, completion and
+  go-to-definition even though those names appear nowhere literally in the source.
+- Pointing the extension at a bare `fasmg` binary no longer produces a wall of up to 200
+  "illegal instruction" errors that never name the cause. `fasm2` is only `fasmg` plus a wrapper
+  that preloads the x86 package, and the two ship byte-identical executables printing identical
+  banners, so they are now told apart by a functional probe. The single real cause is reported
+  instead, and the new `fasm2Studio.fasm2Preload` setting supplies the preload for anyone who
+  wants fasm2 behaviour from a raw `fasmg`. The preload is never applied automatically — fasmg's
+  own aarch64 and webassembly examples are valid projects that must not have x86 forced into them.
+- **ISA-aware syntax highlighting**, via LSP semantic tokens. A TextMate grammar matches one file
+  at a time with no knowledge of what it includes, so it has to pick a single answer for the whole
+  language — but `bl` is a register in x86 and a branch-with-link instruction in aarch64, and `mov`
+  is a different instruction on every CPU that has one. The server already knows the include graph,
+  so it now colours identifiers accordingly: `bl` reads as an instruction in an aarch64 file and as
+  a register in an x86 one. The grammar stays the fallback for everything else, so nothing that
+  highlighted before stops highlighting. Both bundled themes opt in (`semanticHighlighting`), as do
+  VS Code's built-in themes.
+- **Whole instruction families are indexed for the first time.** fasmg packages generate names in
+  bulk by naming a macro after a loop variable — `iterate <instr,opcode>, jo,70h, jno,71h, ...` with
+  a `calminstruction instr?` body is how 8086.inc defines all 30 conditional jumps, and
+  `macro instr#ps?` is how sse.inc builds `addps`/`mulps`/`subps`/… — so none of those names appear
+  literally in the source and none of them had a definition. Expanding this idiom (including
+  headers wrapped across lines with a trailing `\`) took the x86 package from 267 recognized macros
+  to 1,649, and closed the last ISA-detection gap: fasmg's webassembly package is now correctly
+  recognized as non-x86 rather than falling back to x86.
+- `fasm2Studio.fasm2Preload` is honoured by the language server, not just the compiler. Real fasmg
+  projects don't write their instruction set into the source — a wrapper script preloads it, which
+  is how `fasm2` supplies x86 and how ISA ports like fasm68k (`fasmg -i"Include 'm68k.inc'"`)
+  supply theirs. Setting this alongside `fasm2Studio.includePath` now gives hover, completion and
+  go-to-definition for the preloaded instruction set, which was previously invisible to the editor
+  entirely. Validated against fasm68k and fasmg-ebc: `move`/`moveq`/`MOVREL` resolve, and the
+  projects are correctly recognized as non-x86.
+
+## 1.1.0
+
+- Added 114 real x86 mnemonics/prefixes that hover, completion, and syntax highlighting had never
+  heard of, found by exhaustively diffing every instruction table in fasmg's own
+  `packages/x86/include/cpu/*.inc` against this extension's mnemonic list. Includes the `jna`/
+  `jnae`/`jnb`/`jnbe`/`jng`/`jnge`/`jnl`/`jnle`/`jpe`/`jpo` conditional-jump synonyms, the
+  `loop`/`loope`/`loopne` "z"/"nz" synonyms and explicit 16/32/64-bit counter-size variants,
+  explicit operand-size variants of `push`/`pop`/`pushf`/`popf`/`ret`/`retn`/`retf`/`iret`,
+  privileged/system instructions (`clts`, `invd`, `wbinvd`, `rdpmc`, `rsm`, `lgdt`, `lidt`, `sgdt`,
+  `sidt`, `lldt`, `sldt`, `ltr`, `str`, `verr`, `verw`, `lmsw`, `smsw`, `lar`, `lsl`, `int1`,
+  `swapgs`, `sysexit`/`sysexitq`, `sysret`/`sysretq`), prefix synonyms (`repnz`/`repz`, `lahf`/
+  `sahf`, `lds`/`les`/`lfs`/`lgs`/`lss`), and several x87 FPU instructions (`fchs`, `fcos`,
+  `fdecstp`, `fld1`/`fldl2e`/`fldlg2`/`fldz`, `fpatan`, `fprem`, `fscale`, `fsincos`, `fsqrt`,
+  `ftst`, `fwait`, `fyl2x`, and more).
+
+## 1.0.0
+
+- Fixed `"repeat"`/`"end repeat"`/`"irp"`/`"irpv"` hover and completion being withheld under the
+  fasm1 dialect — they're native fasm1 directives too, not fasm2-only.
+- Fixed `"end irpv"` never dedenting or folding the editor.
+- Fixed the syntax highlighter splitting a name into a false name-plus-number pair whenever it
+  contained `"$"`/`"%"`/`"@"` followed by something that looked like a number (e.g. `"note$AB"`,
+  `"flag@0x1F"`) — neither character ends a token in fasmg.
+- Documented the `"priorequ"`/`"priormacro"`/`"priorstruc"` wildcard modifiers in `match`'s hover
+  text.
+
+## 0.29.0
+
+- Fixed `"$FF"`-style hex literals (fasmg's `"$"` immediately followed by a hex digit) not being
+  recognized as numbers by the language server, unlike the syntax highlighter which already handled
+  them correctly — could pollute find-references/rename-symbol results with a bogus, never-defined
+  entry for the literal itself.
+- Fixed hover and syntax highlighting mislabeling `match` and `emit` as CALM-instruction-only
+  commands, when both are primarily ordinary directives (a `match`/`end match` control block; the
+  `emit`/`dbx` data directive) that only additionally have a distinct CALM-specific form. Syntax
+  highlighting had the same issue for `element`, `postpone`, and `rawmatch`/`rmatch`.
+- Documented the `postpone ?` variant (defers a block even later than a plain `postpone`, e.g. for
+  computing a final checksum of the assembled output) in its hover text.
+- Fixed signature help miscounting which argument the cursor is in when a macro call used fasmg's
+  `<...>` syntax to group an argument containing a comma (e.g. `data example, <'abc',10>`).
+- Fixed the editor not auto-indenting, auto-dedenting, or offering a fold arrow for `struc`,
+  `match`, `rawmatch`/`rmatch`, and `postpone` blocks.
+- Fixed the debugger (hover/Watch during a debug session) not resolving the address or size of a
+  label defined via the `emit`/`dbx` data directive (e.g. `counter emit 2: 0,1000,2000`).
+
+## 0.28.0
+
+- Fixed bogus "symbol undefined"/"bits64 or higher required" errors appearing on a fragment file
+  (no `format` directive of its own) when it was opened after its own entry point/includer had
+  been closed — most commonly hit by single-clicking a source file (opening it in VS Code's reused
+  "preview" tab) and then debug-stepping into a fragment it includes, which replaces that preview
+  tab and closes it. Closing a document that happened to be open during the very first workspace
+  scan used to erase its parsed state entirely, since that initial scan trusts an already-open
+  document's live buffer instead of also keeping a disk-read fallback copy of it — so once closed,
+  nothing else in the workspace was known to include the fragment anymore, and it got compiled
+  standalone instead of through the real program. Closing a document now always falls back to
+  re-indexing it from disk.
+
+## 0.27.0
+
+- Fixed diagnostics on a fragment file (no `format` directive of its own) opened moments after VS
+  Code starts sometimes reporting bogus "symbol undefined"/"bits64 or higher required" errors that
+  vanished again once the initial workspace scan caught up and re-diagnosed it — the scan hadn't
+  reached the fragment's includer yet, so it was compiled standalone in the meantime.
+- Fixed error messages from a failed build, "fasm" task, or entry-point resolution occasionally
+  showing "undefined" instead of the actual failure, when the underlying error wasn't a real
+  `Error` instance.
+- Documented `.alm` as a supported extension in the README (already recognized by the extension,
+  just not mentioned there).
+- CI now retries the macOS/Windows extension integration test job on failure, working around a
+  known `@vscode/test-electron` flaky-zip-extraction issue instead of failing the whole run on it.
+- Internal cleanup: split `extension.ts` and `taskProvider.ts`'s shared "active FASM editor",
+  "build output path", and "workspace config" helpers out into their own modules
+  (`activeEditor.ts`, `buildPaths.ts`, `config.ts`), and centralized the `fasm2Studio.` config
+  section name, message prefix, and compiler-path setting keys that were previously hand-copied
+  as literal strings across several files. The fasm2/fasm1 dialect list and labels are now defined
+  in one place too, instead of three separately hand-maintained copies that had already drifted
+  (the compiler-picker's labels no longer matched the status bar's).
+
+## 0.26.0
+
+- Fixed a real syntax-highlighting bug: the built-in `$`/`$%`/`$%%` pseudo-variable rule had a
+  guard against firing inside an ordinary name for `%`/`%%` (e.g. `BackupRead%`) but never applied
+  the same guard to `$`/`$%`/`$%%` — so a name ending in one of those (e.g. fasm2's own
+  `source/listing.inc`: `collected_$`, `collected_$%`, `collected_$%%`) had its tail wrongly
+  recolored as the unrelated built-in of the same spelling.
+- Fixed rename and find-references ignoring `local`-scoped macro variables' own scoping, unlike
+  hover/go-to-definition which already respected it: renaming or finding references to a common
+  `local` name (e.g. `value`, declared `local` in dozens of unrelated macros in real fasmg code)
+  used to touch every macro's own private variable across the whole workspace instead of just the
+  one actually in scope at the cursor.
+- Completion now offers a struct field whose name happens to spell a real directive/register (e.g.
+  `segment`), matching the carve-out hover already had — such a field used to never appear in
+  completion at all.
+- `FASM: Debug` no longer builds the program twice — the command used to build once itself and
+  then have the debug configuration resolver build a second time.
+- Fixed a debugger race where a second step (Next/Step In/Step Out) fired before the first had
+  finished stepping could have its stop consumed by the wrong step, desyncing where the debugger
+  reported landing.
+- The debug console/target output now correctly decodes GDB's `\ooo` octal escapes for
+  non-printable/high bytes, instead of corrupting everything after one.
+- Build/debug tasks with a relative `file`/`output` path now resolve against the correct workspace
+  folder in a multi-root workspace, instead of always guessing the first one.
+- A malformed `tasks.json` "fasm" task or `launch.json` field now shows a clear error instead of a
+  confusing downstream shell-execution failure.
+
+## 0.25.0
+
+- Hover and go-to-definition now resolve struct *instances*, not just the struct type itself:
+  `assembly_workspace Workspace` (fasmg's struct package dynamically generates a command literally
+  named after a struct once it's defined, so this is ordinary label-prefixed-instruction syntax)
+  declares `assembly_workspace` as an instance, and `assembly_workspace.memory_start` — the actual
+  way real code references a field — now resolves to the field's own definition, and the bare
+  instance name resolves too. This shape is syntactically identical to an ordinary macro call with
+  one bare-identifier argument, so it's only ever trusted after confirming the second word is a
+  real, reachable struct — never guessed from a single file's own tokens alone.
+
+## 0.24.0
+
+- `sizeof.StructName` and `StructName.field` (the *actual* names fasmg's own struct package
+  generates — every field's real, canonically-referenced name is fully qualified, and the total
+  size is a real auto-generated companion constant) now resolve in hover and go-to-definition,
+  instead of finding nothing at all. Nested/anonymous sub-structs are handled correctly too.
+- `calminstruction NAME params` now highlights its declared name the same way `macro NAME`/
+  `struct NAME` already did, while `calminstruction` itself stays tagged as a CALM command.
+- Fixed a real syntax-highlighting bug found validating against fasmg's own standard
+  `packages/x86/include/macro/import64.inc`: an `iterate <label,string>, ...`-bound loop variable
+  literally named `label`, written back unexpanded in the macro body as e.g. `label dq ...`, used
+  to be misread as the real `label NAME at EXPR` directive — stealing `dq` away from its own
+  data-directive highlight.
+- Added two bundled color themes, "FASM2 Studio Dark" and "FASM2 Studio Light", with a palette
+  designed specifically for FASM's own token categories (mnemonics, registers, directives, CALM
+  commands, structs, labels, ...), each checked against WCAG contrast ratios. The underlying
+  grammar scope names were also spot-checked against several popular built-in VS Code themes
+  (Dark/Light Modern, Dark/Light+, Monokai, Solarized Light, ...) for reasonable out-of-the-box
+  compatibility even without switching to the bundled themes.
+
+## 0.23.0
+
+- Fixed a regression from 0.22.0's macro-hover fix: hovering an instruction mnemonic (e.g. `js`)
+  while debugging now shows the language server's own hover documentation again, instead of this
+  debug adapter's "has no runtime value here" message stepping on it. A *failed* debug hover is
+  silently dropped by VS Code, letting the language hover stand on its own — but 0.22.0's fix
+  returned a *successful* response for any unresolved bare word, mnemonics included, and a
+  successful one actually gets shown. Now scoped to only macro invocations and other genuinely
+  undocumented words, not anything the language server already has real docs for.
+
+## 0.22.0
+
+- Hovering/watching a macro invocation's own name (e.g. `write_msg` in `write_msg write_stderr,
+  usage_text, usage_text_len`) now gets a clear "has no runtime value here" message instead of
+  gdb's raw `No symbol table is loaded. Use the "file" command.` — a macro vanishes entirely at
+  compile time, so gdb never had anything to resolve there in the first place. Applies to any bare
+  identifier (macro name, instruction mnemonic, or any other stray word) that isn't a register,
+  label, or constant, not just this one macro.
+- Fixed a real bug where stepping the exact instruction that ends a program (its own exit
+  syscall) could produce a spurious `step failed: The program is not being run.` right after the
+  program had already terminated cleanly. The stepping loop was treating *any* stop the same way,
+  including the inferior exiting, so it tried to keep single-stepping a process that no longer
+  existed.
+
+## 0.21.0
+
+- Step Over and Step Into now actually differ: Step Over runs straight through a `call` (landing
+  right after it returns) instead of diving into it, so stepping over a macro invocation whose
+  body ends in a real call — a `write_msg`-style helper macro, for instance — advances past the
+  whole macro in one step instead of jumping into the callee. This is a plain ISA-level
+  distinction gdb already knows how to make without any symbol table, so it applies uniformly to
+  every macro, not just a specific one.
+- Added VS Code's Disassembly View support (instruction-granularity stepping and a `disassemble`
+  request), so a macro's expansion can actually be watched happening one raw instruction at a
+  time instead of a whole statement silently stepping past it. Disassembly is shown in Intel
+  syntax (matching FASM's own convention, not gdb's AT&T default) and is byte-accurate even when
+  asked for instructions *before* the current one, reconstructed from the nearest known-good
+  instruction boundary rather than guessed at from an arbitrary byte offset.
+
+## 0.20.0
+
+- The Debug Console now works as a real gdb/lldb-mi console: any input that isn't a register,
+  source label, or symbolic constant (e.g. `info registers`, `x/10i $pc`, `disassemble`, `bt`, or
+  even `continue`/`next` typed directly) is run as a raw CLI command instead of being rejected as a
+  failed value expression. A `ContinuedEvent` is emitted when such a command actually resumes the
+  target, so the Variables/Call Stack views don't stay stuck showing stale, stopped-at-the-old-line
+  data until the next stop.
+- An empty Debug Console line or blank Watch entry now resolves to a clean empty result instead of
+  surfacing gdb's own raw `Argument required (expression to compute)` error.
+
 ## 0.19.0
 
 - `fasm2Studio.gdbPath` now defaults to `lldb-mi` on macOS instead of `gdb`, which Apple doesn't
