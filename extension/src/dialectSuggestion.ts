@@ -10,7 +10,7 @@
 // it, so the suggestion is never a guess.
 
 import * as vscode from 'vscode';
-import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
+import { CONFIG_SECTION, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
 import { Dialect, DIALECT_LABEL } from './types';
 
 export interface SuggestDialectParams {
@@ -19,16 +19,6 @@ export interface SuggestDialectParams {
 }
 
 const DEFAULT_DIALECT_SETTING = 'defaultDialect';
-
-/**
- * Where to write the setting. A workspace is the right scope — the dialect is a property of the
- * project, and writing it globally would break every other project the user opens — but VS Code
- * rejects a workspace write when no folder is open (a loose file), so that case falls back to the
- * global setting rather than throwing.
- */
-export function configurationTargetFor(hasWorkspaceFolder: boolean): vscode.ConfigurationTarget {
-  return hasWorkspaceFolder ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-}
 
 /** The prompt's wording, kept pure so it can be asserted without a running VS Code. */
 export function suggestionMessage(dialect: Dialect, fileName: string): string {
@@ -57,7 +47,7 @@ async function promptForDialect(params: SuggestDialectParams): Promise<void> {
   const choice = await vscode.window.showWarningMessage(suggestionMessage(params.dialect, fileName), useIt, 'Ignore');
   if (choice !== useIt) return;
 
-  const target = configurationTargetFor((vscode.workspace.workspaceFolders?.length ?? 0) > 0);
+  const target = projectConfigurationTarget(hasWorkspaceFolder());
   try {
     await vscode.workspace.getConfiguration(CONFIG_SECTION).update(DEFAULT_DIALECT_SETTING, params.dialect, target);
   } catch (err) {

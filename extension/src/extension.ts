@@ -6,6 +6,7 @@ import { getDefaultOutputPath } from './buildPaths';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
+import { registerSelectDialect } from './selectDialect';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
@@ -142,6 +143,7 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   registerCommands(context);
+  registerSelectDialect(context);
   createStatusBarItem(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 

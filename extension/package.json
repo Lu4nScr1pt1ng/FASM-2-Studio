@@ -159,6 +159,11 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.selectDialect",
+        "title": "Select Dialect",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.selectCompiler",
         "title": "Select Compiler",
         "category": "FASM"
