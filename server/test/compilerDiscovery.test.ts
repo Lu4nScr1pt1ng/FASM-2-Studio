@@ -12,18 +12,26 @@ import { hasX86Preload, invalidateCompilerCache, resolveCompilerOnPath } from '.
 describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () => {
   let tmpDir: string;
   let originalPath: string | undefined;
+  let originalHome: string | undefined;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-compiler-discovery-'));
     originalPath = process.env.PATH;
+    originalHome = process.env.HOME;
     // Replace, not prepend: this dev machine has a real fasm2 installed, and prepending would
     // let it leak into the "not found" test if a fake candidate's name happened to be absent.
     process.env.PATH = tmpDir;
+    // PATH alone does not isolate this: discovery also probes well-known install directories by
+    // absolute path (see extraSearchDirs), and ~/.local/bin is both one of them and the location
+    // this project's own README tells people to install into. Pointing HOME at the empty temp
+    // directory is what actually makes "not found" mean not found, on any developer's machine.
+    process.env.HOME = tmpDir;
     invalidateCompilerCache();
   });
 
   afterEach(async () => {
     process.env.PATH = originalPath;
+    process.env.HOME = originalHome;
     invalidateCompilerCache();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });

@@ -391,7 +391,23 @@ describe('runDiagnostics (integration, real assemblers)', () => {
 
   const FASM2 = process.env.FASM2_STUDIO_TEST_COMPILER ?? 'fasm2';
   const FASMG = process.env.FASM2_STUDIO_TEST_FASMG ?? 'fasmg';
-  const FASM2_INCLUDE = process.env.FASM2_STUDIO_TEST_FASM2_INCLUDE;
+  /**
+   * fasm2's bundled `include` directory, holding the fasm2.inc that turns a bare fasmg into a
+   * working x86 assembler. Derived from wherever `fasm2` actually resolves to rather than demanding
+   * an environment variable, since the wrapper script sits directly beside that directory in every
+   * standard install — so this test runs on its own for anyone who has fasm2 on PATH.
+   */
+  const FASM2_INCLUDE = process.env.FASM2_STUDIO_TEST_FASM2_INCLUDE ?? locateFasm2Include();
+
+  function locateFasm2Include(): string | undefined {
+    const resolved = spawnSync('sh', ['-c', 'command -v fasm2'], { encoding: 'utf8', timeout: 5000 });
+    const command = resolved.stdout?.trim();
+    if (!command) return undefined;
+    const real = fs.existsSync(command) ? fs.realpathSync(command) : undefined;
+    if (!real) return undefined;
+    const candidate = path.join(path.dirname(real), 'include');
+    return fs.existsSync(path.join(candidate, 'fasm2.inc')) ? candidate : undefined;
+  }
 
   const X86_PROGRAM = 'format ELF64 executable\nsegment readable executable\nentry $\n\tmov eax, 60\n\txor edi, edi\n\tsyscall\n';
 
