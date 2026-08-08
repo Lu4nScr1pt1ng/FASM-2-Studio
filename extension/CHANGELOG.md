@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added **FASM: Select Dialect**, which records which assembler your project is written for in the
+  project's own settings rather than leaving you to find the setting by hand.
+- **FASM: Select Compiler** no longer reads as though it selects the dialect. It now asks about
+  executables, shows what each dialect currently resolves to, and points at Select Dialect for the
+  question it does not answer.
+- Fixed the command palette showing every command twice over — "FASM: FASM: Build" and so on — and
+  the same fault in the launch.json "Add Configuration..." dropdown.
+
 - The extension now offers to fix a misconfigured dialect instead of leaving you to find the
   setting. Dialect auto-detection only recognizes fasm2-only syntax, so a fasm1 project whose
   sources carry none of those markers falls back to `fasm2Studio.defaultDialect` and reports errors

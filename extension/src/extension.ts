@@ -4,8 +4,9 @@ import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } f
 import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
 import { invalidateCompilerCache } from './compilerDiscovery';
-import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
+import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
+import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDialect } from './selectDialect';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
@@ -13,7 +14,7 @@ import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
 import { createStatusBarItem } from './statusBar';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
-import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
+import { COMPILER_PATH_SETTING } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
 
 let client: LanguageClient | undefined;
@@ -87,28 +88,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
         asmFile: file,
         stopOnEntry: true,
       });
-    }),
-
-    vscode.commands.registerCommand('fasm2Studio.selectCompiler', async () => {
-      const dialect = await vscode.window.showQuickPick<{ label: string; dialect: Dialect }>(
-        (Object.keys(DIALECT_LABEL) as Dialect[]).map((d) => ({ label: DIALECT_LABEL[d], dialect: d })),
-        { placeHolder: 'Which dialect are you configuring a compiler path for?' },
-      );
-      if (!dialect) return;
-
-      const picked = await vscode.window.showOpenDialog({
-        canSelectFiles: true,
-        canSelectFolders: false,
-        canSelectMany: false,
-        title: `Select the ${dialect.label} executable`,
-      });
-      if (!picked || picked.length === 0) return;
-
-      const key = COMPILER_PATH_SETTING[dialect.dialect];
-      await fasmConfig().update(key, picked[0].fsPath, vscode.ConfigurationTarget.Global);
-      invalidateCompilerCache();
-      void vscode.window.showInformationMessage(`${MESSAGE_PREFIX}${dialect.label} compiler set to ${picked[0].fsPath}`);
-    }),
+    })
   );
 }
 
@@ -143,6 +123,7 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   registerCommands(context);
+  registerSelectCompiler(context);
   registerSelectDialect(context);
   createStatusBarItem(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));

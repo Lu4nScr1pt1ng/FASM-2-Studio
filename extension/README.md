@@ -46,6 +46,9 @@ the standard x86 package. Which settings you need follows from that.
 { "fasm2Studio.defaultDialect": "fasm1" }
 ```
 
+`FASM: Select Dialect` writes the same setting from the command palette, creating
+`.vscode/settings.json` if the project has none.
+
 Dialect detection only recognizes fasm2-only syntax, so a fasm1 project using none of it falls back
 to the default of `fasm2` and every file gets checked against the wrong assembler. If you skip this,
 the first file that fails offers to set it for you — but only once the other assembler has compiled

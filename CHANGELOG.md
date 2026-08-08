@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Added **FASM: Select Dialect**. Telling the extension which assembler a project is written for
+  used to mean knowing that `defaultDialect` exists and editing settings by hand. The command
+  writes it at workspace scope, which is what makes VS Code create the project's
+  `.vscode/settings.json`, so the choice is recorded in the project and travels with it.
+- **FASM: Select Compiler** no longer looks like it selects the dialect. Its first step picks which
+  of the two compiler-path settings to write, but asked "Which dialect are you configuring a
+  compiler path for?", which is close enough to "which dialect is this project?" to be read as it.
+  It now asks about executables, shows what each dialect currently resolves to, names the setting
+  each choice writes, and points at Select Dialect for the question it does not answer.
+- Fixed the command palette showing every command twice over — "FASM: FASM: Build" and so on. Each
+  command repeated its own category inside its title, and VS Code renders a command as
+  "category: title". The launch.json "Add Configuration..." dropdown had the same fault, from the
+  debugger label being repeated in a snippet label.
+
 - The extension now offers to fix a misconfigured dialect instead of leaving you to find the
   setting. Dialect auto-detection only recognizes fasm2-only syntax, so a fasm1 project whose
   sources carry none of those markers falls back to `fasm2Studio.defaultDialect` and reports errors

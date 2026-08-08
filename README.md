@@ -62,7 +62,10 @@ project that uses none of the fasm2 markers falls back to `defaultDialect`, whic
 and every file is then checked against the wrong assembler. It is a loud failure — errors on code
 that builds fine from the command line — but a confusing one, because nothing points at the cause.
 
-If you skip this, the first file that fails will offer to set it for you. That offer is only made
+`FASM: Select Dialect` in the command palette writes the same setting, and creates
+`.vscode/settings.json` for you if the project has none yet.
+
+If you skip this entirely, the first file that fails will offer to set it. That offer is only made
 after the other assembler has compiled the same file cleanly, so it is a fact rather than a guess.
 
 ### A fasm2 project
