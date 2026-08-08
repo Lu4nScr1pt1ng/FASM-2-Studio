@@ -140,27 +140,27 @@
     "commands": [
       {
         "command": "fasm2Studio.build",
-        "title": "FASM: Build",
+        "title": "Build",
         "category": "FASM"
       },
       {
         "command": "fasm2Studio.buildAndRun",
-        "title": "FASM: Build and Run",
+        "title": "Build and Run",
         "category": "FASM"
       },
       {
         "command": "fasm2Studio.run",
-        "title": "FASM: Run",
+        "title": "Run",
         "category": "FASM"
       },
       {
         "command": "fasm2Studio.debug",
-        "title": "FASM: Debug",
+        "title": "Debug",
         "category": "FASM"
       },
       {
         "command": "fasm2Studio.selectCompiler",
-        "title": "FASM: Select Compiler",
+        "title": "Select Compiler",
         "category": "FASM"
       }
     ],
@@ -259,7 +259,7 @@
         ],
         "configurationSnippets": [
           {
-            "label": "FASM: Debug",
+            "label": "Debug",
             "description": "Assemble the active file with debug listing info and launch it under gdb.",
             "body": {
               "type": "fasm",
