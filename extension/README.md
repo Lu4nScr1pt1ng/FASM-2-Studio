@@ -33,6 +33,46 @@ listing instead — which also means there's no call-stack unwinding or typed va
 and memory inspection via gdb's own expression evaluator (`$eax`, `*(dword*)$esp`, ...) is the
 right level of detail for raw assembly anyway. Currently fasm2/fasmg sources only.
 
+## Setting up a project
+
+`fasm2` is not a separate assembler: it is the `fasmg` binary plus a wrapper script that preloads
+the standard x86 package. Which settings you need follows from that.
+
+**A fasm2 project** needs nothing, as long as `fasm2` is on your `PATH`.
+
+**A fasm1 project** needs the dialect pinned:
+
+```json
+{ "fasm2Studio.defaultDialect": "fasm1" }
+```
+
+Dialect detection only recognizes fasm2-only syntax, so a fasm1 project using none of it falls back
+to the default of `fasm2` and every file gets checked against the wrong assembler. If you skip this,
+the first file that fails offers to set it for you — but only once the other assembler has compiled
+that same file cleanly, so the suggestion is never a guess.
+
+**A fasmg project** points at the raw binary:
+
+```json
+{ "fasm2Studio.fasm2CompilerPath": "fasmg" }
+```
+
+That is enough when your source includes its own instruction set. When a wrapper script preloads it
+instead, the source has no `include` to follow and the editor would see no instructions at all, so
+say what the wrapper passes:
+
+```json
+{
+  "fasm2Studio.fasm2CompilerPath": "fasmg",
+  "fasm2Studio.fasm2Preload": "myisa.inc",
+  "fasm2Studio.includePath": "/path/to/includes;/path/to/more/includes"
+}
+```
+
+Nothing about those two settings is x86-specific — they will load a 68000 or Z80 instruction set
+just as readily, and the language server reads the same files the compiler does, so you get hover,
+completion and go-to-definition for whatever they define.
+
 ## Requirements
 
 Install `fasm2`/`fasmg` (and/or classic `fasm1`) yourself and make sure it's on `PATH`, or point
@@ -59,7 +99,7 @@ To use the debugger:
 | `fasm2Studio.fasm2CompilerPath` | Path to fasm2/fasmg. Leave empty to auto-detect on PATH. |
 | `fasm2Studio.fasm1CompilerPath` | Path to fasm1. Leave empty to auto-detect on PATH. |
 | `fasm2Studio.includePath` | Semicolon-separated extra directories to search for a bare `include 'foo.inc'` not found next to the including file (passed as the compiler's `INCLUDE` environment variable). Many real fasmg projects need this to build at all. |
-| `fasm2Studio.fasm2Preload` | Include file assembled before the source itself (fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source — how `fasm2` supplies x86, and how ISA ports like fasm68k supply theirs. The language server follows it too, so those instructions get hover and completion. Use `fasm2.inc` (with `includePath` pointing at fasm2's `include` directory) to drive a bare `fasmg` binary as if it were `fasm2`. |
+| `fasm2Studio.fasm2Preload` | Include file assembled before the source itself (fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source — how `fasm2` supplies x86, and how instruction-set ports commonly supply theirs. The language server follows it too, so those instructions get hover and completion. Use `fasm2.inc` (with `includePath` pointing at fasm2's `include` directory) to drive a bare `fasmg` binary as if it were `fasm2`. |
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |

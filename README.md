@@ -32,43 +32,102 @@ drives your existing toolchain rather than bringing its own.
   Linux.
 
 If a compiler isn't on `PATH`, set `fasm2Studio.fasm2CompilerPath` / `fasm2Studio.fasm1CompilerPath`
-in your VS Code settings instead. The dialect (fasm2 vs. fasm1) is auto-detected per file from
-syntax markers that only exist in one or the other; `fasm2Studio.defaultDialect` controls the
-fallback when a file is ambiguous. If your project has a bare `include 'foo.inc'` that isn't found
-next to the including file (common in fasmg's own bundled examples), set `fasm2Studio.includePath`
-to the extra directories to search — the same directories you'd otherwise export via the
-compiler's `INCLUDE` environment variable.
+in your VS Code settings instead. Everything else — which dialect a project is, and where a fasmg
+project's instruction set comes from — is covered next.
 
-### fasm2 vs. bare fasmg
+## Setting up a project
 
-`fasm2` is not a separate assembler: it is the `fasmg` binary plus a small wrapper script that
-preloads the standard x86 package. The two ship byte-identical executables and print the same
-banner. This matters if you point `fasm2Studio.fasm2CompilerPath` at a raw `fasmg` instead of the
-`fasm2` wrapper — bare fasmg has no instruction set at all, so every x86 line in your file is
-rejected as an illegal instruction. The extension detects this and tells you, rather than showing
-you hundreds of errors that don't name the cause. To use a raw `fasmg` anyway, set
-`fasm2Studio.fasm2Preload` to `fasm2.inc` and point `fasm2Studio.includePath` at fasm2's `include`
-directory.
+Two things decide how your project is handled: which assembler binary gets run, and where your
+instruction set comes from. Both are plain VS Code settings, so keep them in the project's
+`.vscode/settings.json` and they stay scoped to that project.
 
-Because fasmg's instruction set always comes from an `include`d package, this extension works out
-what instructions exist by reading your project's include graph rather than assuming x86. A file
-that includes a non-x86 package — fasmg's own `packages/aarch64`, or an instruction set of your
-own — gets hover, completion and go-to-definition for *that* package's mnemonics and registers, and
-is not offered x86 ones. Nothing per-ISA is bundled; it all comes from the packages you include.
+One fact makes the rest of this section easier to follow: `fasm2` is not a separate assembler. It
+is the `fasmg` binary plus a wrapper script that preloads the standard x86 package — the executables
+are byte-identical and print the same banner. Every apparent difference between "fasm2" and "fasmg"
+is really a difference in what was preloaded.
 
-If your project's instruction set is preloaded by a wrapper script instead of being `include`d in
-the source — the standard fasmg arrangement, used by `fasm2` for x86 and copied by ISA ports like
-[fasm68k](https://github.com/fredrik-hjarner/fasm68k), whose launcher is
-`fasmg -i"Include 'm68k.inc'"` — set `fasm2Studio.fasm2Preload` to that include and
-`fasm2Studio.includePath` to the directory holding it. The language server follows the preload the
-same way the compiler does, so those instructions get full hover and completion instead of being
-invisible.
+### A fasm1 project
 
-Highlighting follows the same rule. The TextMate grammar can only ever commit to one instruction
-set for the whole language, so the language server supplies semantic tokens on top of it: in an
-aarch64 file `bl` is coloured as a branch instruction, while in an x86 file the very same spelling
-stays coloured as a register. This needs a theme that opts into semantic highlighting — the two
-bundled FASM2 Studio themes do, as do all of VS Code's built-in themes.
+```json
+{
+  "fasm2Studio.defaultDialect": "fasm1"
+}
+```
+
+Set this even though a dialect is detected automatically, because detection only recognizes
+fasm2-only syntax (`end macro`, `calminstruction`, `iterate`, `namespace`). There is no fasm1
+counterpart by design: the obvious candidates — `use32`, `rept`, `endp` — are all legitimate macro
+names in fasmg's own packages, and matching them classified real fasmg files as fasm1. So a fasm1
+project that uses none of the fasm2 markers falls back to `defaultDialect`, which ships as `fasm2`,
+and every file is then checked against the wrong assembler. It is a loud failure — errors on code
+that builds fine from the command line — but a confusing one, because nothing points at the cause.
+
+If you skip this, the first file that fails will offer to set it for you. That offer is only made
+after the other assembler has compiled the same file cleanly, so it is a fact rather than a guess.
+
+### A fasm2 project
+
+Nothing to configure, as long as `fasm2` is on your `PATH`. That is what the defaults assume.
+
+If it lives somewhere unusual, point at it and leave the rest alone:
+
+```json
+{
+  "fasm2Studio.fasm2CompilerPath": "/path/to/fasm2"
+}
+```
+
+### A fasmg project
+
+fasmg has no instruction set of its own — x86, or anything else, arrives through an `include`. How
+you configure it depends on where that include happens.
+
+**When your source includes the instruction set itself**, point the compiler setting at the raw
+`fasmg` binary and stop there:
+
+```json
+{
+  "fasm2Studio.fasm2CompilerPath": "fasmg"
+}
+```
+
+**When a wrapper script preloads it instead** — the same arrangement `fasm2` uses for x86, and the
+usual way an instruction-set port ships — the source has no `include` to follow, so the editor
+would see no instructions at all. Tell it what the wrapper passes:
+
+```json
+{
+  "fasm2Studio.fasm2CompilerPath": "fasmg",
+  "fasm2Studio.fasm2Preload": "myisa.inc",
+  "fasm2Studio.includePath": "/path/to/includes;/path/to/more/includes"
+}
+```
+
+`fasm2Preload` is handed to the compiler as `-i "include '...'"`, exactly as such a wrapper does,
+and the language server follows the same file — so those instructions get hover, completion and
+go-to-definition rather than being invisible. `includePath` is a `;`-separated list, and it is what
+the compiler receives as its `INCLUDE` environment variable; mirror whatever your build script sets.
+
+The settings are named for fasm2 because that is the common case, but nothing about them is
+x86-specific: `fasm2Preload` will load a 68000 or Z80 instruction set just as readily.
+
+The same mechanism turns a raw `fasmg` into a fasm2: set `fasm2Preload` to `fasm2.inc` and point
+`includePath` at fasm2's `include` directory. Forget it and every line comes back `illegal
+instruction`, since a bare fasmg knows no mnemonics at all — the extension recognizes that specific
+failure and says so, rather than handing you hundreds of errors that never name the cause.
+
+### What the editor does with this
+
+The instruction set is worked out from your project's include graph, not assumed to be x86. Include
+a non-x86 package and you get hover, completion and go-to-definition for *its* mnemonics and
+registers, and you are not offered x86 ones. Nothing per-architecture is bundled with the extension;
+it all comes from what you include.
+
+Highlighting follows from the same information. A TextMate grammar sees one file at a time and has
+to commit to a single instruction set for the whole language, so the language server layers semantic
+tokens over it: a name like `bl` is coloured as an instruction where your package defines one, and
+stays a register in x86 files, which no grammar can decide on its own. This needs a theme that opts
+into semantic highlighting — the two bundled themes do, as do VS Code's built-in ones.
 
 ## What you get
 
