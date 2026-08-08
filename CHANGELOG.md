@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.1
+
+- No change to how the extension behaves. This release exists so that the 1.2.0 notes actually
+  reach the Marketplace listing, which had been stale since 0.19.0 and so never showed thirteen
+  releases' worth of changes.
+- Fixed two compiler-discovery tests that depended on the machine running them. Discovery probes a
+  few well-known install directories by absolute path — for editors launched from a desktop
+  environment, whose PATH lacks what an interactive shell's rc file adds — so overriding PATH alone
+  never isolated the tests, and "no compiler found" silently assumed fasm was not installed in the
+  very location this project recommends. The preload integration test also locates fasm2's bundled
+  `include` directory from wherever `fasm2` resolves to instead of skipping without an environment
+  variable, so the full suite now runs with nothing skipped.
+
 ## 1.2.0
 
 - **Fixed diagnostics being completely broken for fasm1.** Every compiler run passed fasmg's `-e`

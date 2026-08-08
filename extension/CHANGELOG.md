@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+- No change to how the extension behaves. This release exists so that the 1.2.0 notes actually
+  reach this listing, which had been stale since 0.19.0 and so never showed thirteen releases'
+  worth of changes.
+
 ## 1.2.0
 
 - **Fixed diagnostics being completely broken for fasm1.** Every compiler run passed fasmg's `-e`
