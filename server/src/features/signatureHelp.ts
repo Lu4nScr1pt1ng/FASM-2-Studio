@@ -17,17 +17,26 @@ for (const ins of instructions) {
 
 const IDENT_RE = /[A-Za-z_.@$?][A-Za-z0-9_.@$?]*/;
 
+interface ArgumentScan {
+  /** The argument list split on its top-level commas. Always at least one element. */
+  parts: string[];
+  /** Bracket nesting depth at the end of the text: above zero, the cursor is inside a group. */
+  depth: number;
+  /** Whether the text ends inside an unterminated quoted string. */
+  inQuote: boolean;
+}
+
 /**
  * Splits a comma-separated parameter/argument list on only its top-level commas — i.e. not ones
- * nested inside (), [], {}, <> or a quoted string. "<" and ">" are tracked alongside the other
- * bracket pairs because manual.txt section 8 documents them as fasmg's own way to pass a single
- * macro argument that itself contains a comma ("data example, <'abc',10>" is two arguments, not
- * three) — without this, the cursor sitting inside such a group counted as a later parameter than
- * it really is. A single forward pass with a depth counter and a quote-state flag; O(n) in the
- * length of the (always short, single-line) text with no backtracking, so it's cheap to re-run on
- * every keystroke while the user is typing a call.
+ * nested inside (), [], {}, <> or a quoted string — and reports whether the text ends inside such
+ * a group. "<" and ">" are tracked alongside the other bracket pairs because manual.txt section 8
+ * documents them as fasmg's own way to pass a single macro argument that itself contains a comma
+ * ("data example, <'abc',10>" is two arguments, not three) — without this, the cursor sitting
+ * inside such a group counted as a later parameter than it really is. A single forward pass with a
+ * depth counter and a quote-state flag; O(n) in the length of the (always short, single-line) text
+ * with no backtracking, so it's cheap to re-run on every keystroke while the user is typing a call.
  */
-function splitTopLevelCommas(text: string): string[] {
+function scanArgumentList(text: string): ArgumentScan {
   const parts: string[] = [];
   let depth = 0;
   let quote: string | undefined;
@@ -51,13 +60,62 @@ function splitTopLevelCommas(text: string): string[] {
     }
   }
   parts.push(text.slice(start));
-  return parts;
+  return { parts, depth, inQuote: quote !== undefined };
+}
+
+function splitTopLevelCommas(text: string): string[] {
+  return scanArgumentList(text).parts;
 }
 
 /** How many top-level commas precede the cursor — i.e. the 0-based index of the argument the
  * cursor is currently sitting in. */
 function activeParameterIndex(textBeforeCursor: string): number {
   return Math.max(0, splitTopLevelCommas(textBeforeCursor).length - 1);
+}
+
+/**
+ * Where this line's `;` comment begins, or -1. Quoted text is skipped, since a semicolon inside a
+ * string is an ordinary character rather than the start of a comment.
+ */
+function commentStart(line: string): number {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === ';') return i;
+  }
+  return -1;
+}
+
+/**
+ * Operators an unfinished argument can end on. An operand left dangling after one ("dd 1 + ",
+ * "mov rax, ';' + ") is mid-expression however much whitespace follows it. The word forms are
+ * fasm's own spellings for the bitwise operators.
+ */
+const TRAILING_OPERATOR_RE = /(?:[-+*/%&|^~<>=:!]|\b(?:and|or|xor|not|shl|shr|mod|rva)\b)$/i;
+
+/**
+ * Whether the cursor sits in whitespace that follows an argument the user has finished writing.
+ * fasmg separates arguments with commas, so a space after a complete argument does not begin the
+ * next one — there is nothing left for the signature to point at. This is what keeps the box shut
+ * for the alignment padding assembly is written with ("test rax, rax        ") and for anywhere
+ * further along a line whose operands are already spelled out. Space being one of the trigger
+ * characters, without this every space typed anywhere on the line re-opened it.
+ *
+ * Whitespace inside a bracketed group or a string is still part of the argument being written, so
+ * an unclosed one means the cursor has not left it.
+ */
+function cursorIsPastAnArgument(argsText: string): boolean {
+  const scan = scanArgumentList(argsText);
+  if (scan.depth > 0 || scan.inQuote) return false;
+  const current = scan.parts[scan.parts.length - 1];
+  if (!/\s$/.test(current)) return false;
+  const written = current.trimEnd();
+  return written.trim().length > 0 && !TRAILING_OPERATOR_RE.test(written);
 }
 
 /**
@@ -94,7 +152,13 @@ function findMacro(workspace: Workspace, uri: string, dialect: Dialect, name: st
 }
 
 export function getSignatureHelp(workspace: Workspace, uri: string, dialect: Dialect, lineBeforeCursor: string): SignatureHelp | undefined {
+  // Past a `;` the rest of the line is prose, not a call being written, however well-formed the
+  // code before it reads.
+  if (commentStart(lineBeforeCursor) !== -1) return undefined;
+
   for (const callee of findCalleeCandidates(lineBeforeCursor)) {
+    if (cursorIsPastAnArgument(callee.argsText)) continue;
+
     const activeParameter = activeParameterIndex(callee.argsText);
 
     const macro = findMacro(workspace, uri, dialect, callee.name);

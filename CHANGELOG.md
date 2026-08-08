@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.1
+
+- Fixed signature help popping open where no call is being written — most visibly on
+  `test rax, rax          ; ...`, where typing the alignment padding or the comment brought the
+  box back on an operand list already finished, with the comment's own comma advancing the
+  highlight onto a parameter the cursor was nowhere near. Space is one of the trigger characters
+  (it has to be: it is what follows a mnemonic), and the handler read only the line's first
+  identifier, so any space anywhere on the line re-answered for that mnemonic. Two gates now
+  apply: everything from a `;` on is prose, and whitespace after an argument the user has finished
+  is not the start of the next one, fasmg separating arguments with commas. Neither closes the box
+  while the argument is still being written — inside an unclosed `(`/`[`/`<`/quote, or after a
+  dangling operator (`dd 1 + `), the cursor has not left the argument.
+
 ## 1.4.0
 
 - Removed the two bundled color themes. A language extension has no business deciding what the

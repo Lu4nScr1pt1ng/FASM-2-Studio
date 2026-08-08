@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1
+
+- Fixed the parameter-hint box appearing where you are not writing a call. On a line like
+  `test rax, rax          ; zero, or not`, typing the padding or the comment popped it back open
+  over operands you had already finished, highlighting a parameter you were nowhere near. It now
+  stays shut past a `;` and in the whitespace after a finished argument, while still following you
+  through a bracketed or quoted argument and past a dangling operator.
+
 ## 1.4.0
 
 - Removed the two bundled color themes. Keep whatever theme you already use: the extension's

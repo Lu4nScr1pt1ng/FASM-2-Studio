@@ -4,3 +4,4 @@ start:
 	mov eax, MAX_SIZE
 	mov ebx, MAX_SIZE
 	scale 2, eax
+	test eax, eax          ; zero, or not

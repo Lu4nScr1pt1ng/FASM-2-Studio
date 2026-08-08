@@ -87,4 +87,25 @@ describe('FASM2 Studio workspace-wide features (real VS Code host)', () => {
     assert.strictEqual(help!.signatures[0].parameters?.length, 2);
     assert.strictEqual(help!.activeParameter, 1);
   });
+
+  it('does not pop signature help open in the padding and comment trailing a finished instruction', async () => {
+    const doc = await vscode.workspace.openTextDocument(USES_URI);
+    await vscode.window.showTextDocument(doc);
+    const text = doc.getText();
+    const line = text.indexOf('test eax, eax');
+    const signatureAt = (offset: number) =>
+      Promise.resolve(vscode.commands.executeCommand<vscode.SignatureHelp>('vscode.executeSignatureHelpProvider', doc.uri, doc.positionAt(offset)));
+
+    // Space is a signature-help trigger character, so the box used to reopen on every space of the
+    // alignment padding and again on the comment — an operand list already written out, with the
+    // comment's own comma moving the highlight onto a parameter the user was nowhere near.
+    const midOperands = await retry(() => signatureAt(line + 'test eax, '.length), (r) => !!r && r.signatures.length > 0);
+    assert.ok(midOperands && midOperands.signatures.length > 0, 'expected signature help while the operand list is being written');
+
+    const inPadding = await signatureAt(line + 'test eax, eax     '.length);
+    assert.ok(!inPadding || inPadding.signatures.length === 0, 'expected no signature help in the alignment padding');
+
+    const inComment = await signatureAt(line + 'test eax, eax          ; zero, '.length);
+    assert.ok(!inComment || inComment.signatures.length === 0, 'expected no signature help inside the trailing comment');
+  });
 });

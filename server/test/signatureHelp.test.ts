@@ -72,6 +72,48 @@ describe('signatureHelp', () => {
     assert.strictEqual(help!.activeParameter, 0);
   });
 
+  it('stays shut inside a trailing comment, where there is no call being written', () => {
+    const ws = new Workspace();
+    const uri = 'file:///comment.asm';
+
+    // Space is a trigger character, so typing the padding and the ";" of a commented instruction
+    // used to pop the box back open on an operand list the user had already finished — and the
+    // commas counted inside the comment text moved the highlight onto an arbitrary parameter.
+    assert.strictEqual(getSignatureHelp(ws, uri, 'fasm2', 'test rax, rax          ; '), undefined);
+    assert.strictEqual(getSignatureHelp(ws, uri, 'fasm2', 'test rax, rax ; zero, or not'), undefined);
+    assert.strictEqual(getSignatureHelp(ws, uri, 'fasm2', '; mov '), undefined);
+  });
+
+  it('treats a ";" inside a string as an ordinary character, not the start of a comment', () => {
+    const ws = new Workspace();
+    const help = getSignatureHelp(ws, 'file:///strings.asm', 'fasm2', "mov rax, ';' + ");
+    assert.ok(help, 'expected the signature to survive a semicolon inside a quoted string');
+  });
+
+  it('stays shut in the whitespace after a finished argument, and opens again once a comma starts the next one', () => {
+    const ws = new Workspace();
+    const uri = 'file:///spacing.asm';
+
+    assert.ok(getSignatureHelp(ws, uri, 'fasm2', 'test '), 'the space after a mnemonic starts its first operand');
+    assert.ok(getSignatureHelp(ws, uri, 'fasm2', 'test rax, '), 'the space after a comma starts the next operand');
+    assert.ok(getSignatureHelp(ws, uri, 'fasm2', 'test rax,      rax'), 'padding within an operand list still belongs to the call');
+    assert.ok(getSignatureHelp(ws, uri, 'fasm2', 'test rax, 1 shl '), 'an operand left dangling after an operator is still being written');
+    assert.strictEqual(getSignatureHelp(ws, uri, 'fasm2', 'test rax, rax '), undefined);
+    assert.strictEqual(getSignatureHelp(ws, uri, 'fasm2', 'test rax, rax          '), undefined);
+  });
+
+  it('keeps the signature up while the cursor is inside an unclosed group or string, where the whitespace is part of the argument', () => {
+    const ws = new Workspace();
+    const uri = 'file:///groups.asm';
+    ws.updateDocument(uri, 1, 'macro data? name*,value*\nend macro\n', 'fasm2');
+
+    const inGroup = getSignatureHelp(ws, uri, 'fasm2', "data example, <'abc', 10 ");
+    assert.ok(inGroup, 'expected the signature while still inside a "<...>" argument');
+    assert.strictEqual(inGroup!.activeParameter, 1);
+
+    assert.ok(getSignatureHelp(ws, uri, 'fasm2', "data 'hello world "), 'expected the signature while still inside a string');
+  });
+
   it('returns undefined for an unknown callee', () => {
     const ws = new Workspace();
     const help = getSignatureHelp(ws, 'file:///none.asm', 'fasm2', 'totallyUnknownThing ');
