@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
 - Added **FASM: Select Dialect**, which records which assembler your project is written for in the
   project's own settings rather than leaving you to find the setting by hand.

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
 - Added **FASM: Select Dialect**. Telling the extension which assembler a project is written for
   used to mean knowing that `defaultDialect` exists and editing settings by hand. The command
