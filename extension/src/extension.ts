@@ -5,6 +5,7 @@ import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
+import { registerDialectSuggestion } from './dialectSuggestion';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
@@ -160,6 +161,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   client = startLanguageClient(context);
   await client.start();
+  // Registered after start(), since onNotification needs a running connection.
+  registerDialectSuggestion(context, (method, handler) => client!.onNotification(method, handler));
   void indexWorkspace(client).catch((err) => console.error(`${MESSAGE_PREFIX}workspace indexing failed`, err));
 }
 

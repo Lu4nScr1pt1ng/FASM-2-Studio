@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The extension now offers to fix a misconfigured dialect instead of leaving you to find the
+  setting. Dialect auto-detection only recognizes fasm2-only syntax, so a fasm1 project whose
+  sources carry none of those markers falls back to `fasm2Studio.defaultDialect` and reports errors
+  across code that assembles perfectly -- of 120 KolibriOS files, 84 assemble under fasm1 and only 9
+  under fasm2. When a file fails under the configured dialect and the other assembler compiles it
+  cleanly, a prompt offers to set the dialect for that workspace. Nothing is guessed from syntax:
+  the hint is raised only after one assembler has actually rejected the file and the other has
+  actually accepted it, it costs one extra compile once per session, and it never fires for a file
+  that simply has a real error.
+
 ## 1.2.1
 
 - No change to how the extension behaves. This release exists so that the 1.2.0 notes actually

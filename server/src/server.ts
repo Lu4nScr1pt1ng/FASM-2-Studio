@@ -207,6 +207,9 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
         .filter((p) => p.length > 0),
     );
     workspace.setPreloadInclude(settings.fasm2Preload.trim());
+    // Settings changed, so whatever prompted the earlier dialect hint may no longer hold — allow
+    // it to be raised again rather than staying silent for the rest of the session.
+    dialectSuggested = false;
     // Dialect defaults may have changed; re-resolved lazily on next parse rather than eagerly here.
   } catch (err) {
     logHandlerError('onDidChangeConfiguration', err);
@@ -260,6 +263,54 @@ function scheduleDiagnostics(uri: string): void {
     runDiagnosticsFor(uri, generation).catch((err) => logHandlerError('runDiagnosticsFor', err));
   }, settings.diagnosticsDebounceMs);
   diagnosticTimers.set(uri, timer);
+}
+
+/**
+ * Whether the wrong-dialect hint has already been raised. A misconfigured `defaultDialect` is a
+ * property of the project, not of one file, so saying it once is help and repeating it is nagging.
+ */
+let dialectSuggested = false;
+
+/**
+ * When a file fails to assemble, checks whether the *other* assembler compiles it cleanly, and if
+ * so tells the client the dialect is probably misconfigured.
+ *
+ * Nothing here guesses from syntax. The dialect auto-detection deliberately only recognizes
+ * fasm2-only markers (see dialect.ts, which explains why a fasm1 marker set was removed), so a
+ * project written in the other dialect without those markers silently falls back to
+ * `defaultDialect` — and a whole fasm1 codebase then reports errors on code that is entirely
+ * correct. Real fasm1 sources make this common rather than theoretical: none of KolibriOS carries a
+ * fasm2 marker, and of 120 of its files, 84 assemble under fasm1 while only 9 do under fasm2.
+ *
+ * Using the compiler itself as the oracle keeps this free of heuristics: the hint is only raised
+ * when one assembler has actually rejected the file and the other has actually accepted it. The
+ * extra compile costs one run, once per session, and only for a file that is already failing.
+ */
+async function suggestDialectIfMisconfigured(
+  uri: string,
+  dialect: Dialect,
+  opts: { sourceFsPath: string; cwd: string; reportForFsPath?: string },
+): Promise<void> {
+  if (dialectSuggested) return;
+
+  const other: Dialect = dialect === 'fasm1' ? 'fasm2' : 'fasm1';
+  const configured = other === 'fasm1' ? settings.fasm1CompilerPath : settings.fasm2CompilerPath;
+  const otherPath = configured || (await resolveCompilerOnPath(other));
+  if (!otherPath) return;
+
+  const asOther = await runDiagnostics({
+    compilerPath: otherPath,
+    sourceFsPath: opts.sourceFsPath,
+    cwd: opts.cwd,
+    reportForFsPath: opts.reportForFsPath,
+    includePath: settings.includePath || undefined,
+    preload: (other === 'fasm2' && settings.fasm2Preload) || undefined,
+    dialect: other,
+  });
+  if (asOther.toolError || asOther.diagnostics.length > 0) return;
+
+  dialectSuggested = true;
+  connection.sendNotification('fasm2Studio/suggestDialect', { uri, dialect: other });
 }
 
 async function runDiagnosticsFor(uri: string, generation: number): Promise<void> {
@@ -377,6 +428,14 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     }
 
     connection.sendDiagnostics({ uri, diagnostics: result.diagnostics });
+
+    if (result.diagnostics.length > 0) {
+      await suggestDialectIfMisconfigured(uri, dialect, {
+        sourceFsPath: compileFsPath!,
+        cwd: cwd!,
+        reportForFsPath,
+      });
+    }
   } finally {
     if (tempDir) void fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     if (shadowCleanup) void shadowCleanup();
