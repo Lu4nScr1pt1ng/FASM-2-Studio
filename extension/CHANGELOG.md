@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0
+
+- Removed the two bundled color themes. Keep whatever theme you already use: the extension's
+  highlighting is built on standard scopes and token types, so it colours correctly under any
+  theme. If you had "FASM2 Studio Dark" or "Light" selected, pick your previous theme again with
+  **Preferences: Color Theme**.
+
 ## 1.3.0
 
 - Added **FASM: Select Dialect**, which records which assembler your project is written for in the

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0
+
+- Removed the two bundled color themes. A language extension has no business deciding what the
+  whole editor looks like, and "FASM2 Studio Dark"/"Light" were full workbench themes: selecting
+  one to see FASM colours replaced everything else too, and the theme picker has no "none" entry to
+  get back with. They were never needed for the highlighting to work — the grammar emits standard
+  TextMate scopes and the server emits standard semantic token types (`keyword`, `variable`,
+  `macro`, `defaultLibrary`) precisely so any theme colours FASM correctly. Semantic highlighting
+  still requires a theme that opts in, which VS Code's built-in themes and most popular ones do.
+
 ## 1.3.0
 
 - Added **FASM: Select Dialect**. Telling the extension which assembler a project is written for

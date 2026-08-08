@@ -130,7 +130,9 @@ Highlighting follows from the same information. A TextMate grammar sees one file
 to commit to a single instruction set for the whole language, so the language server layers semantic
 tokens over it: a name like `bl` is coloured as an instruction where your package defines one, and
 stays a register in x86 files, which no grammar can decide on its own. This needs a theme that opts
-into semantic highlighting — the two bundled themes do, as do VS Code's built-in ones.
+into semantic highlighting, as VS Code's built-in ones do. The extension ships no theme of its own
+and never changes the one you use: its scopes and token types are the standard ones, so whatever
+theme you already have colours FASM.
 
 ## What you get
 
