@@ -11,6 +11,11 @@ toolchain rather than shipping its own.
 Open a `.asm`, `.inc`, `.fasm`, `.fas`, or `.alm` file and it's syntax-highlighted immediately. Behind
 that, a language server parses your project and gives you:
 
+- **Highlighting that follows your include graph.** Your own labels, constants, structs and struct
+  fields are coloured everywhere you *use* them, not only where you define them, and a name means
+  whatever your project's instruction set says it means — `bl` is a register in x86 and an
+  instruction where your package defines one. No theme is bundled and yours is never changed: every
+  scope is standard, and the root README shows how to recolour any of it.
 - **Completion and hover** for instructions, registers, directives, `format`/`segment`/`section`
   sub-keywords (`ELF64`, `executable`, `DLL`, ...), operand-size/addressing qualifiers (`byte`,
   `dword`, `ptr`, `near`, ...), and your own labels/macros/constants.

@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.5.0
+
+- Semantic tokens now cover *references*, not just definitions. The grammar can scope `start:`, but
+  `jmp start`, `dd table` and `mov ecx, BUF_SIZE` are identifiers in operand position to it, and
+  whether each one names a label, a constant, a struct or nothing at all is a question about the
+  whole include graph. It was by far the largest hole: measured across real x86 and non-x86 sources
+  ranging from 300 to 4500 lines, with the actual vscode-textmate engine and the theme's own colour
+  resolution, unscoped `source.fasm` was consistently the single biggest block of text in a file —
+  half of all non-whitespace characters in the worst case. The provider now indexes the graph's
+  labels, constants, structs, qualified struct fields and confirmed struct instances alongside the
+  macros and elements it already collected, and emits `function`, `variable`+`readonly`, `struct`
+  and `property` for them.
+
+  Share of characters left at (or visually indistinguishable from) the editor's default foreground,
+  under the built-in dark theme: 24–59 % before, 7–23 % after, and 13 % on the largest sample once
+  its include directory is configured. A theme that paints the whole `variable` family in the
+  body-text colour — a common choice — sees less of the gain on constants, which is what the
+  README's new customization section is for. `tools/measure-color-coverage.ts` is the harness, kept
+  out of the test suite because it measures against source trees outside this repo.
+
+- Scoping follows the compiler's own rules rather than spelling alone. A `.local` label is coloured
+  only under the global label it was declared beneath (and in its qualified `parent.local` form),
+  a name declared `local` in a macro body is coloured only inside that body — the `local neg` case
+  from fasmg's own `macro/if.inc`, which the mnemonic table used to shadow — and matching is
+  case-sensitive for user symbols while staying case-blind for mnemonics and registers, since
+  folding label names would light up every `start` because something in the graph defines `Start`.
+  A qualified `Point.x` arrives as one token (the tokenizer treats `.` as an identifier character)
+  and leaves as two, so the type and the field are coloured separately.
+
+- Instruction-like names are still gated on statement position; labels, constants, structs and
+  fields deliberately are not, operand position being exactly where they are normally written.
+
+- Fixed mnemonics rendering in the *directive* colour under the default dark themes. With no
+  `semanticTokenScopes` contribution, VS Code falls back to its own probe table, where
+  `keyword.defaultLibrary` resolves through `keyword.control` — purple in Dark+, contradicting the
+  blue the grammar gives the same word. The manifest now maps every emitted type onto this
+  grammar's own scopes, with a standard scope last as the fallback. Since resolution stops at the
+  first probe the theme styles, this also means one `editor.tokenColorCustomizations` entry
+  recolours the grammar layer and the semantic layer together.
+
+- Semantic highlighting is now on by default for `fasm` files only, via `configurationDefaults`.
+  Roughly half of published themes never set `semanticHighlighting: true` — including one of the
+  two measured above — and were silently discarding everything the server computed. This does not
+  reintroduce a bundled theme: it turns a feature on for one language and paints exclusively with
+  the user's own theme colours, and is overridable like any other default.
+
+- Rescoped the grammar where the previous name was one no mainstream theme styles, or one that put
+  two unrelated things in the same colour. Labels move from `entity.name.label` (which Dark+ paints
+  `#C8C8C8` against a `#D4D4D4` default foreground — a distance of 20.8, i.e. no distinction at all)
+  to the `entity.name.function` family, which is also what a label behaves like. Word operators
+  split off as `keyword.operator.expression`, the scope the default themes single out, leaving the
+  punctuation operators where they were. Struct names become `entity.name.type.struct` and macro
+  names `entity.name.function.macro`, matching what VS Code's `struct` and `macro` token types
+  probe. Struct fields become `variable.other.property`, matching the `property` type. `format`
+  arguments become `constant.language`, which is what PE/ELF64/GUI are. CALM commands move to
+  `keyword.control.calm`, since sharing `keyword.other` with mnemonics made them look like the one
+  thing they are not. Size specifiers become `support.type.size`/`support.type.addressing`: unlike
+  `db`/`dq` they are not core fasmg but come from the instruction-set package (`8086.inc`'s own
+  `define x86.byte? :1`), the same category as `proc`/`invoke`, already scoped `support.*` here.
+
+- Added a grammar rule for a whitespace-separated `.name` operand. `#member-access` deliberately
+  requires no space before the dot, so that `PLANE_POINTER.offset` is told apart from a local-label
+  reference — which meant every `jmp .exit` fell through completely unscoped.
+
+- Semantic-token requests cost 0.65 ms on a 341-line file, 4.45 ms on a 1700-line one with its real
+  include graph, and 7.33 ms on a 4500-line file whose graph spans 129 documents.
+
 ## 1.4.1
 
 - Fixed signature help popping open where no call is being written — most visibly on

@@ -10,6 +10,7 @@
     { "include": "#label-definition" },
     { "include": "#struct-body" },
     { "include": "#member-access" },
+    { "include": "#local-label-reference" },
     { "include": "#macro-struct-definition" },
     { "include": "#calminstruction-definition" },
     { "include": "#purge-statement" },
@@ -63,26 +64,26 @@
       "captures": { "1": { "name": "keyword.control.import.fasm" } }
     },
     "label-definition": {
-      "comment": "The \"::\" (area label) case must come before the plain single-\":\" cases below: they only look at the first \":\", so \"area::\" would otherwise match as an ordinary label and leave the second \":\" unstyled.",
+      "comment": "The \"::\" (area label) case must come before the plain single-\":\" cases below: they only look at the first \":\", so \"area::\" would otherwise match as an ordinary label and leave the second \":\" unstyled. Labels are scoped under entity.name.function rather than the bare entity.name.label a previous version used: a label is the only thing this language has that names a location you can call or jump to, which is exactly what entity.name.function means, and it's what the mainstream assembly grammars settled on. The bare scope was also actively invisible under the editor's own default dark themes, which style entity.name.label #C8C8C8 against a #D4D4D4 default foreground -- a distance of 20.8 in plain RGB, i.e. no distinction at all for a reader. Keeping \".label\"/\".label.local\" as the trailing segments still lets a theme (or a user's own tokenColorCustomizations) address labels alone without touching macro names.",
       "patterns": [
         {
           "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(::)",
           "captures": {
-            "1": { "name": "entity.name.label.fasm" },
+            "1": { "name": "entity.name.function.label.fasm" },
             "2": { "name": "punctuation.separator.label.fasm" }
           }
         },
         {
           "match": "^\\s*(\\.[A-Za-z_.@$?][A-Za-z0-9_.@$?]*)\\s*(:)",
           "captures": {
-            "1": { "name": "entity.name.label.local.fasm" },
+            "1": { "name": "entity.name.function.label.local.fasm" },
             "2": { "name": "punctuation.separator.label.fasm" }
           }
         },
         {
           "match": "^\\s*([A-Za-z_@$?][A-Za-z0-9_.@$?]*)\\s*(:)(?!=)",
           "captures": {
-            "1": { "name": "entity.name.label.fasm" },
+            "1": { "name": "entity.name.function.label.fasm" },
             "2": { "name": "punctuation.separator.label.fasm" }
           }
         },
@@ -91,24 +92,36 @@
           "match": "\\b(label)\\s+(?!(?:db|dw|dd|dp|df|dq|dt|ddq|dqq|ddqq|du|rb|rw|rd|rp|rf|rq|rt|rdq|rqq|rdqq|file)\\b)([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)",
           "captures": {
             "1": { "name": "keyword.control.directive.fasm" },
-            "2": { "name": "entity.name.label.fasm" }
+            "2": { "name": "entity.name.function.label.fasm" }
           }
         }
       ]
     },
     "macro-struct-definition": {
-      "match": "\\b(macro|struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
-      "captures": {
-        "1": { "name": "keyword.control.directive.fasm" },
-        "2": { "name": "entity.name.function.fasm" }
-      }
+      "comment": "\"macro\" and \"struct\" are split into two patterns because the names they introduce are two different kinds of thing: a macro names a callable, a struct names a *type*, and entity.name.type.struct is both the accurate scope and the exact scope VS Code's own `struct` semantic token type probes -- so the grammar and the server land on the same colour by construction rather than by coincidence. The \"struct\" alternative here is in practice unreachable, since #struct-body is checked earlier in this grammar's top-level pattern list and claims every \"struct NAME\" as the start of a block; it is kept, and kept correct, so the two can't drift apart if that ordering ever changes.",
+      "patterns": [
+        {
+          "match": "\\b(macro)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
+          "captures": {
+            "1": { "name": "keyword.control.directive.fasm" },
+            "2": { "name": "entity.name.function.macro.fasm" }
+          }
+        },
+        {
+          "match": "\\b(struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
+          "captures": {
+            "1": { "name": "keyword.control.directive.fasm" },
+            "2": { "name": "entity.name.type.struct.fasm" }
+          }
+        }
+      ]
     },
     "calminstruction-definition": {
-      "comment": "\"calminstruction NAME params\" (e.g. \"calminstruction calminstruction?.xcall? instruction*, arguments&\") is the same kind of definition as \"macro NAME\"/\"struct NAME\" -- fasmg implements virtually every real x86 instruction this way (see hover.ts's own SymbolKind.Macro treatment of it) -- and deserves the same entity.name.function highlight on its declared name. Kept as its own rule rather than folded into #macro-struct-definition: unlike \"macro\"/\"struct\" (keyword.control.directive.fasm), the \"calminstruction\" keyword itself is tagged keyword.other.calm.fasm (grammar.test.ts's own \"tags CALM sub-language commands distinctly\" already covers this, alongside match/check/jyes/emit/exit), a genuinely different scope this rule must not change.",
+      "comment": "\"calminstruction NAME params\" (e.g. \"calminstruction calminstruction?.xcall? instruction*, arguments&\") is the same kind of definition as \"macro NAME\" -- fasmg implements virtually every real x86 instruction this way (see hover.ts's own SymbolKind.Macro treatment of it) -- and deserves the same entity.name.function.macro highlight on its declared name. Kept as its own rule rather than folded into #macro-struct-definition: unlike \"macro\"/\"struct\" (keyword.control.directive.fasm), the \"calminstruction\" keyword itself is tagged keyword.control.calm.fasm (grammar.test.ts's own \"tags CALM sub-language commands distinctly\" already covers this, alongside match/check/jyes/emit/exit), a genuinely different scope this rule must not change.",
       "match": "\\b(calminstruction)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
       "captures": {
-        "1": { "name": "keyword.other.calm.fasm" },
-        "2": { "name": "entity.name.function.fasm" }
+        "1": { "name": "keyword.control.calm.fasm" },
+        "2": { "name": "entity.name.function.macro.fasm" }
       }
     },
     "purge-statement": {
@@ -123,7 +136,7 @@
       "begin": "\\b(struct)\\s+([A-Za-z_.@$?][A-Za-z0-9_.@$?]*\\??)",
       "beginCaptures": {
         "1": { "name": "keyword.control.directive.fasm" },
-        "2": { "name": "entity.name.function.fasm" }
+        "2": { "name": "entity.name.type.struct.fasm" }
       },
       "end": "\\b(ends)\\b",
       "endCaptures": { "1": { "name": "keyword.control.directive.fasm" } },
@@ -131,7 +144,7 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#numbers" },
-        { "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)", "captures": { "1": { "name": "variable.other.member.fasm" } } },
+        { "match": "^\\s*([A-Za-z_.@$?][A-Za-z0-9_.@$?]*)", "captures": { "1": { "name": "variable.other.property.fasm" } } },
         { "include": "#size-specifiers" },
         { "include": "#data-directives" },
         { "include": "#directives" },
@@ -143,8 +156,13 @@
       "match": "(?<=[A-Za-z0-9_@$?])(\\.)([A-Za-z_@$?][A-Za-z0-9_@$?]*)",
       "captures": {
         "1": { "name": "punctuation.accessor.fasm" },
-        "2": { "name": "variable.other.member.fasm" }
+        "2": { "name": "variable.other.property.fasm" }
       }
+    },
+    "local-label-reference": {
+      "comment": "A dot-prefixed name that is *not* preceded by an identifier character is a reference to a local label, e.g. \"jmp .exit\" or \"dd .table\" -- #member-access deliberately can't claim these, since its whole job is to require no space before the dot so that struct field access (\"PLANE_POINTER.offset\") is told apart from exactly this case. Without a rule of its own, every such reference fell through completely unscoped: in fasmg's own packages/x86/projects/challenger/challenger.asm, operands are the single largest block of uncoloured text in the file, and jumps to local labels are a large part of that. The leading dot can only start a name here, never a number (fasmg numbers must start with a digit -- see #numbers), so this needs no further disambiguation. The negative lookbehind is the same identifier-char class #special-symbols uses, which is what keeps it from firing inside \"collected_$%\"-style names or stealing the tail of a dotted name #member-access has already claimed. This is a lexical guess by design: the server's semantic tokens know whether the label really exists and in which parent's scope, and layer the confirmed answer on top.",
+      "match": "(?<![A-Za-z0-9_.@$?%])(\\.[A-Za-z_@$?][A-Za-z0-9_.@$?]*)",
+      "name": "entity.name.function.label.local.fasm"
     },
     "constant-definition": {
       "comment": "\":=\" (defined exactly once, forward-reference-safe) and \"=:\" (preserves the previous value, restorable with `restore`) must be checked before the plain \"=\" pattern -- fasmg requires no space between the two characters (confirmed against the real compiler: \"X : = 1\" fails to assemble, parsed as a label \"X:\" followed by an invalid \"= 1\"), so unlike \"equ\"/\"reequ\" this isn't a separate keyword the plain \"=\" pattern could otherwise be taught to skip over.",
@@ -196,8 +214,8 @@
       ]
     },
     "calm-commands": {
-      "comment": "fasmg's CALM (Compiled Assembly-Like Macro) sub-language, used inside calminstruction bodies — kept as its own scope (matching hover's distinct \"CALM command\" tag, hover.ts's own CALM_COMMANDS) rather than lumped in with ordinary directives, since it's a genuinely different sublanguage. \"call\" and \"jno\" are deliberately left out despite also being CALM commands: both are far more commonly the real x86 CALL/JNO instructions, and this grammar has no notion of \"inside a calminstruction body\" to disambiguate the two. \"postpone\"/\"match\"/\"rawmatch\"/\"rmatch\"/\"emit\"/\"element\" are deliberately left out too, for the opposite reason hover.ts's own CALM_COMMANDS excludes \"match\"/\"emit\": every one of them is primarily (postpone, rawmatch/rmatch, element) or at least equally (match, emit) an ordinary base-language construct (manual.txt sections 3/4/6/11/12), not something manual.txt's own CALM chapters (15-17) ever list as one of its commands — \"element\" in particular never appears in those chapters at all. They're tagged as ordinary #directives instead.",
-      "name": "keyword.other.calm.fasm",
+      "comment": "fasmg's CALM (Compiled Assembly-Like Macro) sub-language, used inside calminstruction bodies — kept as its own scope (matching hover's distinct \"CALM command\" tag, hover.ts's own CALM_COMMANDS) rather than lumped in with ordinary directives, since it's a genuinely different sublanguage. It lives under keyword.control rather than the keyword.other it used to: these are branch/flow constructs (jump, jyes, exit, check) at the directive level, and keyword.other is where this grammar puts *mnemonics* -- so the old scope made every CALM command share a colour with the x86 instruction set, which is the one thing CALM is definitely not. The trailing \".calm\" segment is what keeps it separately addressable, which is all the \"own scope\" requirement above actually asks for. \"call\" and \"jno\" are deliberately left out despite also being CALM commands: both are far more commonly the real x86 CALL/JNO instructions, and this grammar has no notion of \"inside a calminstruction body\" to disambiguate the two. \"postpone\"/\"match\"/\"rawmatch\"/\"rmatch\"/\"emit\"/\"element\" are deliberately left out too, for the opposite reason hover.ts's own CALM_COMMANDS excludes \"match\"/\"emit\": every one of them is primarily (postpone, rawmatch/rmatch, element) or at least equally (match, emit) an ordinary base-language construct (manual.txt sections 3/4/6/11/12), not something manual.txt's own CALM chapters (15-17) ever list as one of its commands — \"element\" in particular never appears in those chapters at all. They're tagged as ordinary #directives instead.",
+      "name": "keyword.control.calm.fasm",
       "match": "(?i)\\b(calminstruction|arrange|assemble|compute|check|jump|jyes|exit|publish|transform|stringify|take|taketext|initsym)\\b"
     },
     "procedure-macros": {
@@ -215,8 +233,17 @@
       "match": "(?i)\\b(use16|use32|use64|use|org|entry|section|segment|virtual|end|macro|struc|struct|ends|if|else|while|repeat|rept|irp|irpv|iterate|namespace|include|assert|display|err|local|common|forward|reverse|equ|reequ|define|redefine|restore|purge|load|store|from|align|times|at|label|break|indx|sizeof|element|outscope|restartout|eval|mvmacro|mvstruc|restruc|esc|retaincomments|removecomments|isolatelines|combinelines|postpone|match|rawmatch|rmatch|emit)\\b"
     },
     "size-specifiers": {
-      "name": "storage.type.fasm",
-      "match": "(?i)\\b(byte|word|dword|fword|pword|qword|tbyte|tword|dqword|xword|qqword|yword|dqqword|zword|ptr|near|far|short)\\b"
+      "comment": "Unlike #data-directives (db/dw/rq/file — core fasmg, manual.txt's \"Generating data\"), none of these words is part of the core language: they come from the instruction-set package, e.g. fasmg's own packages/x86/include/cpu/8086.inc's \"define x86.byte? :1\" with x86.word?/x86.dword? on the lines after it, and x86.tbyte? over in 8087.inc/x64.inc. That makes them the same category as proc/invoke/library, which this grammar already scopes support.* for exactly that reason — so support.type, \"a type provided by a framework or library\", is the accurate scope, not storage.type. Split into \".size\" and \".addressing\" along the same line server/src/types.ts's own SizeSpecifierEntry.kind draws: byte/word/dword/... name an operand width, while ptr/near/far/short qualify how an address is formed — two genuinely different concepts that only look alike because they occupy the same slot in an operand.",
+      "patterns": [
+        {
+          "name": "support.type.size.fasm",
+          "match": "(?i)\\b(byte|word|dword|fword|pword|qword|tbyte|tword|dqword|xword|qqword|yword|dqqword|zword)\\b"
+        },
+        {
+          "name": "support.type.addressing.fasm",
+          "match": "(?i)\\b(ptr|near|far|short)\\b"
+        }
+      ]
     },
     "format-directive": {
       "comment": "format-keywords' own word list (PE, GUI, console, on, at, native, ...) is exactly the kind of short, common word that collides with an ordinary symbol used elsewhere in the file -- e.g. win32wx.inc's own \"if ~ definite PE & ~ definite x86.mode\" tests whether the symbol PE has been defined, completely unrelated to the format directive of the same spelling. Scoping the word list to only apply within a \"format ...\" directive's own line (format arguments are always single-line) fixes that false positive the same way #struct-body already protects field names from #directives.",
@@ -231,7 +258,8 @@
       ]
     },
     "format-keywords": {
-      "name": "support.constant.format.fasm",
+      "comment": "constant.language, \"a constant word the language itself defines\", is what these are: PE/ELF64/GUI/readable aren't symbols anyone declares, they're fixed spellings the format directive understands. The support.constant.* they used to carry described them as library-provided values instead, and left them at the default foreground under the editor's own default themes, which style no plain support.constant at all.",
+      "name": "constant.language.format.fasm",
       "match": "(?i)\\b(binary|MZ|PE64|PE|COFF|MS64|MS|MachO64|MachO|ELF64|ELFx32|ELF|console|GUI|native|DLL|WDM|EFIboot|EFIruntime|efi|as|at|executable|dynamic|large|NX|on|readable|writeable|discardable|shareable|interpreter|note|gnustack|gnuehframe|gnurelro)\\b"
     },
     "registers": {
@@ -250,8 +278,17 @@
     },
     "operators": {
       "comment": "\"defined\"/\"definite\"/\"used\"/\"eq\"/\"eqtype\" are core fasmg logical/type operators (manual.txt's \"Symbols and values\" section), the same family as and/or/not -- previously missing entirely, so e.g. win32wx.inc's own \"if ~ definite PE & ~ definite x86.mode\" left \"definite\" completely unstyled. \"#\" (token-pasting -- concatenates the identifiers on either side into one name with no space, e.g. export.inc's own \"names.name#%\") was likewise completely unstyled before, falling through as plain punctuation. \"bappend\"/\"lengthof\"/\"elementof\"/\"scaleof\"/\"metadataof\"/\"elementsof\"/\"trunc\" are the same \"Expression values\" operator family -- added here since they're distinctive enough not to collide with an ordinary identifier; \"scale\"/\"string\"/\"metadata\"/\"float\" are documented in hover.ts's VALUE_OPERATORS too but deliberately left out of this list, since those four are common enough as ordinary variable/field names (e.g. a UI zoom factor called \"scale\", or a \"float\" flag/value) that blanket-highlighting them here would be a real false-positive risk, the same reasoning #calm-commands already applies to \"call\"/\"jno\". (\"bsf\"/\"bsr\"/\"bswap\" are the same \"Expression values\" operators too, but since #mnemonics is checked earlier in this grammar's own top-level pattern list and they're also real x86 instructions, they always resolve as mnemonics regardless of this list -- listing them here would be inert, so they're deliberately left out rather than added as dead weight, unlike and/or/xor/not/shl/shr/mod above which predate this observation.)",
-      "name": "keyword.operator.fasm",
-      "match": "(?i)\\b(and|or|xor|not|shl|shr|mod|ptr|dup|defined|definite|used|eqtype|eq|relativeto|bappend|lengthof|elementof|scaleof|metadataof|elementsof|trunc)\\b|[+\\-*/<>=!&|~#]"
+      "patterns": [
+        {
+          "name": "keyword.operator.expression.fasm",
+          "match": "(?i)\\b(and|or|xor|not|shl|shr|mod|ptr|dup|defined|definite|used|eqtype|eq|relativeto|bappend|lengthof|elementof|scaleof|metadataof|elementsof|trunc)\\b"
+        },
+        {
+          "comment": "The word operators above are split out under keyword.operator.expression -- the scope the editor's own default themes single out for word-shaped operators, and which they colour, where plain keyword.operator is left at the default foreground. The punctuation operators kept below are deliberately *not* split further into .arithmetic/.bitwise/.comparison/.logical: none of the themes checked (the editor's default dark and light, its 2026 successors, and Aura) styles any of those four, so the split would add four alternations to a pattern that runs against every line of every file in exchange for no visible difference. It costs nothing to add later if a theme ever makes it worth it.",
+          "name": "keyword.operator.fasm",
+          "match": "[+\\-*/<>=!&|~#]"
+        }
+      ]
     }
   }
 }

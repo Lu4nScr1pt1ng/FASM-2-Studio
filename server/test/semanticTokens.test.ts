@@ -14,8 +14,10 @@ import { Workspace } from '../src/workspace';
 
 interface DecodedToken {
   line: number;
+  startChar: number;
   word: string;
   type: string;
+  modifiers: string[];
 }
 
 /** Reverses the LSP delta encoding back into concrete words, so the assertions below read as what
@@ -30,13 +32,32 @@ function decode(text: string, ws: Workspace, uri: string, dialect: Dialect): Dec
   for (let i = 0; i < data.length; i += 5) {
     line += data[i];
     char = data[i] === 0 ? char + data[i + 1] : data[i + 1];
-    out.push({ line, word: lines[line].substr(char, data[i + 2]), type: SEMANTIC_TOKENS_LEGEND.tokenTypes[data[i + 3]] });
+    out.push({
+      line,
+      startChar: char,
+      word: lines[line].substr(char, data[i + 2]),
+      type: SEMANTIC_TOKENS_LEGEND.tokenTypes[data[i + 3]],
+      modifiers: SEMANTIC_TOKENS_LEGEND.tokenModifiers.filter((_, bit) => (data[i + 4] & (1 << bit)) !== 0),
+    });
   }
   return out;
 }
 
 function typeOf(tokens: DecodedToken[], word: string): string | undefined {
   return tokens.find((t) => t.word.toLowerCase() === word.toLowerCase())?.type;
+}
+
+/** Every token spelled `word` — a qualified name yields one per part, so an assertion about
+ * "Point.x" has to be able to look at both. */
+function tokensFor(tokens: DecodedToken[], word: string): DecodedToken[] {
+  return tokens.filter((t) => t.word === word);
+}
+
+/** Parses `text` as a standalone document and returns its tokens. */
+function tokensOf(text: string, uri: string): DecodedToken[] {
+  const ws = new Workspace();
+  ws.updateDocument(uri, 1, text, 'fasm2');
+  return decode(text, ws, uri, 'fasm2');
 }
 
 describe('getSemanticTokens', () => {
@@ -57,8 +78,13 @@ describe('getSemanticTokens', () => {
       assert.strictEqual(typeOf(tokens, 'bl'), 'variable');
     });
 
-    it('does not colour ordinary labels, leaving them to the grammar', () => {
-      assert.strictEqual(typeOf(tokens, 'start'), undefined);
+    it('colours a label both where it is defined and where it is used', () => {
+      // The reference is the point: the grammar can see "start:" and scope it, but "jmp start" is
+      // just an identifier in operand position to it, and operands are most of a real file.
+      assert.deepStrictEqual(
+        tokensFor(tokens, 'start').map((t) => `${t.line}:${t.type}`),
+        ['2:function', '5:function'],
+      );
     });
   });
 
@@ -145,6 +171,132 @@ describe('getSemanticTokens', () => {
       assert.strictEqual(typeOf(tokens, 'mov'), 'keyword');
       assert.strictEqual(typeOf(tokens, 'inc'), undefined, 'expected the operand not to be coloured as an instruction');
     });
+
+    it('gates instruction-like names on statement position but not label and constant references, which belong in operands', () => {
+      // The two halves of this are the whole rule: an instruction only means an instruction where
+      // one can appear, while an operand is the *normal* place to find a label or a constant.
+      const text = ['format binary', 'LIMIT = 4', 'table:', '\tmov eax, table', '\tmov ecx, LIMIT', '\tmov edx, inc', ''].join('\n');
+      const tokens = tokensOf(text, 'file:///gating.asm');
+
+      assert.strictEqual(tokensFor(tokens, 'table').find((t) => t.line === 3)?.type, 'function');
+      assert.strictEqual(tokensFor(tokens, 'LIMIT').find((t) => t.line === 4)?.type, 'variable');
+      assert.strictEqual(typeOf(tokens, 'inc'), undefined);
+    });
+  });
+
+  // Everything below is about *references*. Definition sites were already coloured by the grammar;
+  // what it structurally cannot do is tell whether an identifier sitting in an operand names a
+  // label, a constant, a struct, a field, or nothing at all, because that is a question about the
+  // whole include graph rather than about this line.
+
+  describe('references to the user\'s own symbols', () => {
+    it('colours an implicit data label at both its definition and its uses', () => {
+      const tokens = tokensOf('format binary\nmsg db "hi",0\n\tmov esi, msg\n', 'file:///data.asm');
+      assert.deepStrictEqual(
+        tokensFor(tokens, 'msg').map((t) => t.type),
+        ['function', 'function'],
+      );
+    });
+
+    it('colours a constant reference as a read-only variable, which is what it is', () => {
+      const tokens = tokensOf('format binary\nBUF_SIZE = 64\n\tmov ecx, BUF_SIZE\n', 'file:///const.asm');
+      const uses = tokensFor(tokens, 'BUF_SIZE');
+      assert.strictEqual(uses.length, 2);
+      for (const use of uses) {
+        assert.strictEqual(use.type, 'variable');
+        assert.deepStrictEqual(use.modifiers, ['readonly']);
+      }
+    });
+
+    it('colours the "sizeof.X" constant the struct package generates for every struct', () => {
+      const tokens = tokensOf('format binary\nstruct Point\n\tx dd ?\nends\n\tmov eax, sizeof.Point\n', 'file:///sizeof.asm');
+      const token = tokensFor(tokens, 'sizeof.Point')[0];
+      assert.ok(token, 'expected "sizeof.Point" to be classified');
+      assert.strictEqual(token.type, 'variable');
+      assert.deepStrictEqual(token.modifiers, ['readonly']);
+    });
+
+    it('colours a struct name where it is used as a type', () => {
+      const tokens = tokensOf('format binary\nstruct Point\n\tx dd ?\nends\n\tmov eax, Point\n', 'file:///struct.asm');
+      assert.strictEqual(tokensFor(tokens, 'Point').filter((t) => t.type === 'struct').length, 2);
+    });
+
+    it('respects case, because fasmg symbols are case-sensitive even though mnemonics are not', () => {
+      // Folding label names would light up every "start" merely because something defines "Start".
+      const tokens = tokensOf('format binary\nStart:\n\tjmp start\n', 'file:///case.asm');
+      assert.strictEqual(typeOf(tokens, 'Start'), 'function');
+      assert.strictEqual(tokensFor(tokens, 'start').length, 0, 'a differently-cased name is a different symbol');
+    });
+  });
+
+  describe('local labels, which are only valid under the label they were declared beneath', () => {
+    const text = ['format binary', 'first:', '\tjmp .exit', '.exit:', '\tret', 'second:', '\tjmp .exit', ''].join('\n');
+    const tokens = tokensOf(text, 'file:///local.asm');
+
+    it('colours a ".local" reference inside its own parent\'s region', () => {
+      assert.ok(
+        tokensFor(tokens, '.exit').some((t) => t.line === 2 && t.type === 'function'),
+        `expected ".exit" on line 2 to be a label, got: ${JSON.stringify(tokensFor(tokens, '.exit'))}`,
+      );
+    });
+
+    it('leaves a ".local" reference alone under a different parent, where the compiler would not resolve it', () => {
+      assert.strictEqual(tokensFor(tokens, '.exit').filter((t) => t.line === 6).length, 0);
+    });
+
+    it('colours the fully qualified "parent.local" form, which is how it is reached from elsewhere', () => {
+      const qualified = tokensOf(['format binary', 'first:', '.exit:', '\tret', 'second:', '\tjmp first.exit', ''].join('\n'), 'file:///qualified.asm');
+      const token = tokensFor(qualified, 'first.exit')[0];
+      assert.ok(token, 'expected "first.exit" to be classified as one token');
+      assert.strictEqual(token.type, 'function');
+    });
+  });
+
+  describe('struct fields, which arrive as one token and name two things', () => {
+    const text = ['format binary', 'struct Point', '\tx dd ?', '\ty dd ?', 'ends', 'p Point', '\tmov eax, [ebx+Point.x]', '\tmov edx, [p.y]', ''].join('\n');
+    const tokens = tokensOf(text, 'file:///fields.asm');
+
+    it('splits "Type.field" into the type and the field, at the right offsets', () => {
+      const line = tokens.filter((t) => t.line === 6);
+      const type = line.find((t) => t.word === 'Point');
+      const field = line.find((t) => t.word === 'x');
+      assert.ok(type && field, `expected two tokens over "Point.x", got: ${JSON.stringify(line)}`);
+      assert.strictEqual(type.type, 'struct');
+      assert.strictEqual(field.type, 'property');
+      assert.strictEqual(field.startChar, type.startChar + 'Point.'.length);
+    });
+
+    it('resolves a field read through a declared instance of the struct', () => {
+      const line = tokens.filter((t) => t.line === 7);
+      assert.strictEqual(line.find((t) => t.word === 'p')?.type, 'variable');
+      assert.strictEqual(line.find((t) => t.word === 'y')?.type, 'property');
+    });
+
+    it('colours the instance on the line that declares it, not only where it is read', () => {
+      const declaration = tokens.filter((t) => t.line === 5);
+      assert.strictEqual(declaration.find((t) => t.word === 'p')?.type, 'variable');
+      assert.strictEqual(declaration.find((t) => t.word === 'Point')?.type, 'struct');
+    });
+
+    it('does not invent an instance out of an ordinary macro call with one argument', () => {
+      // "name Type" and "some_macro some_arg" are the same shape; only the struct registry tells
+      // them apart, which is the whole reason the parser records these as candidates only.
+      const other = tokensOf('format binary\nfoo bar\n\tmov eax, [foo.y]\n', 'file:///notinstance.asm');
+      assert.strictEqual(tokensFor(other, 'y').length, 0);
+    });
+  });
+
+  describe('macro-locals, which are private to one macro body', () => {
+    const text = ['format binary', 'macro if_zero?', '\tlocal value', '\tvalue = 1', 'end macro', '\tmov eax, value', ''].join('\n');
+    const tokens = tokensOf(text, 'file:///locals.asm');
+
+    it('colours the local inside the body it was declared in', () => {
+      assert.strictEqual(tokensFor(tokens, 'value').find((t) => t.line === 3)?.type, 'variable');
+    });
+
+    it('leaves the same spelling alone outside that body', () => {
+      assert.strictEqual(tokensFor(tokens, 'value').filter((t) => t.line === 5).length, 0);
+    });
   });
 
   it('emits a well-formed delta encoding (five integers per token, never a negative delta)', () => {
@@ -161,6 +313,31 @@ describe('getSemanticTokens', () => {
       assert.ok(data[i + 2] > 0, 'length must be positive');
       assert.ok(data[i + 3] < SEMANTIC_TOKENS_LEGEND.tokenTypes.length, 'token type must be in the legend');
     }
+  });
+
+  it('keeps a well-formed delta encoding when one identifier emits two tokens', () => {
+    // "Point.x" yields a struct token and a property token from a single identifier, which is the
+    // one place a stale running position would produce a negative delta and corrupt every token
+    // after it.
+    const text = ['format binary', 'struct Point', '\tx dd ?', 'ends', '\tmov eax, [Point.x]', '\tmov ebx, [Point.x]', ''].join('\n');
+    const uri = 'file:///split.asm';
+    const ws = new Workspace();
+    ws.updateDocument(uri, 1, text, 'fasm2');
+    const data = getSemanticTokens(ws, uri, 'fasm2', text).data;
+
+    assert.strictEqual(data.length % 5, 0);
+    for (let i = 0; i < data.length; i += 5) {
+      assert.ok(data[i] >= 0, 'line delta must be non-negative');
+      assert.ok(data[i + 1] >= 0, 'character delta must be non-negative');
+      assert.ok(data[i + 2] > 0, 'length must be positive');
+    }
+  });
+
+  it('keeps the first three token types at their original indices, since the client refers to them by index', () => {
+    // Reordering the legend would silently recolour every token an installed client already knows
+    // about, with nothing to signal that anything changed.
+    assert.deepStrictEqual(SEMANTIC_TOKENS_LEGEND.tokenTypes.slice(0, 3), ['keyword', 'variable', 'macro']);
+    assert.strictEqual(SEMANTIC_TOKENS_LEGEND.tokenModifiers[0], 'defaultLibrary');
   });
 
   it('returns nothing for a document the workspace does not know, rather than throwing', () => {

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.0
+
+- Your own labels, constants, structs and struct fields are now coloured everywhere you *use* them,
+  not only where you define them. Operands used to be the flattest part of a FASM file — in a large
+  real project, more than half the visible characters came out in the plain text colour. That is now
+  under a quarter under the default dark theme, and about a seventh once the project's include
+  directory is configured.
+- A `.local` label is coloured only under the label it actually belongs to, and a `local` name only
+  inside its own macro body — so a local named after an instruction stops being mistaken for one.
+- Instructions no longer take the directive colour under VS Code's default dark themes.
+- Labels, struct names, struct fields, `format` arguments (`PE`, `ELF64`, `GUI`), word operators
+  (`defined`, `eq`, `lengthof`) and CALM commands all pick up colours they previously didn't get, or
+  no longer share a colour with something unrelated. A jump to a local label (`jmp .exit`) is
+  coloured at all for the first time.
+- Semantic highlighting is now on by default for FASM files. Many themes never opt into it and were
+  quietly ignoring everything the language server worked out about your project. Nothing about your
+  theme changes — set `"[fasm]": { "editor.semanticHighlighting.enabled": false }` to turn it back
+  off.
+- Still no bundled theme, and yours is never touched. The root README now lists every FASM scope
+  with what it represents, ready to paste into `editor.tokenColorCustomizations` if you want to
+  recolour any of it — one entry covers both the definition and every use.
+
 ## 1.4.1
 
 - Fixed the parameter-hint box appearing where you are not writing a call. On a line like

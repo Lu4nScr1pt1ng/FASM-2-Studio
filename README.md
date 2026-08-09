@@ -126,13 +126,57 @@ a non-x86 package and you get hover, completion and go-to-definition for *its* m
 registers, and you are not offered x86 ones. Nothing per-architecture is bundled with the extension;
 it all comes from what you include.
 
-Highlighting follows from the same information. A TextMate grammar sees one file at a time and has
-to commit to a single instruction set for the whole language, so the language server layers semantic
-tokens over it: a name like `bl` is coloured as an instruction where your package defines one, and
-stays a register in x86 files, which no grammar can decide on its own. This needs a theme that opts
-into semantic highlighting, as VS Code's built-in ones do. The extension ships no theme of its own
-and never changes the one you use: its scopes and token types are the standard ones, so whatever
-theme you already have colours FASM.
+Highlighting follows from the same information. A TextMate grammar sees one file at a time, so it
+can colour the place a name is *defined* and little else — `bl` has to be either an instruction or a
+register for the whole language, and `jmp target` or `mov ecx, BUF_SIZE` is just an identifier
+sitting in an operand. The language server knows better on both counts, and layers semantic tokens
+over the grammar: `bl` is an instruction where your package defines one and a register in x86 files,
+and every reference to your own labels, constants, structs and struct fields is coloured for what it
+actually is, wherever you use it. A local label is coloured only under the global label it belongs
+to, and a `local` name only inside its own macro body — the same scoping the compiler applies.
+
+This is why the extension turns `editor.semanticHighlighting.enabled` on for `fasm` files: roughly
+half of published themes never opt into semantic highlighting, and would otherwise ignore all of the
+above. It is a default like any other — override it in your settings if you want the grammar alone.
+
+The extension still ships no theme of its own and never changes the one you use. Every scope and
+token type it emits is standard, so whatever theme you already have colours FASM.
+
+### Colouring FASM your way
+
+If your theme paints some of this flatter than you'd like — plenty of themes give the whole
+`variable` family the same colour as body text, for instance — you can recolour any part of it
+without leaving your theme. Paste this into your settings and fill in colours from your own palette
+(the `#RRGGBB` below are placeholders, not a suggested scheme):
+
+```jsonc
+"editor.tokenColorCustomizations": {
+  "textMateRules": [
+    { "scope": "keyword.other.mnemonic.fasm",           "settings": { "foreground": "#RRGGBB" } }, // CPU instructions
+    { "scope": "keyword.control.directive.fasm",        "settings": { "foreground": "#RRGGBB" } }, // core fasmg directives
+    { "scope": "keyword.control.calm.fasm",             "settings": { "foreground": "#RRGGBB" } }, // CALM sub-language commands
+    { "scope": "keyword.operator.expression.fasm",      "settings": { "foreground": "#RRGGBB" } }, // and / or / defined / eq / lengthof
+    { "scope": "entity.name.function.macro.fasm",       "settings": { "foreground": "#RRGGBB" } }, // macro and calminstruction names
+    { "scope": "support.function.fasm",                 "settings": { "foreground": "#RRGGBB" } }, // proc / invoke / library macros
+    { "scope": "entity.name.function.label.fasm",       "settings": { "foreground": "#RRGGBB" } }, // labels
+    { "scope": "entity.name.function.label.local.fasm", "settings": { "foreground": "#RRGGBB" } }, // .local labels
+    { "scope": "variable.other.constant.fasm",          "settings": { "foreground": "#RRGGBB" } }, // constants (= := equ define)
+    { "scope": "entity.name.type.struct.fasm",          "settings": { "foreground": "#RRGGBB" } }, // struct types
+    { "scope": "variable.other.property.fasm",          "settings": { "foreground": "#RRGGBB" } }, // struct fields
+    { "scope": "variable.language.register.fasm",       "settings": { "foreground": "#RRGGBB" } }, // registers
+    { "scope": "variable.language.special.fasm",        "settings": { "foreground": "#RRGGBB" } }, // $ $$ $@ % %%
+    { "scope": "storage.type.data.fasm",                "settings": { "foreground": "#RRGGBB" } }, // db / dw / dd / rb / ...
+    { "scope": "support.type.size.fasm",                "settings": { "foreground": "#RRGGBB" } }, // byte / word / dword / ...
+    { "scope": "support.type.addressing.fasm",          "settings": { "foreground": "#RRGGBB" } }, // ptr / near / far / short
+    { "scope": "constant.language.format.fasm",         "settings": { "foreground": "#RRGGBB" } }  // PE / ELF64 / GUI / readable
+  ]
+}
+```
+
+Each line does more than it looks like: the semantic tokens are mapped onto these same scopes, so
+one entry recolours both the definition and every reference the server resolves. Wrap the block in
+`"[fasm]": { ... }` to keep it to FASM files, or use `editor.semanticTokenColorCustomizations` if you
+want the two layers to differ.
 
 ## What you get
 

@@ -70,11 +70,11 @@ describe('fasm TextMate grammar', () => {
     assert.ok(structScopes.some((s) => s.startsWith('keyword.control')), `expected "struct" to be a keyword, got: ${structScopes}`);
 
     const segmentScopes = scopesOf(lines[1], 'segment');
-    assert.ok(segmentScopes.some((s) => s.startsWith('variable.other.member')), `expected "segment" to be a struct member, got: ${segmentScopes}`);
+    assert.ok(segmentScopes.some((s) => s.startsWith('variable.other.property')), `expected "segment" to be a struct member, got: ${segmentScopes}`);
     assert.ok(!segmentScopes.some((s) => s.includes('directive') || s.includes('format')), `"segment" must not also be tagged as a directive/format keyword, got: ${segmentScopes}`);
 
     const offsetScopes = scopesOf(lines[2], 'offset');
-    assert.ok(offsetScopes.some((s) => s.startsWith('variable.other.member')), `expected "offset" to be a struct member, got: ${offsetScopes}`);
+    assert.ok(offsetScopes.some((s) => s.startsWith('variable.other.property')), `expected "offset" to be a struct member, got: ${offsetScopes}`);
 
     // The data directive after a field name is still recognized as one.
     const ddScopes = scopesOf(lines[1], 'dd');
@@ -116,7 +116,7 @@ describe('fasm TextMate grammar', () => {
     assert.ok(!operandToken.scopes.some((s) => s.includes('format')), `"PE" used as an instruction operand must not be tagged as a format keyword, got: ${operandToken.scopes}`);
   });
 
-  it('tags data-declaring directives (db/dw/dd/...) with the storage.type family, same as size specifiers', async function () {
+  it('tags data-declaring directives (db/dw/dd/...) as storage.type.data, the core-language counterpart to the package-provided size specifiers', async function () {
     this.timeout(10000);
     const lines = await tokenizeLines('msg db "hi",0\n');
     const scopes = scopesOf(lines[0], 'db');
@@ -132,7 +132,7 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines('calminstruction foo?\n\tcheck a eq b\n\tjyes done\n\texit\n    done:\nend calminstruction\n');
     for (const [lineIdx, word] of [[0, 'calminstruction'], [1, 'check'], [2, 'jyes'], [3, 'exit']] as const) {
       const scopes = scopesOf(lines[lineIdx], word);
-      assert.strictEqual(scopes[scopes.length - 1], 'keyword.other.calm.fasm', `expected "${word}" to be a CALM command, got: ${scopes}`);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.control.calm.fasm', `expected "${word}" to be a CALM command, got: ${scopes}`);
     }
   });
 
@@ -155,14 +155,14 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines(['calminstruction fld? src*', 'calminstruction calminstruction?.xcall? instruction*, arguments&'].join('\n'));
 
     const kwScopes = scopesOf(lines[0], 'calminstruction');
-    assert.strictEqual(kwScopes[kwScopes.length - 1], 'keyword.other.calm.fasm', `expected "calminstruction" to stay a CALM command, got: ${kwScopes}`);
+    assert.strictEqual(kwScopes[kwScopes.length - 1], 'keyword.control.calm.fasm', `expected "calminstruction" to stay a CALM command, got: ${kwScopes}`);
     const nameScopes = scopesOf(lines[0], 'fld?');
-    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.function.fasm', `expected "fld?" to be tagged as a function name, got: ${nameScopes}`);
+    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.function.macro.fasm', `expected "fld?" to be tagged as a macro name, got: ${nameScopes}`);
 
     // The command-namespaced form ("calminstruction?.xcall?") is a single dotted+weak name, same
     // as #macro-struct-definition already handles.
     const namespacedScopes = scopesOf(lines[1], 'calminstruction?.xcall?');
-    assert.strictEqual(namespacedScopes[namespacedScopes.length - 1], 'entity.name.function.fasm', `expected "calminstruction?.xcall?" to be a single function-name token, got: ${namespacedScopes}`);
+    assert.strictEqual(namespacedScopes[namespacedScopes.length - 1], 'entity.name.function.macro.fasm', `expected "calminstruction?.xcall?" to be a single macro-name token, got: ${namespacedScopes}`);
   });
 
   it('does not steal "call" or "jno" from the real x86 instructions of the same name, despite both also being CALM commands', async function () {
@@ -253,7 +253,7 @@ describe('fasm TextMate grammar', () => {
     const kwScopes = scopesOf(lines[0], 'label');
     assert.strictEqual(kwScopes[kwScopes.length - 1], 'keyword.control.directive.fasm', `expected "label" to be a directive, got: ${kwScopes}`);
     const nameScopes = scopesOf(lines[0], 'alias');
-    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.label.fasm', `expected "alias" to be tagged as the declared label name, got: ${nameScopes}`);
+    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.function.label.fasm', `expected "alias" to be tagged as the declared label name, got: ${nameScopes}`);
   });
 
   it('does not mistake a data directive for the name argument of "label NAME at EXPR", e.g. a macro\'s own iterate-bound "label" variable written back literally as "label dq ..."', async function () {
@@ -268,7 +268,7 @@ describe('fasm TextMate grammar', () => {
 
     const dqScopes = scopesOf(lines[0], 'dq');
     assert.strictEqual(dqScopes[dqScopes.length - 1], 'storage.type.data.fasm', `expected "dq" to stay a data directive, got: ${dqScopes}`);
-    const dqAsLabelName = lines[0].filter((t) => t.text === 'dq' && t.scopes.some((s) => s.startsWith('entity.name.label')));
+    const dqAsLabelName = lines[0].filter((t) => t.text === 'dq' && t.scopes.some((s) => s.startsWith('entity.name.function.label')));
     assert.strictEqual(dqAsLabelName.length, 0, '"dq" must never be tagged as a label name');
 
     const dwScopes = scopesOf(lines[1], 'dw');
@@ -287,7 +287,7 @@ describe('fasm TextMate grammar', () => {
     assert.ok(fromScopes.some((s) => s.includes('directive')), `expected "from" to be a directive, got: ${fromScopes}`);
 
     const areaScopes = scopesOf(lines[1], 'area');
-    assert.ok(areaScopes.some((s) => s.startsWith('entity.name.label')), `expected "area" to be a label, got: ${areaScopes}`);
+    assert.ok(areaScopes.some((s) => s.startsWith('entity.name.function.label')), `expected "area" to be a label, got: ${areaScopes}`);
     const colonsScopes = scopesOf(lines[1], '::');
     assert.ok(colonsScopes.some((s) => s.includes('punctuation')), `expected "::" to be styled, got: ${colonsScopes}`);
   });
@@ -331,19 +331,19 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines(['mov esi,[ebx+PLANE_POINTER.segment]', 'mov eax,[ebx+PLANE_POINTER.offset]', 'sub ecx,SEGMENT_SIZE'].join('\n'));
 
     const segmentScopes = scopesOf(lines[0], 'segment');
-    assert.strictEqual(segmentScopes[segmentScopes.length - 1], 'variable.other.member.fasm', `expected "PLANE_POINTER.segment" to tag "segment" as a member, got: ${segmentScopes}`);
+    assert.strictEqual(segmentScopes[segmentScopes.length - 1], 'variable.other.property.fasm', `expected "PLANE_POINTER.segment" to tag "segment" as a member, got: ${segmentScopes}`);
     const dotScopes = scopesOf(lines[0], '.');
     assert.strictEqual(dotScopes[dotScopes.length - 1], 'punctuation.accessor.fasm', `expected the "." to be styled as an accessor, got: ${dotScopes}`);
 
     const offsetScopes = scopesOf(lines[1], 'offset');
-    assert.strictEqual(offsetScopes[offsetScopes.length - 1], 'variable.other.member.fasm', `expected "PLANE_POINTER.offset" to tag "offset" as a member, got: ${offsetScopes}`);
+    assert.strictEqual(offsetScopes[offsetScopes.length - 1], 'variable.other.property.fasm', `expected "PLANE_POINTER.offset" to tag "offset" as a member, got: ${offsetScopes}`);
 
     // A plain identifier that merely contains the word "segment" (glued with no word boundary)
     // must stay untouched by both this rule and the directive keyword rule — it never gets its
     // own token at all (no rule claims it), so it's folded into its neighboring punctuation.
     const constToken = lines[2].find((t) => t.text.includes('SEGMENT_SIZE'));
     assert.ok(constToken, `expected a token containing "SEGMENT_SIZE", got: ${JSON.stringify(lines[2].map((t) => t.text))}`);
-    assert.ok(!constToken.scopes.some((s) => s.includes('directive') || s.includes('member')), `"SEGMENT_SIZE" must not be tagged as a directive or member, got: ${constToken.scopes}`);
+    assert.ok(!constToken.scopes.some((s) => s.includes('directive') || s.includes('property')), `"SEGMENT_SIZE" must not be tagged as a directive or property, got: ${constToken.scopes}`);
   });
 
   it('tags the proc/invoke macro family from the standard proc32.inc/proc64.inc package as support.function, distinct from core directives', async function () {
@@ -398,7 +398,7 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines(['if ~ definite PE & ~ definite x86.mode', 'if defined X & used Y', 'if a eq b & c eqtype d'].join('\n'));
     for (const [lineIdx, word] of [[0, 'definite'], [1, 'defined'], [1, 'used'], [2, 'eq'], [2, 'eqtype']] as const) {
       const scopes = scopesOf(lines[lineIdx], word);
-      assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.fasm', `expected "${word}" to be tagged as a logical/type operator, got: ${scopes}`);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.expression.fasm', `expected "${word}" to be tagged as a logical/type operator, got: ${scopes}`);
     }
   });
 
@@ -458,7 +458,7 @@ describe('fasm TextMate grammar', () => {
     const lines = await tokenizeLines(['text bappend line', 'n = lengthof s', 'x = 1 elementof p', 'y = 1 scaleof p', 'z = 0 metadataof v'].join('\n'));
     for (const [lineIdx, word] of [[0, 'bappend'], [1, 'lengthof'], [2, 'elementof'], [3, 'scaleof'], [4, 'metadataof']] as const) {
       const scopes = scopesOf(lines[lineIdx], word);
-      assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.fasm', `expected "${word}" to be tagged as an operator, got: ${scopes}`);
+      assert.strictEqual(scopes[scopes.length - 1], 'keyword.operator.expression.fasm', `expected "${word}" to be tagged as an operator, got: ${scopes}`);
     }
   });
 
@@ -466,7 +466,7 @@ describe('fasm TextMate grammar', () => {
     this.timeout(10000);
     const lines = await tokenizeLines(['if a relativeto b & a > b', 'rawmatch text, instruction', 'rmatch text, instruction'].join('\n'));
     const relScopes = scopesOf(lines[0], 'relativeto');
-    assert.strictEqual(relScopes[relScopes.length - 1], 'keyword.operator.fasm', `expected "relativeto" to be tagged as an operator, got: ${relScopes}`);
+    assert.strictEqual(relScopes[relScopes.length - 1], 'keyword.operator.expression.fasm', `expected "relativeto" to be tagged as an operator, got: ${relScopes}`);
     const rawmatchScopes = scopesOf(lines[1], 'rawmatch');
     assert.strictEqual(rawmatchScopes[rawmatchScopes.length - 1], 'keyword.control.directive.fasm', `expected "rawmatch" to be tagged like "match", got: ${rawmatchScopes}`);
     const rmatchScopes = scopesOf(lines[2], 'rmatch');
@@ -479,9 +479,9 @@ describe('fasm TextMate grammar', () => {
     const escScopes = scopesOf(lines[0], 'esc');
     assert.ok(escScopes.some((s) => s.includes('directive')), `expected "esc" to be a directive, got: ${escScopes}`);
     const elementsofScopes = scopesOf(lines[1], 'elementsof');
-    assert.strictEqual(elementsofScopes[elementsofScopes.length - 1], 'keyword.operator.fasm', `expected "elementsof" to be tagged as an operator, got: ${elementsofScopes}`);
+    assert.strictEqual(elementsofScopes[elementsofScopes.length - 1], 'keyword.operator.expression.fasm', `expected "elementsof" to be tagged as an operator, got: ${elementsofScopes}`);
     const truncScopes = scopesOf(lines[2], 'trunc');
-    assert.strictEqual(truncScopes[truncScopes.length - 1], 'keyword.operator.fasm', `expected "trunc" to be tagged as an operator, got: ${truncScopes}`);
+    assert.strictEqual(truncScopes[truncScopes.length - 1], 'keyword.operator.expression.fasm', `expected "trunc" to be tagged as an operator, got: ${truncScopes}`);
   });
 
   it('tags "#" (token-pasting) as an operator instead of leaving it unstyled, mirroring export.inc\'s own "names.name#%"', async function () {
@@ -556,5 +556,89 @@ describe('fasm TextMate grammar', () => {
       if (!isStyled) failures.push(word);
     });
     assert.strictEqual(failures.length, 0, `these directives.json entries are not tagged with any keyword-ish scope by the grammar: ${failures.join(', ')}`);
+  });
+
+  // The scope *names* below are load-bearing, not cosmetic: a theme colours by scope, and several
+  // of these were chosen because the previous name was one no mainstream theme styles (so the token
+  // rendered at the default foreground) or one that put two unrelated things in the same colour.
+  // Asserting the exact leaf keeps that reasoning from being undone by a plausible-looking rename.
+
+  it('names a struct as a type, not as a function, so it lands in the same family as the language\'s other type words', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['struct PLANE_POINTER', '  x dd ?', 'ends'].join('\n'));
+
+    const kwScopes = scopesOf(lines[0], 'struct');
+    assert.ok(kwScopes.some((s) => s.startsWith('keyword.control')), `expected "struct" itself to stay a directive, got: ${kwScopes}`);
+
+    const nameScopes = scopesOf(lines[0], 'PLANE_POINTER');
+    assert.strictEqual(nameScopes[nameScopes.length - 1], 'entity.name.type.struct.fasm', `expected the struct's name to be a type name, got: ${nameScopes}`);
+  });
+
+  it('names a macro distinctly from a label, since the two are the only things that share the entity.name.function family', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['macro pushr? regs&', 'end macro', 'start:'].join('\n'));
+
+    const macroScopes = scopesOf(lines[0], 'pushr?');
+    assert.strictEqual(macroScopes[macroScopes.length - 1], 'entity.name.function.macro.fasm', `expected "pushr?" to be a macro name, got: ${macroScopes}`);
+
+    const labelScopes = scopesOf(lines[2], 'start');
+    assert.strictEqual(labelScopes[labelScopes.length - 1], 'entity.name.function.label.fasm', `expected "start" to be a label name, got: ${labelScopes}`);
+  });
+
+  it('tags label definitions under entity.name.function, which the editor\'s own default themes actually colour (they render a bare entity.name.label at the default foreground)', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines(['start:', '.loop:', '  jmp .loop'].join('\n'));
+
+    const globalScopes = scopesOf(lines[0], 'start');
+    assert.strictEqual(globalScopes[globalScopes.length - 1], 'entity.name.function.label.fasm', `expected a global label, got: ${globalScopes}`);
+
+    const localScopes = scopesOf(lines[1], '.loop');
+    assert.strictEqual(localScopes[localScopes.length - 1], 'entity.name.function.label.local.fasm', `expected a local label, got: ${localScopes}`);
+  });
+
+  it('tags a whitespace-separated ".name" operand as a local-label reference, which no rule claimed before — #member-access requires no space before the dot, by design', async function () {
+    // Every jump to a local label ("jmp .exit") fell through completely unscoped, which is a large
+    // share of the uncoloured text in a real file. The dot can only begin a name here, never a
+    // number, so this needs no further disambiguation -- but it must not steal from #member-access.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['  jmp .exit', '  mov eax, [PLANE_POINTER.offset]'].join('\n'));
+
+    const refScopes = scopesOf(lines[0], '.exit');
+    assert.strictEqual(refScopes[refScopes.length - 1], 'entity.name.function.label.local.fasm', `expected ".exit" to be a local-label reference, got: ${refScopes}`);
+
+    // The qualified form still splits into an accessor plus a property, untouched by the rule above.
+    const dotScopes = scopesOf(lines[1], '.');
+    assert.strictEqual(dotScopes[dotScopes.length - 1], 'punctuation.accessor.fasm', `expected the "." in a qualified name to stay an accessor, got: ${dotScopes}`);
+    const fieldScopes = scopesOf(lines[1], 'offset');
+    assert.strictEqual(fieldScopes[fieldScopes.length - 1], 'variable.other.property.fasm', `expected "offset" to stay a struct field, got: ${fieldScopes}`);
+  });
+
+  it('tags format arguments as language constants rather than library constants, the scope the default themes leave unstyled', async function () {
+    this.timeout(10000);
+    const lines = await tokenizeLines('format PE GUI 4.0\n');
+
+    for (const word of ['PE', 'GUI']) {
+      const scopes = scopesOf(lines[0], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'constant.language.format.fasm', `expected "${word}" to be a language constant, got: ${scopes}`);
+    }
+  });
+
+  it('separates package-provided size specifiers from core data directives, and operand widths from addressing qualifiers', async function () {
+    // byte/word/dword are not core fasmg -- they come from the instruction-set package (fasmg's own
+    // packages/x86/include/cpu/8086.inc: "define x86.byte? :1"), which makes them the same category
+    // as proc/invoke, already scoped support.*. db/dq genuinely are core, and stay storage.type.
+    this.timeout(10000);
+    const lines = await tokenizeLines(['  mov byte [x], 1', '  jmp near ptr handler', 'x db 1'].join('\n'));
+
+    const byteScopes = scopesOf(lines[0], 'byte');
+    assert.strictEqual(byteScopes[byteScopes.length - 1], 'support.type.size.fasm', `expected "byte" to be a size specifier, got: ${byteScopes}`);
+
+    for (const word of ['near', 'ptr']) {
+      const scopes = scopesOf(lines[1], word);
+      assert.strictEqual(scopes[scopes.length - 1], 'support.type.addressing.fasm', `expected "${word}" to be an addressing qualifier, got: ${scopes}`);
+    }
+
+    const dbScopes = scopesOf(lines[2], 'db');
+    assert.strictEqual(dbScopes[dbScopes.length - 1], 'storage.type.data.fasm', `expected "db" to stay a core data directive, got: ${dbScopes}`);
   });
 });

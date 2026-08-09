@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const PACKAGE_JSON = path.join(__dirname, '..', '..', 'package.json');
+const GRAMMAR_PATH = path.join(__dirname, '..', '..', 'syntaxes', 'fasm.tmLanguage.json');
 
 interface Manifest {
   contributes: {
@@ -14,6 +15,8 @@ interface Manifest {
     configuration: { properties: Record<string, { description?: string; type?: string }> };
     languages: Array<{ id: string; extensions: string[] }>;
     taskDefinitions: Array<{ type: string }>;
+    semanticTokenScopes: Array<{ language: string; scopes: Record<string, string[]> }>;
+    configurationDefaults: Record<string, Record<string, unknown>>;
   };
 }
 
@@ -80,5 +83,66 @@ describe('extension manifest', () => {
     assert.ok(manifest.contributes.languages.some((l) => l.id === 'fasm'));
     assert.ok(manifest.contributes.taskDefinitions.some((t) => t.type === 'fasm'));
     assert.ok(manifest.contributes.debuggers.some((d) => d.type === 'fasm'));
+  });
+
+  describe('semantic token scopes', () => {
+    // This block is what stops a semantic token from rendering *less* coloured than the same word
+    // would be under the grammar alone: without it, VS Code falls back to its own probe scopes,
+    // which for a mnemonic is `keyword.control` — the directive colour under the default dark
+    // themes, contradicting the blue the grammar gives it. Since resolution stops at the first
+    // probe the theme styles, the leading entry is the one that decides the colour, so each list
+    // leads with this grammar's own scope and ends with a standard one as the safety net.
+    const entries = manifest.contributes.semanticTokenScopes;
+    const grammar = fs.readFileSync(GRAMMAR_PATH, 'utf8');
+
+    // The legend the server actually emits (server/src/features/semanticTokens.ts). Kept as a
+    // literal rather than imported: this package builds independently of the server's sources, and
+    // a selector naming something outside this list is silently ignored by VS Code.
+    const TYPES = ['keyword', 'variable', 'macro', 'function', 'property', 'struct'];
+    const MODIFIERS = ['defaultLibrary', 'readonly'];
+
+    it('targets the fasm language, so it never overrides another extension\'s tokens', () => {
+      assert.ok(entries.length > 0, 'expected at least one semanticTokenScopes entry');
+      for (const entry of entries) {
+        assert.strictEqual(entry.language, 'fasm', `entry targets ${entry.language}`);
+      }
+    });
+
+    it('uses only token types and modifiers the server actually emits', () => {
+      for (const entry of entries) {
+        for (const selector of Object.keys(entry.scopes)) {
+          const [type, ...modifiers] = selector.split('.');
+          assert.ok(TYPES.includes(type), `selector "${selector}" names an unknown token type`);
+          for (const modifier of modifiers) {
+            assert.ok(MODIFIERS.includes(modifier), `selector "${selector}" names an unknown modifier`);
+          }
+        }
+      }
+    });
+
+    it('only probes .fasm scopes the grammar really produces, so a rename cannot silently orphan a mapping', () => {
+      for (const entry of entries) {
+        for (const [selector, probes] of Object.entries(entry.scopes)) {
+          for (const probe of probes.filter((s) => s.endsWith('.fasm'))) {
+            assert.ok(grammar.includes(`"${probe}"`), `"${selector}" probes ${probe}, which no rule in the grammar emits`);
+          }
+        }
+      }
+    });
+
+    it('ends every probe list with a standard scope, so a theme that knows nothing about FASM still colours the token', () => {
+      for (const entry of entries) {
+        for (const [selector, probes] of Object.entries(entry.scopes)) {
+          assert.ok(probes.length > 0, `"${selector}" has no probe scopes`);
+          assert.ok(!probes[probes.length - 1].endsWith('.fasm'), `"${selector}" ends on a FASM-only scope, leaving nothing to fall back to`);
+        }
+      }
+    });
+  });
+
+  it('turns semantic highlighting on for FASM files only, since roughly half of published themes never opt in and would otherwise ignore the server entirely', () => {
+    const defaults = manifest.contributes.configurationDefaults;
+    assert.deepStrictEqual(Object.keys(defaults), ['[fasm]'], 'the default must stay scoped to this language');
+    assert.strictEqual(defaults['[fasm]']['editor.semanticHighlighting.enabled'], true);
   });
 });

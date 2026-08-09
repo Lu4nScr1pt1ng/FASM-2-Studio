@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -64,6 +64,54 @@
         "path": "./syntaxes/fasm.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "fasm",
+        "scopes": {
+          "keyword": [
+            "keyword.other.mnemonic.fasm",
+            "keyword"
+          ],
+          "keyword.defaultLibrary": [
+            "keyword.other.mnemonic.fasm",
+            "keyword"
+          ],
+          "macro": [
+            "entity.name.function.macro.fasm",
+            "entity.name.function.preprocessor",
+            "entity.name.function"
+          ],
+          "function": [
+            "entity.name.function.label.fasm",
+            "entity.name.function"
+          ],
+          "variable": [
+            "variable"
+          ],
+          "variable.defaultLibrary": [
+            "variable.language.register.fasm",
+            "variable.language"
+          ],
+          "variable.readonly": [
+            "variable.other.constant.fasm",
+            "variable.other.constant"
+          ],
+          "property": [
+            "variable.other.property.fasm",
+            "variable.other.property"
+          ],
+          "struct": [
+            "entity.name.type.struct.fasm",
+            "entity.name.type"
+          ]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[fasm]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
     "snippets": [
       {
         "language": "fasm",
