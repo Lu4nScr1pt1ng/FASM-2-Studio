@@ -2,12 +2,24 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  CodeAction,
+  CodeActionKind,
+  CodeActionParams,
   CompletionItem,
   createConnection,
   DefinitionParams,
   DidChangeConfigurationParams,
+  DocumentFormattingParams,
+  DocumentHighlight,
+  DocumentHighlightParams,
+  DocumentLink,
+  DocumentLinkParams,
+  DocumentRangeFormattingParams,
   DocumentSymbolParams,
   FileChangeType,
+  FoldingRange,
+  FoldingRangeParams,
+  FormattingOptions,
   Hover,
   HoverParams,
   InitializeParams,
@@ -28,6 +40,7 @@ import {
   TextDocumentPositionParams,
   TextDocumentSyncKind,
   TextDocuments,
+  TextEdit,
   WorkspaceEdit,
   WorkspaceSymbolParams,
 } from 'vscode-languageserver/node';
@@ -35,47 +48,34 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
 import { invalidateCompilerCache, resolveCompilerOnPath } from './compilerDiscovery';
 import { detectDialect } from './dialect';
-import { getCompletions } from './features/completion';
+import { getCodeActions } from './features/codeActions';
+import { getCompletions, resolveCompletionItem } from './features/completion';
 import { getDefinitions } from './features/definition';
+import { getDocumentHighlights } from './features/documentHighlight';
+import { getDocumentLinks } from './features/documentLink';
 import { getDocumentSymbols } from './features/documentSymbols';
 import { runDiagnostics } from './features/diagnostics';
+import { detectEol, FormatOptions, formatLines } from './features/format';
+import { getFoldingRanges } from './features/foldingRange';
 import { getHover } from './features/hover';
+import { detectIsa } from './isa';
 import { buildLiveShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
 import { getRenameEdit, isRenameable } from './features/rename';
 import { getSemanticTokens, SEMANTIC_TOKENS_LEGEND } from './features/semanticTokens';
 import { getSignatureHelp } from './features/signatureHelp';
 import { getWorkspaceSymbols } from './features/workspaceSymbols';
+import { FasmSettings, SettingsStore } from './settings';
 import { Dialect } from './types';
 import { Workspace } from './workspace';
-
-interface FasmSettings {
-  defaultDialect: Dialect;
-  fasm2CompilerPath: string;
-  fasm1CompilerPath: string;
-  diagnosticsEnabled: boolean;
-  diagnosticsDebounceMs: number;
-  includePath: string;
-  fasm2Preload: string;
-}
-
-// Empty compiler path settings mean "auto-detect on PATH", resolved lazily via
-// resolveCompilerOnPath — see the comment at its call site in runDiagnosticsFor.
-const DEFAULT_SETTINGS: FasmSettings = {
-  defaultDialect: 'fasm2',
-  fasm2CompilerPath: '',
-  fasm1CompilerPath: '',
-  diagnosticsEnabled: true,
-  diagnosticsDebounceMs: 400,
-  includePath: '',
-  fasm2Preload: '',
-};
 
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments(TextDocument);
 const workspace = new Workspace();
 
-let settings: FasmSettings = DEFAULT_SETTINGS;
+// Empty compiler path settings mean "auto-detect on PATH", resolved lazily via
+// resolveCompilerOnPath — see the comment at its call site in runDiagnosticsFor.
+const settingsStore = new SettingsStore(connection);
 const dialectCache = new Map<string, Dialect>();
 const diagnosticTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const diagnosticGenerations = new Map<string, number>();
@@ -99,23 +99,44 @@ function logHandlerError(context: string, err: unknown): void {
 }
 
 function resolveDialect(uri: string, text: string): Dialect {
-  const dialect = detectDialect(text, settings.defaultDialect);
+  const dialect = detectDialect(text, settingsStore.get(uri).defaultDialect);
   dialectCache.set(uri, dialect);
   return dialect;
 }
 
 function currentDialect(uri: string): Dialect {
-  return dialectCache.get(uri) ?? settings.defaultDialect;
+  return dialectCache.get(uri) ?? settingsStore.get(uri).defaultDialect;
 }
 
-connection.onInitialize((_params: InitializeParams): InitializeResult => {
+/** Pushes the settings store's current view of include paths / preload into the workspace index.
+ * Called after anything that can change either — a pushed config change, or a folder's pulled
+ * values landing. */
+function syncWorkspaceIndexSettings(): void {
+  workspace.setIncludeSearchPaths(settingsStore.allIncludeSearchPaths());
+  workspace.setPreloadInclude(settingsStore.indexPreloadInclude());
+}
+
+connection.onInitialize((params: InitializeParams): InitializeResult => {
+  settingsStore.setPullSupported(params.capabilities.workspace?.configuration === true);
+  settingsStore.setWorkspaceFolders(
+    params.workspaceFolders?.map((f) => f.uri) ?? (params.rootUri ? [params.rootUri] : []),
+  );
+
   return {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
-      completionProvider: { resolveProvider: false, triggerCharacters: ['.', '#'] },
+      // resolveProvider: the ~1600-entry static tables ship without their documentation strings
+      // and have them filled in per highlighted row instead — see features/completion.ts.
+      completionProvider: { resolveProvider: true, triggerCharacters: ['.', '#'] },
       hoverProvider: true,
       definitionProvider: true,
       documentSymbolProvider: true,
+      documentHighlightProvider: true,
+      documentLinkProvider: { resolveProvider: false },
+      foldingRangeProvider: true,
+      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      documentFormattingProvider: true,
+      documentRangeFormattingProvider: true,
       referencesProvider: true,
       renameProvider: { prepareProvider: true },
       workspaceSymbolProvider: true,
@@ -123,8 +144,37 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       // Full-document only: these are cheap to recompute (one tokenizer pass plus a set lookup per
       // identifier) and a delta protocol would add real bookkeeping for no measurable gain.
       semanticTokensProvider: { legend: SEMANTIC_TOKENS_LEGEND, full: true },
+      workspace: {
+        // Needed for per-folder settings to mean anything: without folder awareness every
+        // resource-scoped setting collapses back to one window-wide value (see settings.ts).
+        workspaceFolders: { supported: true, changeNotifications: true },
+      },
     },
   };
+});
+
+connection.onInitialized(() => {
+  // Resolving every folder up front is what lets the *synchronous* settings path (dialect
+  // detection on a keystroke) be accurate rather than serving window-wide values until some
+  // async caller happens to warm the cache.
+  void settingsStore
+    .warmAll()
+    .then(() => {
+      syncWorkspaceIndexSettings();
+      for (const doc of documents.all()) scheduleDiagnostics(doc.uri);
+    })
+    .catch((err) => logHandlerError('initial settings resolution', err));
+
+  connection.workspace.onDidChangeWorkspaceFolders((event) => {
+    const current = new Set(settingsStore.workspaceFolders());
+    for (const removed of event.removed) current.delete(removed.uri);
+    for (const added of event.added) current.add(added.uri);
+    settingsStore.setWorkspaceFolders([...current]);
+    void settingsStore
+      .warmAll()
+      .then(() => syncWorkspaceIndexSettings())
+      .catch((err) => logHandlerError('workspace folder change', err));
+  });
 });
 
 /**
@@ -197,20 +247,21 @@ connection.onDidChangeWatchedFiles((params) => {
 
 connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
   try {
-    const incoming = (change.settings?.fasm2Studio ?? {}) as Partial<FasmSettings>;
-    settings = { ...DEFAULT_SETTINGS, ...incoming };
+    settingsStore.applyPushedSettings(change.settings?.fasm2Studio as Partial<FasmSettings> | undefined);
     invalidateCompilerCache();
-    workspace.setIncludeSearchPaths(
-      settings.includePath
-        .split(';')
-        .map((p) => p.trim())
-        .filter((p) => p.length > 0),
-    );
-    workspace.setPreloadInclude(settings.fasm2Preload.trim());
     // Settings changed, so whatever prompted the earlier dialect hint may no longer hold — allow
     // it to be raised again rather than staying silent for the rest of the session.
     dialectSuggested = false;
-    // Dialect defaults may have changed; re-resolved lazily on next parse rather than eagerly here.
+    // applyPushedSettings dropped every cached per-folder pull, so re-resolve them before feeding
+    // the index: doing it from the pushed window-wide value alone would undo the folder scoping
+    // on every settings edit. Dialect defaults are re-resolved lazily on the next parse.
+    void settingsStore
+      .warmAll()
+      .then(() => {
+        syncWorkspaceIndexSettings();
+        for (const doc of documents.all()) scheduleDiagnostics(doc.uri);
+      })
+      .catch((err) => logHandlerError('settings re-resolution', err));
   } catch (err) {
     logHandlerError('onDidChangeConfiguration', err);
   }
@@ -250,6 +301,7 @@ function reparse(doc: TextDocument): void {
 }
 
 function scheduleDiagnostics(uri: string): void {
+  const settings = settingsStore.get(uri);
   if (!settings.diagnosticsEnabled) return;
 
   const existing = diagnosticTimers.get(uri);
@@ -293,6 +345,7 @@ async function suggestDialectIfMisconfigured(
 ): Promise<void> {
   if (dialectSuggested) return;
 
+  const settings = await settingsStore.resolve(uri);
   const other: Dialect = dialect === 'fasm1' ? 'fasm2' : 'fasm1';
   const configured = other === 'fasm1' ? settings.fasm1CompilerPath : settings.fasm2CompilerPath;
   const otherPath = configured || (await resolveCompilerOnPath(other));
@@ -313,20 +366,42 @@ async function suggestDialectIfMisconfigured(
   connection.sendNotification('fasm2Studio/suggestDialect', { uri, dialect: other });
 }
 
+/**
+ * Last reason reported to the client for each document via 'fasm2Studio/diagnosticsUnavailable'
+ * (undefined = "diagnostics are working"). Kept so an unchanged state is not re-sent on every
+ * keystroke — the notification is meant to describe a standing condition, not to fire repeatedly.
+ */
+const diagnosticsUnavailableReason = new Map<string, string | undefined>();
+
+/**
+ * Tells the client whether live error checking is actually running for `uri`.
+ *
+ * Without this, every failure to *run* the compiler — a spawn failure, a timeout on a large
+ * project, a path pointing at something that isn't an assembler — cleared the document's
+ * diagnostics and said nothing, which on screen is indistinguishable from "your code is fine".
+ * The client renders this in the status bar rather than as a popup: it is a standing condition,
+ * and a notification that reappears on every edit would be intolerable.
+ */
+function reportDiagnosticsAvailability(uri: string, reason: string | undefined): void {
+  if (diagnosticsUnavailableReason.get(uri) === reason) return;
+  diagnosticsUnavailableReason.set(uri, reason);
+  connection.sendNotification('fasm2Studio/diagnosticsUnavailable', { uri, reason });
+}
+
 async function runDiagnosticsFor(uri: string, generation: number): Promise<void> {
   const doc = documents.get(uri);
   if (!doc) return;
 
+  const settings = await settingsStore.resolve(uri);
   const dialect = currentDialect(uri);
   const configuredPath = dialect === 'fasm1' ? settings.fasm1CompilerPath : settings.fasm2CompilerPath;
   const compilerPath = configuredPath || (await resolveCompilerOnPath(dialect));
 
   if (!compilerPath) {
-    connection.console.warn(
-      `fasm2-studio: diagnostics unavailable for ${uri}: no ${dialect} compiler found on PATH ` +
-        `(set fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'} or install it).`,
-    );
+    const reason = `no ${dialect} compiler found on PATH (set fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'} or install it)`;
+    connection.console.warn(`fasm2-studio: diagnostics unavailable for ${uri}: ${reason}.`);
     connection.sendDiagnostics({ uri, diagnostics: [] });
+    reportDiagnosticsAvailability(uri, reason);
     return;
   }
 
@@ -424,10 +499,12 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     if (result.toolError) {
       connection.console.warn(`fasm2-studio: diagnostics unavailable for ${uri}: ${result.toolError}`);
       connection.sendDiagnostics({ uri, diagnostics: [] });
+      reportDiagnosticsAvailability(uri, result.toolError);
       return;
     }
 
     connection.sendDiagnostics({ uri, diagnostics: result.diagnostics });
+    reportDiagnosticsAvailability(uri, undefined);
 
     if (result.diagnostics.length > 0) {
       await suggestDialectIfMisconfigured(uri, dialect, {
@@ -481,6 +558,7 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     void workspace.reindexFile(uri, resolveDialect).catch((err) => logHandlerError('reindexFile (onDidClose)', err));
     dialectCache.delete(uri);
     diagnosticGenerations.delete(uri);
+    diagnosticsUnavailableReason.delete(uri);
     const timer = diagnosticTimers.get(uri);
     if (timer) clearTimeout(timer);
     diagnosticTimers.delete(uri);
@@ -492,10 +570,29 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
 
 connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] => {
   try {
-    return getCompletions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri));
+    const doc = documents.get(params.textDocument.uri);
+    // The text before the cursor on its own line is all the context ranking needs: it decides
+    // whether a mnemonic or an operand is being typed. See features/completion.ts.
+    const linePrefix = doc
+      ? doc.getText({ start: { line: params.position.line, character: 0 }, end: params.position })
+      : '';
+    return getCompletions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), linePrefix);
   } catch (err) {
     logHandlerError('onCompletion', err);
     return [];
+  }
+});
+
+/** Fills in the documentation the completion list deliberately omitted — see
+ * features/completion.ts's note on why the static tables ship without it. */
+connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
+  try {
+    const uri = (item.data as { uri?: string } | undefined)?.uri;
+    const dialect = uri ? currentDialect(uri) : 'fasm2';
+    return resolveCompletionItem(item, dialect, uri ? detectIsa(workspace, uri, dialect) : 'x86');
+  } catch (err) {
+    logHandlerError('onCompletionResolve', err);
+    return item;
   }
 });
 
@@ -596,6 +693,122 @@ connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | undefi
   } catch (err) {
     logHandlerError('onSignatureHelp', err);
     return undefined;
+  }
+});
+
+connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const word = getWordAtPosition(doc, params.position);
+    if (!word) return [];
+    return getDocumentHighlights(workspace, params.textDocument.uri, params.position.line, word);
+  } catch (err) {
+    logHandlerError('onDocumentHighlight', err);
+    return [];
+  }
+});
+
+connection.onDocumentLinks((params: DocumentLinkParams): DocumentLink[] => {
+  try {
+    return getDocumentLinks(workspace, params.textDocument.uri);
+  } catch (err) {
+    logHandlerError('onDocumentLinks', err);
+    return [];
+  }
+});
+
+connection.onFoldingRanges((params: FoldingRangeParams): FoldingRange[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    return getFoldingRanges(doc.getText());
+  } catch (err) {
+    logHandlerError('onFoldingRanges', err);
+    return [];
+  }
+});
+
+connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const word = getWordAtPosition(doc, params.range.start);
+    if (!word) return [];
+    return getCodeActions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word, doc.getText());
+  } catch (err) {
+    logHandlerError('onCodeAction', err);
+    return [];
+  }
+});
+
+/** Turns the client's own FormattingOptions plus this extension's column settings into one
+ * FormatOptions. The client owns indentation style (it is a per-editor preference every language
+ * shares); the columns are fasm-specific and come from settings. */
+function formatOptionsFor(uri: string, options: FormattingOptions): FormatOptions {
+  const settings = settingsStore.get(uri);
+  return {
+    mnemonicColumn: settings.formatMnemonicColumn,
+    operandColumn: settings.formatOperandColumn,
+    commentColumn: settings.formatCommentColumn,
+    useTabs: !options.insertSpaces,
+    tabSize: options.tabSize > 0 ? options.tabSize : 4,
+  };
+}
+
+connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const text = doc.getText();
+    const eol = detectEol(text);
+    const formatted = formatLines(text, formatOptionsFor(params.textDocument.uri, params.options)).join(eol);
+    if (formatted === text) return [];
+    return [
+      {
+        range: { start: { line: 0, character: 0 }, end: doc.positionAt(text.length) },
+        newText: formatted,
+      },
+    ];
+  } catch (err) {
+    logHandlerError('onDocumentFormatting', err);
+    return [];
+  }
+});
+
+/**
+ * Range formatting re-formats the whole document and then returns only the lines inside the
+ * requested range. Formatting the selected text alone would get its indentation wrong: the depth
+ * of a line depends on every block opened above it, which a selection starting mid-file does not
+ * contain.
+ */
+connection.onDocumentRangeFormatting((params: DocumentRangeFormattingParams): TextEdit[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const text = doc.getText();
+    const formatted = formatLines(text, formatOptionsFor(params.textDocument.uri, params.options));
+    const original = text.split(/\r\n|\r|\n/);
+
+    const first = params.range.start.line;
+    // A range ending at character 0 does not actually include that line.
+    const last = Math.min(formatted.length - 1, params.range.end.character === 0 ? params.range.end.line - 1 : params.range.end.line);
+    if (last < first) return [];
+
+    const edits: TextEdit[] = [];
+    for (let line = first; line <= last; line++) {
+      if (formatted[line] === original[line]) continue;
+      // One edit per line, replacing the line's content but not its terminator — so the
+      // document's existing line endings are never touched.
+      edits.push({
+        range: { start: { line, character: 0 }, end: { line, character: original[line].length } },
+        newText: formatted[line],
+      });
+    }
+    return edits;
+  } catch (err) {
+    logHandlerError('onDocumentRangeFormatting', err);
+    return [];
   }
 });
 

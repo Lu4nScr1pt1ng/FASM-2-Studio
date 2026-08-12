@@ -125,6 +125,11 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
   gdbPath?: string;
   cwd?: string;
   stopOnEntry?: boolean;
+  /** Command-line arguments for the debugged program itself (not for gdb). */
+  args?: string[];
+  /** Extra environment variables for the debugged program. Merged over the adapter's own
+   * environment, which gdb passes down to the inferior it starts. */
+  env?: Record<string, string>;
 }
 
 export class FasmDebugSession extends DebugSession {
@@ -184,6 +189,22 @@ export class FasmDebugSession extends DebugSession {
     response.body.supportsSetExpression = true;
     response.body.supportsSteppingGranularity = true;
     response.body.supportsDisassembleRequest = true;
+    // Every capability below is gated on the client *seeing it declared here* — VS Code hides the
+    // corresponding UI entirely otherwise. So an unstated capability is not a graceful degradation,
+    // it is a feature that silently does not exist: no "Add Conditional Breakpoint" menu item, no
+    // "View Binary Data", no watchpoints, no breakpoints in the disassembly view you are looking at.
+    response.body.supportsConditionalBreakpoints = true;
+    response.body.supportsHitConditionalBreakpoints = true;
+    response.body.supportsLogPoints = true;
+    response.body.supportsFunctionBreakpoints = true;
+    response.body.supportsInstructionBreakpoints = true;
+    response.body.supportsDataBreakpoints = true;
+    response.body.supportsReadMemoryRequest = true;
+    response.body.supportsWriteMemoryRequest = true;
+    response.body.supportsGotoTargetsRequest = true;
+    response.body.supportsRestartRequest = true;
+    response.body.supportsExceptionInfoRequest = true;
+    response.body.supportsTerminateRequest = true;
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -210,6 +231,10 @@ export class FasmDebugSession extends DebugSession {
       this.gdb.start({
         gdbPath: args.gdbPath || (process.platform === 'darwin' ? 'lldb-mi' : 'gdb'),
         programPath: path.resolve(args.program),
+        // gdb's own --args form takes the program's arguments directly, and the inferior inherits
+        // gdb's environment — so both reach the debugged program without any extra MI commands.
+        programArgs: args.args ?? [],
+        env: args.env,
         cwd: args.cwd ?? path.dirname(args.program),
       });
 
@@ -265,6 +290,14 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
+  /**
+   * The signal that stopped the program, kept for exceptionInfoRequest. Assembly programs fault
+   * far more often than they hit a planned breakpoint — a bad address, a misaligned stack, a wrong
+   * register width — so "which signal, and what does it mean" is the single most valuable thing
+   * this adapter can say at a stop, and it used to discard it entirely.
+   */
+  private lastSignal: { name: string; meaning: string } | undefined;
+
   private onStopped(data: Record<string, unknown>): void {
     const reasonRaw = typeof data.reason === 'string' ? data.reason : '';
     if (reasonRaw === 'exited-normally' || reasonRaw.startsWith('exited')) {
@@ -272,8 +305,53 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
 
-    const reason = reasonRaw === 'breakpoint-hit' ? 'breakpoint' : reasonRaw === 'signal-received' ? 'exception' : reasonRaw === 'end-stepping-range' ? 'step' : 'pause';
+    // A logpoint is a breakpoint whose whole purpose is to *not* stop: report and resume.
+    if (reasonRaw === 'breakpoint-hit' && this.handleLogPoint(data)) return;
+
+    // A watchpoint trigger reports as "data breakpoint" so VS Code names what actually stopped the
+    // program, rather than falling through to the generic "pause" every unrecognized reason got.
+    const isWatchpoint = reasonRaw.endsWith('watchpoint-trigger') || reasonRaw === 'watchpoint-scope';
+    const reason = isWatchpoint
+      ? 'data breakpoint'
+      : reasonRaw === 'breakpoint-hit'
+        ? 'breakpoint'
+        : reasonRaw === 'signal-received'
+          ? 'exception'
+          : reasonRaw === 'end-stepping-range'
+            ? 'step'
+            : 'pause';
+
+    if (reasonRaw === 'signal-received') {
+      const name = typeof data['signal-name'] === 'string' ? (data['signal-name'] as string) : 'signal';
+      const meaning = typeof data['signal-meaning'] === 'string' ? (data['signal-meaning'] as string) : '';
+      this.lastSignal = { name, meaning };
+      const stopped = new StoppedEvent(reason, MAIN_THREAD_ID);
+      // `description` is what VS Code shows in the call-stack header, `text` in the notification —
+      // without them a SIGSEGV reads only as the word "exception".
+      (stopped.body as DebugProtocol.StoppedEvent['body']).description = meaning ? `${name} (${meaning})` : name;
+      (stopped.body as DebugProtocol.StoppedEvent['body']).text = meaning ? `${name}: ${meaning}` : name;
+      this.sendEvent(stopped);
+      return;
+    }
+
+    this.lastSignal = undefined;
     this.sendEvent(new StoppedEvent(reason, MAIN_THREAD_ID));
+  }
+
+  protected exceptionInfoRequest(response: DebugProtocol.ExceptionInfoResponse): void {
+    const signal = this.lastSignal;
+    response.body = {
+      exceptionId: signal?.name ?? 'signal',
+      description: signal ? `${signal.name}${signal.meaning ? `: ${signal.meaning}` : ''}` : 'The program stopped on a signal.',
+      breakMode: 'always',
+      details: {
+        message: signal?.meaning ?? '',
+        // No stack trace to give: there is no unwind information in a DWARF-less assembly binary,
+        // which is the same reason stackTraceRequest reports a single frame.
+        stackTrace: undefined,
+      },
+    };
+    this.sendResponse(response);
   }
 
   protected async configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse): Promise<void> {
@@ -307,9 +385,7 @@ export class FasmDebugSession extends DebugSession {
         continue;
       }
       try {
-        const result = await this.gdb.sendCommand(`-break-insert *0x${address.toString(16)}`);
-        const bkpt = miData(result)?.bkpt as Record<string, unknown> | undefined;
-        const number = bkpt?.number !== undefined ? String(bkpt.number) : undefined;
+        const number = await this.insertBreakpoint(`*0x${address.toString(16)}`, bp);
         if (number) this.rememberBreakpoint(sourcePath, number);
         breakpoints.push({ verified: true, line: bp.line });
       } catch (err) {
@@ -320,6 +396,159 @@ export class FasmDebugSession extends DebugSession {
     response.body = { breakpoints };
     this.sendResponse(response);
   }
+
+  /**
+   * Inserts one breakpoint at `location` (any form gdb's `-break-insert` accepts) carrying DAP's
+   * optional condition / hit condition / log message, and returns its gdb breakpoint number.
+   *
+   * `condition` goes straight to gdb as `-c`, since a DAP condition is documented as an expression
+   * "in the language of the debugger" — for this adapter that is gdb's own expression syntax, the
+   * same one Watch and the Debug Console already use ("$eax == 4", "*(dword*)$esp > 0").
+   */
+  private async insertBreakpoint(
+    location: string,
+    bp: { condition?: string; hitCondition?: string; logMessage?: string },
+  ): Promise<string | undefined> {
+    if (!this.gdb) return undefined;
+    const condition = bp.condition?.trim();
+    const command = condition ? `-break-insert -c "${condition.replace(/"/g, '\\"')}" ${location}` : `-break-insert ${location}`;
+    const result = await this.gdb.sendCommand(command);
+    const bkpt = miData(result)?.bkpt as Record<string, unknown> | undefined;
+    const number = bkpt?.number !== undefined ? String(bkpt.number) : undefined;
+    if (!number) return undefined;
+
+    // DAP's hitCondition is "ignore this many hits first", which is exactly gdb's `-break-after`.
+    // Accepts a plain count; a ">5"/"==5" style expression is reduced to its number, since gdb has
+    // no notion of a hit-count comparison operator here.
+    const hits = bp.hitCondition ? Number.parseInt(bp.hitCondition.replace(/[^\d]/g, ''), 10) : NaN;
+    if (Number.isFinite(hits) && hits > 0) {
+      await this.gdb.sendCommand(`-break-after ${number} ${hits}`).catch(() => undefined);
+    }
+
+    if (bp.logMessage) this.logPoints.set(number, bp.logMessage);
+    else this.logPoints.delete(number);
+
+    return number;
+  }
+
+  /** gdb breakpoint number -> the DAP log message to print instead of stopping. */
+  private readonly logPoints = new Map<string, string>();
+
+  /**
+   * Handles a stop that landed on a logpoint: prints the message and resumes, without ever
+   * surfacing a StoppedEvent.
+   *
+   * Implemented in the adapter rather than with gdb's own `dprintf` because a DAP log message
+   * interpolates `{expression}` with the debugger's expression syntax, which has no direct
+   * translation to a printf format string plus argument list — and getting that translation
+   * subtly wrong would corrupt the very output the user added the logpoint to read.
+   */
+  private handleLogPoint(data: Record<string, unknown>): boolean {
+    const number = data.bkptno !== undefined ? String(data.bkptno) : undefined;
+    const message = number ? this.logPoints.get(number) : undefined;
+    if (!message) return false;
+
+    void this.interpolate(message)
+      .then((text) => {
+        this.sendEvent(new OutputEvent(`${text}\n`, 'console'));
+        return this.gdb?.sendCommand('-exec-continue');
+      })
+      .catch((err) => this.sendEvent(new OutputEvent(`logpoint failed: ${(err as Error).message}\n`, 'stderr')));
+    return true;
+  }
+
+  /** Replaces every `{expr}` in a logpoint message with gdb's evaluation of `expr`. */
+  private async interpolate(message: string): Promise<string> {
+    const parts = message.split(/(\{[^{}]*\})/);
+    const evaluated = await Promise.all(
+      parts.map(async (part) => {
+        if (!part.startsWith('{') || !part.endsWith('}')) return part;
+        const expression = part.slice(1, -1).trim();
+        if (!expression) return part;
+        try {
+          const result = await this.gdb!.sendCommand(`-data-evaluate-expression "${expression.replace(/"/g, '\\"')}"`);
+          const value = miData(result)?.value;
+          return typeof value === 'string' ? value : part;
+        } catch {
+          // A logpoint that mentions something unevaluatable should still print the rest of its
+          // message rather than failing outright.
+          return part;
+        }
+      }),
+    );
+    return evaluated.join('');
+  }
+
+  /**
+   * Breakpoints on a label by name. gdb cannot resolve these itself — fasm emits no symbol table —
+   * so they are resolved through the same listing-derived symbol map everything else here uses.
+   */
+  protected async setFunctionBreakPointsRequest(
+    response: DebugProtocol.SetFunctionBreakpointsResponse,
+    args: DebugProtocol.SetFunctionBreakpointsArguments,
+  ): Promise<void> {
+    const breakpoints: DebugProtocol.Breakpoint[] = [];
+    if (this.gdb && this.functionBreakpointNumbers.length > 0) {
+      await this.gdb.sendCommand(`-break-delete ${this.functionBreakpointNumbers.join(' ')}`).catch(() => undefined);
+      this.functionBreakpointNumbers = [];
+    }
+
+    for (const bp of args.breakpoints ?? []) {
+      const symbol = this.symbolMap.get(bp.name);
+      if (!symbol || !this.gdb) {
+        breakpoints.push({ verified: false, message: `No label named "${bp.name}" in the listing` });
+        continue;
+      }
+      try {
+        const number = await this.insertBreakpoint(`*0x${symbol.address.toString(16)}`, bp);
+        if (number) this.functionBreakpointNumbers.push(number);
+        breakpoints.push({ verified: true, instructionReference: `0x${symbol.address.toString(16)}` });
+      } catch (err) {
+        breakpoints.push({ verified: false, message: (err as Error).message });
+      }
+    }
+
+    response.body = { breakpoints };
+    this.sendResponse(response);
+  }
+
+  private functionBreakpointNumbers: string[] = [];
+
+  /**
+   * Breakpoints set directly in the Disassembly View. The view was already supported (see
+   * disassembleRequest); this is what makes the breakpoint gutter in it actually work, which
+   * matters most exactly where source lines are least useful — inside an expanded macro.
+   */
+  protected async setInstructionBreakpointsRequest(
+    response: DebugProtocol.SetInstructionBreakpointsResponse,
+    args: DebugProtocol.SetInstructionBreakpointsArguments,
+  ): Promise<void> {
+    const breakpoints: DebugProtocol.Breakpoint[] = [];
+    if (this.gdb && this.instructionBreakpointNumbers.length > 0) {
+      await this.gdb.sendCommand(`-break-delete ${this.instructionBreakpointNumbers.join(' ')}`).catch(() => undefined);
+      this.instructionBreakpointNumbers = [];
+    }
+
+    for (const bp of args.breakpoints ?? []) {
+      if (!this.gdb) {
+        breakpoints.push({ verified: false });
+        continue;
+      }
+      try {
+        const address = BigInt(bp.instructionReference) + BigInt(bp.offset ?? 0);
+        const number = await this.insertBreakpoint(`*0x${address.toString(16)}`, bp);
+        if (number) this.instructionBreakpointNumbers.push(number);
+        breakpoints.push({ verified: true, instructionReference: `0x${address.toString(16)}` });
+      } catch (err) {
+        breakpoints.push({ verified: false, message: (err as Error).message });
+      }
+    }
+
+    response.body = { breakpoints };
+    this.sendResponse(response);
+  }
+
+  private instructionBreakpointNumbers: string[] = [];
 
   private readonly breakpointsByFile = new Map<string, Set<string>>();
 
@@ -650,6 +879,9 @@ export class FasmDebugSession extends DebugSession {
             ? new Variable(sym.name, value, this.variableHandles.create(`labels:${sym.name}`))
             : new Variable(sym.name, value);
           v.evaluateName = sym.name;
+          // What makes "View Binary Data" (the hex editor) and "Break on Value Change" reachable
+          // on this row at all — VS Code offers neither without a memoryReference.
+          v.memoryReference = `0x${sym.address.toString(16)}`;
           return v;
         }),
       );
@@ -829,6 +1061,182 @@ export class FasmDebugSession extends DebugSession {
     const value = await this.readScalarAt(addressHex, bits);
     if (value === undefined) return `(could not read) ${addressHex}`;
     return `0x${value.toString(16).padStart(bits / 4, '0')}  ${value.toString()}`;
+  }
+
+  /**
+   * Watchpoints: "stop when this memory changes". gdb implements them natively (`-break-watch`),
+   * and they are one of the most useful tools available when debugging assembly — a wrong store
+   * through a mis-computed address is the classic bug, and a watchpoint finds it in one run where
+   * stepping finds it in a hundred.
+   *
+   * `dataId` is just the address expression to watch; the Variables view offers this on a Data
+   * Label row, whose `evaluateName` is its source label.
+   */
+  protected dataBreakpointInfoRequest(response: DebugProtocol.DataBreakpointInfoResponse, args: DebugProtocol.DataBreakpointInfoArguments): void {
+    const name = args.name;
+    const symbol = this.symbolMap.get(name);
+    if (!symbol) {
+      response.body = { dataId: null, description: `"${name}" is not a data label this listing knows an address for.` };
+      this.sendResponse(response);
+      return;
+    }
+    const size = symbol.elementSizeBytes !== undefined && symbol.elementCount !== undefined ? symbol.elementSizeBytes * symbol.elementCount : undefined;
+    response.body = {
+      dataId: `0x${symbol.address.toString(16)}${size ? `:${size}` : ''}`,
+      description: `${name} at 0x${symbol.address.toString(16)}${size ? ` (${size} bytes)` : ''}`,
+      accessTypes: ['read', 'write', 'readWrite'],
+      canPersist: false,
+    };
+    this.sendResponse(response);
+  }
+
+  protected async setDataBreakpointsRequest(
+    response: DebugProtocol.SetDataBreakpointsResponse,
+    args: DebugProtocol.SetDataBreakpointsArguments,
+  ): Promise<void> {
+    const breakpoints: DebugProtocol.Breakpoint[] = [];
+    if (this.gdb && this.dataBreakpointNumbers.length > 0) {
+      await this.gdb.sendCommand(`-break-delete ${this.dataBreakpointNumbers.join(' ')}`).catch(() => undefined);
+      this.dataBreakpointNumbers = [];
+    }
+
+    for (const bp of args.breakpoints ?? []) {
+      if (!this.gdb) {
+        breakpoints.push({ verified: false });
+        continue;
+      }
+      const [address, size] = bp.dataId.split(':');
+      // gdb's own watch/rwatch/awatch, via MI's -break-watch flags: no flag = write, -r = read,
+      // -a = both. The cast gives the watched region the right width; without one gdb watches
+      // whatever default size it infers for a bare address.
+      const flag = bp.accessType === 'read' ? '-r ' : bp.accessType === 'readWrite' ? '-a ' : '';
+      const width = size ? Number.parseInt(size, 10) : 0;
+      // Every cast here is deliberately a single word. MI splits a command on whitespace, so
+      // "*(int *)0x..." arrives as two arguments and is rejected with "Garbage following
+      // <expression>" — and "long long" would fail the same way, hence plain "long", which is the
+      // 8-byte type on the LP64 targets this debugger runs against.
+      const castType = width === 1 ? 'char' : width === 2 ? 'short' : width === 8 ? 'long' : 'int';
+      try {
+        const result = await this.gdb.sendCommand(`-break-watch ${flag}*(${castType}*)${address}`);
+        const data = miData(result);
+        const watch = (data?.wpt ?? data?.['hw-awpt'] ?? data?.['hw-rwpt']) as Record<string, unknown> | undefined;
+        const number = watch?.number !== undefined ? String(watch.number) : undefined;
+        if (number) this.dataBreakpointNumbers.push(number);
+        breakpoints.push({ verified: number !== undefined });
+      } catch (err) {
+        breakpoints.push({ verified: false, message: (err as Error).message });
+      }
+    }
+
+    response.body = { breakpoints };
+    this.sendResponse(response);
+  }
+
+  private dataBreakpointNumbers: string[] = [];
+
+  /**
+   * Raw memory, which is what backs VS Code's hex editor ("View Binary Data" on a variable). For
+   * assembly this is not a niche view: a data label is a byte range, and reading it as bytes is
+   * frequently the only honest way to look at it.
+   */
+  protected async readMemoryRequest(response: DebugProtocol.ReadMemoryResponse, args: DebugProtocol.ReadMemoryArguments): Promise<void> {
+    try {
+      const address = BigInt(args.memoryReference) + BigInt(args.offset ?? 0);
+      const count = args.count ?? 0;
+      const bytes = count > 0 ? await this.readMemoryBytes(`0x${address.toString(16)}`, count) : [];
+      response.body = {
+        address: `0x${address.toString(16)}`,
+        data: bytes ? Buffer.from(bytes).toString('base64') : undefined,
+        unreadableBytes: bytes ? 0 : count,
+      };
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendErrorResponse(response, 11, (err as Error).message);
+    }
+  }
+
+  protected async writeMemoryRequest(response: DebugProtocol.WriteMemoryResponse, args: DebugProtocol.WriteMemoryArguments): Promise<void> {
+    try {
+      if (!this.gdb) throw new Error('Debug session is not running');
+      const address = BigInt(args.memoryReference) + BigInt(args.offset ?? 0);
+      const bytes = Buffer.from(args.data, 'base64');
+      if (bytes.length === 0) {
+        response.body = { bytesWritten: 0 };
+        this.sendResponse(response);
+        return;
+      }
+      // -data-write-memory-bytes takes the contents as one contiguous hex string.
+      await this.gdb.sendCommand(`-data-write-memory-bytes 0x${address.toString(16)} ${bytes.toString('hex')}`);
+      response.body = { bytesWritten: bytes.length, offset: 0 };
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendErrorResponse(response, 12, (err as Error).message);
+    }
+  }
+
+  /**
+   * "Set next statement" — move the program counter to another line without executing what lies
+   * between. Natural in assembly, where skipping a call or re-running a block is an ordinary thing
+   * to want, and gdb supports it directly via `-exec-jump`.
+   */
+  protected gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments): void {
+    const sourcePath = args.source.path ? path.resolve(args.source.path) : undefined;
+    const address = sourcePath ? this.addressMap?.locationToAddress.get(`${sourcePath}:${args.line}`) : undefined;
+    response.body = {
+      targets:
+        address === undefined
+          ? []
+          : [
+              {
+                id: Number(address & 0x7fffffffn),
+                label: `line ${args.line}`,
+                line: args.line,
+                instructionPointerReference: `0x${address.toString(16)}`,
+              },
+            ],
+    };
+    // Remembered by id, since DAP's gotoRequest carries only the target id back.
+    if (address !== undefined) this.gotoTargets.set(Number(address & 0x7fffffffn), address);
+    this.sendResponse(response);
+  }
+
+  private readonly gotoTargets = new Map<number, bigint>();
+
+  protected async gotoRequest(response: DebugProtocol.GotoResponse, args: DebugProtocol.GotoArguments): Promise<void> {
+    const address = this.gotoTargets.get(args.targetId);
+    if (address === undefined || !this.gdb) {
+      this.sendErrorResponse(response, 13, 'That location is not a known instruction address.');
+      return;
+    }
+    try {
+      // -exec-jump resumes at the new address. The program is then running, so the resulting stop
+      // arrives through the ordinary 'stopped' path; announce the move itself as a stop so the UI
+      // re-reads the program counter even if nothing else halts it.
+      this.sendResponse(response);
+      await this.gdb.sendCommand(`-break-insert -t *0x${address.toString(16)}`);
+      await this.gdb.sendCommand(`-exec-jump *0x${address.toString(16)}`);
+    } catch (err) {
+      this.sendEvent(new OutputEvent(`set next statement failed: ${(err as Error).message}\n`, 'stderr'));
+    }
+  }
+
+  /**
+   * Restart re-runs the loaded program in the same gdb session, which keeps every breakpoint,
+   * watchpoint and console setting already established — much cheaper, and much less disruptive,
+   * than VS Code's fallback of terminating the session and launching a whole new one.
+   */
+  protected async restartRequest(response: DebugProtocol.RestartResponse): Promise<void> {
+    if (!this.gdb) {
+      this.sendErrorResponse(response, 14, 'Debug session is not running');
+      return;
+    }
+    try {
+      this.sendResponse(response);
+      this.lastSignal = undefined;
+      await this.gdb.sendCommand('-exec-run');
+    } catch (err) {
+      this.sendEvent(new OutputEvent(`restart failed: ${(err as Error).message}\n`, 'stderr'));
+    }
   }
 
   protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {

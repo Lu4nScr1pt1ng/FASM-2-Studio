@@ -1,5 +1,93 @@
 # Changelog
 
+## 1.6.0
+
+### Fixed
+
+- The status bar refreshes when anything it displays changes. It only ever listened for the active
+  editor changing, so after `FASM: Select Compiler` it kept naming the *previous* compiler, after
+  `FASM: Select Dialect` the previous dialect, and while typing the very marker that flips a file's
+  detected dialect (`end macro`, `namespace`, `iterate`) it kept reporting the pre-edit answer —
+  until you happened to switch tabs. It now also re-detects from the live buffer rather than from
+  what is last saved to disk.
+- Diagnostics that cannot run now say so. A compiler that failed to spawn, or timed out on a large
+  project, cleared the document's diagnostics silently — on screen that is indistinguishable from
+  "your code is fine". The status bar states the condition, once, rather than as a notification that
+  returns on every keystroke.
+- `FASM: Run` on a file that was never built explains that, and offers to build, instead of sending
+  an absolute path to the shell and surfacing its "no such file or directory".
+- Build/Run/Debug invoked from the explorer act on the file that was right-clicked. The commands
+  read the active editor and ignored the resource argument a menu passes them.
+
+### Settings are now per folder
+
+Every setting was `window`-scoped, so folder-level values were silently ignored: a workspace holding
+a fasm1 project and a fasm2 project got one dialect for both, and whichever folder lost reported
+errors across code that assembles perfectly. `defaultDialect`, `includePath`, `fasm2Preload`,
+`buildOutputPath`, the diagnostics settings and the new formatter settings are now `resource`-scoped,
+and the executable paths `machine-overridable`.
+
+The client passes the file it is acting on behalf of to every configuration read, and the server
+resolves settings through `workspace/configuration` per workspace folder, falling back to the pushed
+window-wide value. `FASM: Select Dialect` writes to the specific folder's settings in a multi-root
+workspace instead of the shared `.code-workspace`. The workspace index takes the union of every
+folder's include paths, since an index answers across folders at once.
+
+### New editor features
+
+- **Document highlight** for the symbol under the cursor. A macro-`local` name highlights only
+  within the macro that declares it, not every same-named local in the file.
+- **Folding ranges** computed with a stack over real tokens, replacing the line-local
+  `folding.markers` regexes: nested `macro`/`if`/`while` pairs now match their own terminators, a
+  block keyword inside a string or comment opens nothing, an unclosed block does not fold to
+  end-of-file, and `;region`/`;endregion` and runs of comment lines fold too.
+- **Document links** on `include` paths. Only offered when the path resolves, which makes their
+  absence the diagnostic for the most common fasmg setup failure.
+- **A quick fix that inserts a missing `include`** for a symbol defined elsewhere in the workspace
+  but unreachable from this file. The insertion point is after the last existing include, else after
+  the header directives.
+- **Format Document / Format Selection.** Aligns labels, mnemonics, operands and trailing comments
+  into columns and indents block bodies. Structural keywords stay at the margin, so `struct` is not
+  laid out to the right of its own fields' labels. Driven by the tokenizer, so a `;` inside a string
+  is not a comment; a line it cannot confidently parse is returned verbatim; colon-less data labels
+  (`msg db 'hi',0`) and `NAME = value` are recognized as labels rather than mnemonics. It never
+  reorders, inserts or rewrites a token, and it preserves the file's existing line endings.
+- Completion declares `resolveProvider` and ships the ~1600-entry static tables without their
+  documentation strings, filling each in only for the row the client highlights. Items are ranked by
+  cursor context (statement vs operand position) via `sortText`; nothing is filtered, since a wrong
+  guess would hide the one item that was wanted.
+
+### Debug adapter
+
+- Conditional, hit-count and log-point breakpoints. Conditions pass to gdb's `-break-insert -c`;
+  hit counts map to `-break-after`. Log points are handled in the adapter rather than via `dprintf`,
+  because a DAP log message interpolates `{expression}` in the debugger's own expression syntax,
+  which has no faithful translation to a printf format string.
+- Function breakpoints on a label name, resolved through the listing-derived symbol map, since fasm
+  emits no symbol table for gdb to consult.
+- Instruction breakpoints, so the breakpoint gutter in the disassembly view works.
+- Data breakpoints (gdb watchpoints), plus `memoryReference` on data-label rows, which is what makes
+  "Break on Value Change" and "View Binary Data" reachable at all.
+- `readMemory`/`writeMemory` behind VS Code's hex editor.
+- `gotoTargets`/`goto` (set next statement) and `restart` in place, which keeps every breakpoint and
+  watchpoint instead of tearing the session down.
+- Signals are named. `signal-name`/`signal-meaning` were parsed and discarded, so every fault
+  surfaced as the bare word "exception"; a null dereference now reads as `SIGSEGV (Segmentation
+  fault)`, with `exceptionInfo` behind it. Watchpoint stops report as `data breakpoint` rather than
+  falling through to the generic `pause`.
+- `args` and `env` in the launch configuration.
+
+### Manifest
+
+- `contributes.menus`: Build/Run/Debug on the editor title bar, the editor context menu and the
+  explorer context menu.
+- A four-step `contributes.walkthroughs` for the toolchain setup this extension cannot bundle.
+- `capabilities.untrustedWorkspaces` (unsupported: the assembler and gdb paths come from workspace
+  settings) and `virtualWorkspaces`.
+- `fasm2Studio.restartLanguageServer`, and 14 more snippets (ELF32/PE32 skeletons, Linux syscall
+  stubs, `proc`/`endp`, `namespace`, `iterate`, `match`, `calminstruction`, and others).
+- A terminal link provider makes fasm's `file.asm [12]:` headers clickable in any terminal.
+
 ## 1.5.0
 
 - Semantic tokens now cover *references*, not just definitions. The grammar can scope `start:`, but

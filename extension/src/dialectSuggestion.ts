@@ -10,7 +10,8 @@
 // it, so the suggestion is never a guess.
 
 import * as vscode from 'vscode';
-import { CONFIG_SECTION, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
+import { configurationTargetLabel, CONFIG_SECTION, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
+import { refreshStatusBar } from './statusBar';
 import { Dialect, DIALECT_LABEL } from './types';
 
 export interface SuggestDialectParams {
@@ -47,14 +48,18 @@ async function promptForDialect(params: SuggestDialectParams): Promise<void> {
   const choice = await vscode.window.showWarningMessage(suggestionMessage(params.dialect, fileName), useIt, 'Ignore');
   if (choice !== useIt) return;
 
-  const target = projectConfigurationTarget(hasWorkspaceFolder());
+  // Written against the very file that proved the dialect wrong, so in a multi-root workspace the
+  // fix lands in that file's own project rather than being imposed on every other folder too.
+  const resource = vscode.Uri.parse(params.uri);
+  const target = projectConfigurationTarget(hasWorkspaceFolder(), resource);
   try {
-    await vscode.workspace.getConfiguration(CONFIG_SECTION).update(DEFAULT_DIALECT_SETTING, params.dialect, target);
+    await vscode.workspace.getConfiguration(CONFIG_SECTION, resource).update(DEFAULT_DIALECT_SETTING, params.dialect, target);
   } catch (err) {
     void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}Could not save the setting: ${(err as Error).message}`);
     return;
   }
+  refreshStatusBar();
   void vscode.window.showInformationMessage(
-    `${MESSAGE_PREFIX}Dialect set to ${DIALECT_LABEL[params.dialect]}${target === vscode.ConfigurationTarget.Workspace ? ' for this workspace' : ''}.`,
+    `${MESSAGE_PREFIX}Dialect set to ${DIALECT_LABEL[params.dialect]} ${configurationTargetLabel(target)}.`,
   );
 }

@@ -32,8 +32,8 @@ export interface FasmTaskDefinition extends vscode.TaskDefinition {
  * mechanism fasmg's own bundled make.bat scripts set up themselves (e.g.
  * packages/x86/examples/windows/make.bat does `set include=..\..\include` before building).
  */
-function configuredIncludePathEnv(): { [key: string]: string } | undefined {
-  const configured = fasmConfig().get<string>('includePath', '').trim();
+function configuredIncludePathEnv(sourceFsPath: string): { [key: string]: string } | undefined {
+  const configured = fasmConfig(vscode.Uri.file(sourceFsPath)).get<string>('includePath', '').trim();
   return configured ? { INCLUDE: configured } : undefined;
 }
 
@@ -63,7 +63,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
     throw new Error(`${MESSAGE_PREFIX}Debug currently only supports fasm2/fasmg sources (fasm1 listing format is not supported).`);
   }
 
-  const compiler = await resolveCompiler(dialect);
+  const compiler = await resolveCompiler(dialect, vscode.Uri.file(sourceFsPath));
   if (!compiler) {
     throw new Error(
       `${MESSAGE_PREFIX}Could not find a ${DIALECT_LABEL[dialect]} executable on PATH. ` +
@@ -85,7 +85,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   // official fasm2 wrapper script does. Added before the listing include below so that a debug
   // build still gets both, in the order the preload expects (instruction set first). fasm1 has its
   // own built-in instruction set and no -i flag, so this never applies there.
-  const preload = dialect === 'fasm2' ? fasmConfig().get<string>('fasm2Preload', '').trim() : '';
+  const preload = dialect === 'fasm2' ? fasmConfig(vscode.Uri.file(sourceFsPath)).get<string>('fasm2Preload', '').trim() : '';
   if (preload) {
     args.push('-i', { value: `include "${preload.replace(/"/g, '""')}"`, quoting: vscode.ShellQuoting.Strong });
   }
@@ -102,7 +102,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   // configuredIncludePathEnv's doc comment).
   const execution = new vscode.ShellExecution(compiler.path, args, {
     cwd: path.dirname(sourceFsPath),
-    env: configuredIncludePathEnv(),
+    env: configuredIncludePathEnv(sourceFsPath),
   });
 
   const task = new vscode.Task(def, vscode.TaskScope.Workspace, name, 'fasm', execution);

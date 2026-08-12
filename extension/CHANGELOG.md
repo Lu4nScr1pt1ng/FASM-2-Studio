@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.6.0
+
+### Fixed
+
+- The status bar no longer goes stale. It kept showing the previous compiler after `FASM: Select
+  Compiler`, the previous dialect after `FASM: Select Dialect`, and the pre-edit dialect while you
+  typed the very line that changes it — until you switched tabs.
+- When live error checking cannot actually run (a compiler that will not start, or a compile that
+  times out on a large project), the status bar now says so. Previously the Problems panel simply
+  went empty, which looks exactly like success.
+- `FASM: Run` on something you have not built yet offers to build it, instead of showing a shell
+  error about a path you never typed.
+- Build/Run/Debug from the explorer's right-click menu act on the file you clicked, not on whichever
+  tab happened to be focused.
+
+### Settings now work per folder
+
+If you open a workspace containing both a fasm1 project and a fasm2 project, each folder can now
+have its own dialect, include path and preload in its own `.vscode/settings.json`. Previously one
+value applied to the whole window, so one of the two projects reported errors on code that
+assembles perfectly. `FASM: Select Dialect` writes to the right folder.
+
+### New in the editor
+
+- **Format Document.** Aligns labels, mnemonics, operands and trailing comments into columns and
+  indents block bodies, with the columns configurable. It never reorders or rewrites a token, never
+  touches what is inside a string, and leaves your line endings alone.
+- **A quick fix that adds the missing `include`** when you use a macro or constant that exists
+  elsewhere in your workspace but is not reachable from the file you are in.
+- **Occurrence highlighting** for the symbol under the cursor, scoped properly — a name declared
+  `local` in a macro highlights only within that macro.
+- **Folding that matches real block structure.** Nested `macro`/`if`/`while` pairs now fold to their
+  own terminators, a block keyword inside a string or comment no longer opens a fold, and
+  `;region`/`;endregion` works.
+- **Clickable `include` paths.** A path that does not underline is one your project cannot actually
+  resolve — which is the usual cause of a fasmg project that will not build.
+- fasm's `file.asm [12]:` error headers are clickable in any terminal.
+- Completion is lighter and better ordered: mnemonics rank first where an instruction goes,
+  registers where an operand goes.
+
+### New in the debugger
+
+- Conditional breakpoints (`$ebx == 4`), hit-count breakpoints, and log points.
+- Function breakpoints on any label name.
+- Watchpoints — break when a data label is read or written.
+- Breakpoints in the disassembly view.
+- Raw memory read and write, so "View Binary Data" opens a data label in the hex editor.
+- Set next statement, to move the program counter to another line.
+- Restart, which keeps your breakpoints instead of starting a whole new session.
+- Faults are named: a null dereference now reads `SIGSEGV (Segmentation fault)` instead of
+  "exception".
+- `args` and `env` in `launch.json`, for passing arguments and environment to your program.
+
+### Elsewhere
+
+- Build/Run/Debug are on the editor title bar, the editor context menu and the explorer.
+- A Get Started walkthrough covering the assembler and gdb this extension drives but does not ship.
+- 14 more snippets: ELF32/PE32 skeletons, Linux syscall stubs, `proc`/`endp`, `namespace`,
+  `iterate`, `match`, `calminstruction`, and more.
+- A `FASM: Restart Language Server` command.
+
 ## 1.5.0
 
 - Your own labels, constants, structs and struct fields are now coloured everywhere you *use* them,

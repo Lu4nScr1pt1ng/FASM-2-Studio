@@ -11,6 +11,9 @@ export interface GdbDriverOptions {
   gdbPath: string;
   programPath: string;
   programArgs?: string[];
+  /** Extra environment for the debugged program. gdb passes its own environment down to the
+   * inferior it starts, so setting it here is what reaches the program. */
+  env?: Record<string, string>;
   cwd: string;
 }
 
@@ -62,6 +65,7 @@ export class GdbDriver extends EventEmitter {
   start(opts: GdbDriverOptions): void {
     this.child = spawn(opts.gdbPath, buildLaunchArgs(opts.gdbPath, opts.programPath, opts.programArgs ?? []), {
       cwd: opts.cwd,
+      env: opts.env ? { ...process.env, ...opts.env } : undefined,
     });
 
     this.child.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));

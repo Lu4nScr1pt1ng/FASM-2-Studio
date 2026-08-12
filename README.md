@@ -191,18 +191,36 @@ projects); and signature help while you're filling in a macro call.
 
 Errors and warnings come from actually running the compiler in the background as you type — not a
 hand-rolled approximation of fasm's rules, the real thing, parsed from its actual output. This
-works for unsaved buffers too.
+works for unsaved buffers too. When the compiler can't be run at all — a bad path, or a compile
+that times out on a large project — the status bar says so, rather than leaving an empty Problems
+panel that looks exactly like success.
 
-`FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file. The
-extension finds your compiler automatically; a status bar item shows which one it picked and lets
-you override it.
+You also get occurrence highlighting, structural folding (matched `macro`/`if`/`while` pairs
+rather than line-local marker guesses, plus `;region`), clickable `include` paths, a quick fix that
+writes a missing `include` for a symbol defined elsewhere in the workspace, and Format Document.
+
+The formatter aligns labels, mnemonics, operands and trailing comments into columns and indents
+block bodies, driven by the same tokenizer as everything else — so a `;` inside a string is not a
+comment, and a line it can't confidently parse is left exactly as written. It never reorders,
+inserts or rewrites a token, and it preserves your line endings.
+
+`FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, from the
+palette, the editor title bar, the editor context menu, or the explorer. The extension finds your
+compiler automatically; a status bar item shows which one it picked and lets you override it. In
+terminal output, fasm's own `file.asm [12]:` error headers are clickable.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source file is never
-modified) and launches it under gdb (or lldb-mi). Breakpoints, step, and continue all work; since fasm2
-doesn't emit DWARF/CodeView debug info, source-line mapping comes from that listing rather than a
-standard debug format, and there's no call-stack unwinding or typed variables — what you get
-instead is a live register view and gdb-expression evaluation (`$eax`, `*(dword*)$esp`, and so
-on), which is the right level of detail for raw assembly anyway. Currently fasm2/fasmg sources
+modified) and launches it under gdb (or lldb-mi). Since fasm2 doesn't emit DWARF/CodeView debug
+info, source-line mapping comes from that listing rather than a standard debug format, and there's
+no call-stack unwinding or typed variables — what you get instead is a live register view and
+gdb-expression evaluation (`$eax`, `*(dword*)$esp`, and so on), which is the right level of detail
+for raw assembly anyway.
+
+On top of breakpoints, stepping and continue: conditional, hit-count and log points; function
+breakpoints on any label name; watchpoints on a data label; instruction breakpoints in the
+disassembly view; raw memory read/write behind VS Code's hex editor; set-next-statement; restart
+in place; `args`/`env` for the debugged program; and faults reported by name, so a null
+dereference reads as `SIGSEGV (Segmentation fault)` rather than "exception". Currently fasm2/fasmg sources
 only; fasm1 uses a different native listing format this extension doesn't parse. The gdb backend
 is exercised end to end locally (Linux) against a real, live compiled binary; CI runs the
 listing/MI-parser unit tests against pre-captured fixtures on every push, but doesn't install

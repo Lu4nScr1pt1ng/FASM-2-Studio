@@ -1,7 +1,12 @@
 {
   "format binary": {
     "prefix": "format-binary",
-    "body": ["format binary as '${1:bin}'", "org ${2:0}", "", "$0"],
+    "body": [
+      "format binary as '${1:bin}'",
+      "org ${2:0}",
+      "",
+      "$0"
+    ],
     "description": "Flat binary output"
   },
   "format PE console (x64)": {
@@ -27,37 +32,69 @@
   },
   "format ELF64 executable": {
     "prefix": "format-elf64",
-    "body": ["format ELF64 executable 3", "entry ${1:start}", "", "segment readable executable", "", "${1:start}:", "\t$0"],
+    "body": [
+      "format ELF64 executable 3",
+      "entry ${1:start}",
+      "",
+      "segment readable executable",
+      "",
+      "${1:start}:",
+      "\t$0"
+    ],
     "description": "ELF64 executable skeleton (fasm2/fasmg)"
   },
   "macro block": {
     "prefix": "macro",
-    "body": ["macro ${1:name} ${2:params}", "\t$0", "end macro"],
+    "body": [
+      "macro ${1:name} ${2:params}",
+      "\t$0",
+      "end macro"
+    ],
     "description": "Define a macro (fasm2/fasmg)"
   },
   "struct block": {
     "prefix": "struct",
-    "body": ["struct ${1:name}", "\t$0", "ends"],
+    "body": [
+      "struct ${1:name}",
+      "\t$0",
+      "ends"
+    ],
     "description": "Define a structure layout"
   },
   "virtual at": {
     "prefix": "virtual",
-    "body": ["virtual at ${1:address}", "\t$0", "end virtual"],
+    "body": [
+      "virtual at ${1:address}",
+      "\t$0",
+      "end virtual"
+    ],
     "description": "Assemble a block without emitting it to output"
   },
   "if block": {
     "prefix": "if",
-    "body": ["if ${1:condition}", "\t$0", "end if"],
+    "body": [
+      "if ${1:condition}",
+      "\t$0",
+      "end if"
+    ],
     "description": "Conditional assembly"
   },
   "while block": {
     "prefix": "while",
-    "body": ["while ${1:condition}", "\t$0", "end while"],
+    "body": [
+      "while ${1:condition}",
+      "\t$0",
+      "end while"
+    ],
     "description": "Assemble-time loop"
   },
   "repeat block": {
     "prefix": "repeat",
-    "body": ["repeat ${1:count}", "\t$0", "end repeat"],
+    "body": [
+      "repeat ${1:count}",
+      "\t$0",
+      "end repeat"
+    ],
     "description": "Repeat a block a fixed number of times (fasm2/fasmg)"
   },
   "include": {
@@ -69,5 +106,145 @@
     "prefix": "label-at",
     "body": "label ${1:name} at ${2:address}",
     "description": "Define a label at a given address"
+  },
+  "format ELF32 executable": {
+    "prefix": "format-elf32",
+    "body": [
+      "format ELF executable 3",
+      "entry ${1:start}",
+      "",
+      "segment readable executable",
+      "",
+      "${1:start}:",
+      "\t$0"
+    ],
+    "description": "32-bit ELF executable skeleton (fasm2/fasmg)"
+  },
+  "format PE console (x86)": {
+    "prefix": "format-pe32",
+    "body": [
+      "format PE console",
+      "entry ${1:start}",
+      "",
+      "include 'win32a.inc'",
+      "",
+      "section '.text' code readable executable",
+      "",
+      "${1:start}:",
+      "\t$0",
+      "\tret",
+      "",
+      "section '.idata' import data readable writeable",
+      "",
+      "\tlibrary kernel32, 'kernel32.dll'",
+      "\timport kernel32, ExitProcess, 'ExitProcess'"
+    ],
+    "description": "32-bit PE console executable skeleton (fasm2/fasmg)"
+  },
+  "Linux x86-64 exit syscall": {
+    "prefix": "syscall-exit",
+    "body": [
+      "mov edi, ${1:0}\t\t; status",
+      "mov eax, 60\t\t; sys_exit",
+      "syscall"
+    ],
+    "description": "Linux x86-64 sys_exit"
+  },
+  "Linux x86-64 write syscall": {
+    "prefix": "syscall-write",
+    "body": [
+      "mov edi, ${1:1}\t\t; fd (1 = stdout)",
+      "lea rsi, [${2:msg}]\t; buffer",
+      "mov edx, ${3:msg_len}\t; length",
+      "mov eax, 1\t\t; sys_write",
+      "syscall"
+    ],
+    "description": "Linux x86-64 sys_write"
+  },
+  "null-terminated string": {
+    "prefix": "db-string",
+    "body": [
+      "${1:msg} db '${2:text}', 0",
+      "${1:msg}_len = $ - ${1:msg} - 1"
+    ],
+    "description": "String constant with a computed length"
+  },
+  "proc/endp (fasm1)": {
+    "prefix": "proc",
+    "body": [
+      "proc ${1:name} ${2:args}",
+      "\t$0",
+      "\tret",
+      "endp"
+    ],
+    "description": "Procedure using the proc/endp macros (fasm1 style)"
+  },
+  "section": {
+    "prefix": "section",
+    "body": [
+      "section '${1:.text}' ${2|code readable executable,data readable writeable,readable|}",
+      "$0"
+    ],
+    "description": "PE/COFF section"
+  },
+  "segment": {
+    "prefix": "segment",
+    "body": [
+      "segment ${1|readable executable,readable writeable,readable|}",
+      "$0"
+    ],
+    "description": "ELF segment"
+  },
+  "namespace block": {
+    "prefix": "namespace",
+    "body": [
+      "namespace ${1:name}",
+      "\t$0",
+      "end namespace"
+    ],
+    "description": "Scope symbols under a name (fasm2/fasmg)"
+  },
+  "iterate block": {
+    "prefix": "iterate",
+    "body": [
+      "iterate ${1:item}, ${2:values}",
+      "\t$0",
+      "end iterate"
+    ],
+    "description": "Repeat a block once per value (fasm2/fasmg)"
+  },
+  "match block": {
+    "prefix": "match",
+    "body": [
+      "match ${1:pattern}, ${2:value}",
+      "\t$0",
+      "end match"
+    ],
+    "description": "Conditional assembly on a token pattern (fasm2/fasmg)"
+  },
+  "calminstruction": {
+    "prefix": "calminstruction",
+    "body": [
+      "calminstruction ${1:name} ${2:args}",
+      "\t$0",
+      "end calminstruction"
+    ],
+    "description": "Define a CALM instruction (fasm2/fasmg)"
+  },
+  "rept block": {
+    "prefix": "rept",
+    "body": [
+      "rept ${1:count} ${2:counter}",
+      "\t$0",
+      "end rept"
+    ],
+    "description": "Repeat a block a fixed number of times"
+  },
+  "struct instance": {
+    "prefix": "struct-instance",
+    "body": [
+      "${1:name} ${2:StructType} ${3:values}"
+    ],
+    "description": "Instantiate a declared structure"
   }
 }

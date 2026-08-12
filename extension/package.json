@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -128,48 +128,78 @@
             "fasm1"
           ],
           "default": "fasm2",
-          "description": "Dialect assumed for source files where the dialect cannot be auto-detected from their contents."
+          "scope": "resource",
+          "description": "Dialect assumed for source files where the dialect cannot be auto-detected from their contents. Scoped per folder, so a workspace holding both a fasm1 and a fasm2 project can give each the right answer."
         },
         "fasm2Studio.fasm2CompilerPath": {
           "type": "string",
           "default": "",
+          "scope": "machine-overridable",
           "description": "Path to the fasm2/fasmg executable. Leave empty to auto-detect it on PATH."
         },
         "fasm2Studio.fasm1CompilerPath": {
           "type": "string",
           "default": "",
+          "scope": "machine-overridable",
           "description": "Path to the fasm1 (classic flat assembler) executable. Leave empty to auto-detect it on PATH."
         },
         "fasm2Studio.diagnosticsEnabled": {
           "type": "boolean",
           "default": true,
+          "scope": "resource",
           "description": "Compile in the background to show errors/warnings as you edit."
         },
         "fasm2Studio.diagnosticsDebounceMs": {
           "type": "number",
           "default": 400,
+          "scope": "resource",
           "minimum": 100,
           "description": "Milliseconds to wait after you stop typing before re-running diagnostics."
         },
         "fasm2Studio.buildOutputPath": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Output path for Build/Run/Debug, relative to the source file's directory (e.g. \"../bin/cc\" to keep build output out of the source tree). FASM: Debug's .lst listing is placed alongside it. Leave empty to use the source file name with its extension stripped, next to the source."
         },
         "fasm2Studio.includePath": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that isn't found next to the including file, passed as the compiler's INCLUDE environment variable. Many real fasmg projects need this to build at all (e.g. fasmg's own Windows examples require setting it to their \"include\" package directory, exactly as their bundled make.bat does with `set include=...`). Leave empty to only use whatever INCLUDE (if any) your system environment already provides."
         },
         "fasm2Studio.fasm2Preload": {
           "type": "string",
           "default": "",
-          "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too \u2014 giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
+          "scope": "resource",
+          "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
         },
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",
+          "scope": "machine-overridable",
           "description": "Path to the MI-speaking debugger used by FASM: Debug — gdb on Linux/Windows, lldb-mi on macOS. Leave empty to use \"gdb\" from PATH (\"lldb-mi\" on macOS; e.g. gdb from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
+        },
+        "fasm2Studio.format.mnemonicColumn": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "scope": "resource",
+          "description": "Column (0-based) that Format Document aligns instruction mnemonics to, measured from the current indent. 0 leaves mnemonics unaligned."
+        },
+        "fasm2Studio.format.operandColumn": {
+          "type": "number",
+          "default": 16,
+          "minimum": 0,
+          "scope": "resource",
+          "description": "Column (0-based) that Format Document aligns operands to, measured from the current indent. 0 leaves a single space after the mnemonic."
+        },
+        "fasm2Studio.format.commentColumn": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "scope": "resource",
+          "description": "Absolute column that Format Document aligns trailing `;` comments to. 0 leaves them one space after the code."
         }
       }
     },
@@ -202,6 +232,11 @@
       {
         "command": "fasm2Studio.selectCompiler",
         "title": "Select Compiler",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.restartLanguageServer",
+        "title": "Restart Language Server",
         "category": "FASM"
       }
     ],
@@ -285,6 +320,22 @@
                 "type": "boolean",
                 "description": "Stop at the program's first instruction.",
                 "default": true
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Command-line arguments passed to the debugged program.",
+                "default": []
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Environment variables for the debugged program, merged over the inherited environment.",
+                "default": {}
               }
             }
           }
@@ -309,6 +360,128 @@
               "asmFile": "^\"\\${file}\"",
               "stopOnEntry": true
             }
+          }
+        ]
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "fasm2Studio.build",
+          "when": "resourceLangId == fasm"
+        },
+        {
+          "command": "fasm2Studio.buildAndRun",
+          "when": "resourceLangId == fasm"
+        },
+        {
+          "command": "fasm2Studio.run",
+          "when": "resourceLangId == fasm"
+        },
+        {
+          "command": "fasm2Studio.debug",
+          "when": "resourceLangId == fasm"
+        }
+      ],
+      "editor/title/run": [
+        {
+          "command": "fasm2Studio.buildAndRun",
+          "when": "resourceLangId == fasm",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fasm2Studio.debug",
+          "when": "resourceLangId == fasm",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fasm2Studio.build",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@1"
+        },
+        {
+          "command": "fasm2Studio.run",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "fasm2Studio.buildAndRun",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@1"
+        },
+        {
+          "command": "fasm2Studio.debug",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "fasm2Studio.build",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@1"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "fasm2StudioSetup",
+        "title": "Get started with FASM2 Studio",
+        "description": "This extension drives the assembler and debugger you already have installed — it does not bundle either. Three steps to a program you can build, run and step through.",
+        "steps": [
+          {
+            "id": "installAssembler",
+            "title": "Install an assembler",
+            "description": "FASM2 Studio needs `fasm2` (flat assembler g) and/or `fasm1` on your PATH.\n\nLinux/macOS: download from flatassembler.net and put the binary somewhere on PATH, such as `~/.local/bin`.\nWindows: the official fasm2 distribution ships a `fasm2.cmd` wrapper — add its folder to PATH.\n\nAlready installed somewhere unusual? Point at it directly instead.\n[Select Compiler](command:fasm2Studio.selectCompiler)",
+            "media": {
+              "markdown": "walkthroughs/install-assembler.md",
+              "altText": "Installing fasm2 or fasm1"
+            },
+            "completionEvents": [
+              "onSettingChanged:fasm2Studio.fasm2CompilerPath",
+              "onSettingChanged:fasm2Studio.fasm1CompilerPath",
+              "onCommand:fasm2Studio.selectCompiler"
+            ]
+          },
+          {
+            "id": "selectDialect",
+            "title": "Tell it which dialect your project is",
+            "description": "fasm2 is detected automatically. **fasm1 is not** — the syntax that would identify it is also valid fasmg, so a fasm1 project silently falls back to the fasm2 default and reports errors on code that assembles perfectly.\n\nIf your project is fasm1, say so once and it is written into the project's own settings.\n[Select Dialect](command:fasm2Studio.selectDialect)",
+            "media": {
+              "markdown": "walkthroughs/select-dialect.md",
+              "altText": "Choosing fasm2 or fasm1"
+            },
+            "completionEvents": [
+              "onSettingChanged:fasm2Studio.defaultDialect",
+              "onCommand:fasm2Studio.selectDialect"
+            ]
+          },
+          {
+            "id": "buildAndRun",
+            "title": "Build and run",
+            "description": "Open a `.asm` file and use the ▷ button in the editor title bar, or the command palette.\n\nIncluded fragments are handled for you: building an `.inc` with no `format` of its own assembles the real entry point that includes it.\n[Build and Run](command:fasm2Studio.buildAndRun)",
+            "media": {
+              "markdown": "walkthroughs/build-and-run.md",
+              "altText": "Building and running"
+            },
+            "completionEvents": [
+              "onCommand:fasm2Studio.buildAndRun",
+              "onCommand:fasm2Studio.build"
+            ]
+          },
+          {
+            "id": "debug",
+            "title": "Debug with real breakpoints",
+            "description": "Debugging drives `gdb` (`lldb-mi` on macOS) against your assembled binary: breakpoints in your source, registers, memory, watchpoints and a disassembly view.\n\ngdb is preinstalled on most Linux distributions. On Windows install it from MSYS2 or w64devkit.\n[Start Debugging](command:fasm2Studio.debug)",
+            "media": {
+              "markdown": "walkthroughs/debug.md",
+              "altText": "Debugging a fasm program"
+            },
+            "completionEvents": [
+              "onCommand:fasm2Studio.debug"
+            ]
           }
         ]
       }
@@ -342,5 +515,15 @@
     "typescript": "^5.9.3",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "This extension runs the assembler, and (when debugging) gdb, from paths a workspace can set in its own settings, against source the workspace controls. Assembling an untrusted project would execute whatever it points fasm2Studio.fasm2CompilerPath / fasm2Studio.gdbPath at."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Diagnostics, build, run and debug all spawn real processes against real files on disk, which a virtual filesystem cannot provide."
+    }
   }
 }

@@ -11,7 +11,8 @@
 // up front and it is written into the project's own settings.
 
 import * as vscode from 'vscode';
-import { CONFIG_SECTION, fasmConfig, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
+import { configurationTargetLabel, CONFIG_SECTION, fasmConfig, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
+import { refreshStatusBar } from './statusBar';
 import { Dialect, DIALECT_LABEL } from './types';
 
 export const DEFAULT_DIALECT_SETTING = 'defaultDialect';
@@ -47,20 +48,26 @@ export function dialectChoices(current: Dialect): DialectChoice[] {
   }));
 }
 
-/** What to tell the user once it is written, which differs by scope: a workspace write lands in the
- * project and is the point of the command, while a global one quietly affects everything else. */
+/** What to tell the user once it is written, which differs by scope: a workspace (or, in a
+ * multi-root workspace, workspace-folder) write lands in the project and is the point of the
+ * command, while a global one quietly affects everything else. */
 export function confirmationMessage(dialect: Dialect, target: vscode.ConfigurationTarget): string {
   const where =
-    target === vscode.ConfigurationTarget.Workspace
-      ? 'for this workspace'
-      : 'globally — open a folder to set it for one project only';
+    target === vscode.ConfigurationTarget.Global
+      ? 'globally — open a folder to set it for one project only'
+      : configurationTargetLabel(target);
   return `${MESSAGE_PREFIX}Dialect set to ${DIALECT_LABEL[dialect]} ${where}.`;
 }
 
 export function registerSelectDialect(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('fasm2Studio.selectDialect', async () => {
-      const current = fasmConfig().get<Dialect>(DEFAULT_DIALECT_SETTING, 'fasm2');
+      // The active file decides both which folder's current value to show and, in a multi-root
+      // workspace, which folder's settings the answer gets written into — the dialect describes
+      // one project, so in a workspace holding both a fasm1 and a fasm2 project there is no single
+      // right answer to write window-wide.
+      const resource = vscode.window.activeTextEditor?.document.uri;
+      const current = fasmConfig(resource).get<Dialect>(DEFAULT_DIALECT_SETTING, 'fasm2');
 
       const picked = await vscode.window.showQuickPick(dialectChoices(current), {
         placeHolder: 'Which assembler is this project written for?',
@@ -68,13 +75,14 @@ export function registerSelectDialect(context: vscode.ExtensionContext): void {
       });
       if (!picked) return;
 
-      const target = projectConfigurationTarget(hasWorkspaceFolder());
+      const target = projectConfigurationTarget(hasWorkspaceFolder(), resource);
       try {
-        await vscode.workspace.getConfiguration(CONFIG_SECTION).update(DEFAULT_DIALECT_SETTING, picked.dialect, target);
+        await vscode.workspace.getConfiguration(CONFIG_SECTION, resource).update(DEFAULT_DIALECT_SETTING, picked.dialect, target);
       } catch (err) {
         void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}Could not save the setting: ${(err as Error).message}`);
         return;
       }
+      refreshStatusBar();
       void vscode.window.showInformationMessage(confirmationMessage(picked.dialect, target));
     }),
   );

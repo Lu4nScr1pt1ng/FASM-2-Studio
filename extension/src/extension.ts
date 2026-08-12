@@ -12,14 +12,25 @@ import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
-import { createStatusBarItem } from './statusBar';
+import { createStatusBarItem, setDiagnosticsIssue } from './statusBar';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
+import { registerTerminalLinks } from './terminalLinks';
 import { COMPILER_PATH_SETTING } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
 
 let client: LanguageClient | undefined;
 
-function activeFasmFile(): string | undefined {
+/**
+ * The file a build/run/debug command should act on.
+ *
+ * `resource` is what VS Code hands a command invoked from a menu that has one — the explorer's
+ * context menu passes the file that was actually right-clicked, which is frequently *not* the
+ * active editor. Honouring it is the difference between "Build" on a file in the explorer building
+ * that file and it silently building whatever tab happened to be focused. Palette and editor-title
+ * invocations pass nothing, and fall back to the active editor as before.
+ */
+function targetFasmFile(resource?: vscode.Uri): string | undefined {
+  if (resource) return resource.fsPath;
   const editor = activeFasmEditor();
   if (!editor) {
     void vscode.window.showWarningMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
@@ -42,23 +53,23 @@ async function resolveActiveEntryFile(file: string): Promise<string | undefined>
   return resolveEntryPointFsPath(client, file);
 }
 
-/** Active file → resolved build entry point, or undefined if either step failed (each already
+/** Target file → resolved build entry point, or undefined if either step failed (each already
  * shows its own error/warning). Shared preamble for the build/buildAndRun/run commands. */
-async function resolveBuildTarget(): Promise<string | undefined> {
-  const file = activeFasmFile();
+async function resolveBuildTarget(resource?: vscode.Uri): Promise<string | undefined> {
+  const file = targetFasmFile(resource);
   if (!file) return undefined;
   return resolveActiveEntryFile(file);
 }
 
 function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand('fasm2Studio.build', async () => {
-      const entryFile = await resolveBuildTarget();
+    vscode.commands.registerCommand('fasm2Studio.build', async (resource?: vscode.Uri) => {
+      const entryFile = await resolveBuildTarget(resource);
       if (entryFile) await runBuildTask(entryFile);
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.buildAndRun', async () => {
-      const entryFile = await resolveBuildTarget();
+    vscode.commands.registerCommand('fasm2Studio.buildAndRun', async (resource?: vscode.Uri) => {
+      const entryFile = await resolveBuildTarget(resource);
       if (!entryFile) return;
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
@@ -66,14 +77,35 @@ function registerCommands(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.run', async () => {
-      const entryFile = await resolveBuildTarget();
+    vscode.commands.registerCommand('fasm2Studio.run', async (resource?: vscode.Uri) => {
+      const entryFile = await resolveBuildTarget(resource);
       if (!entryFile) return;
       await runOutputBinary(getDefaultOutputPath(entryFile));
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.debug', async () => {
-      const file = activeFasmFile();
+    // The standard escape hatch every LSP-backed extension is expected to have. The server holds
+    // a whole-workspace index and a compiler-discovery cache, so the recovery for "it has stopped
+    // answering" or "I installed the compiler after opening the folder" was otherwise reloading
+    // the entire window.
+    vscode.commands.registerCommand('fasm2Studio.restartLanguageServer', async () => {
+      if (!client) {
+        void vscode.window.showWarningMessage(`${MESSAGE_PREFIX}the language server is not running.`);
+        return;
+      }
+      invalidateCompilerCache();
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: `${MESSAGE_PREFIX}restarting the language server…` },
+        async () => {
+          await client!.restart();
+          // The index lives in the server process, so it goes with it — rebuild rather than
+          // leaving cross-file navigation quietly answering from nothing.
+          await indexWorkspace(client!);
+        },
+      );
+    }),
+
+    vscode.commands.registerCommand('fasm2Studio.debug', async (resource?: vscode.Uri) => {
+      const file = targetFasmFile(resource);
       if (!file) return;
 
       // Deliberately not resolved/built here: passing the raw active file through with no
@@ -126,6 +158,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerSelectCompiler(context);
   registerSelectDialect(context);
   createStatusBarItem(context);
+  registerTerminalLinks(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 
   context.subscriptions.push(
@@ -146,6 +179,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await client.start();
   // Registered after start(), since onNotification needs a running connection.
   registerDialectSuggestion(context, (method, handler) => client!.onNotification(method, handler));
+  context.subscriptions.push(
+    // "Live error checking is not actually running for this file, and here is why." Shown in the
+    // status bar rather than as a popup: it describes a standing condition (a missing compiler, a
+    // compile that times out on a large project), and a notification that came back on every
+    // keystroke would be worse than the silence it replaces.
+    client.onNotification('fasm2Studio/diagnosticsUnavailable', (params: { uri: string; reason?: string }) => {
+      setDiagnosticsIssue(params.reason ? { uri: params.uri, reason: params.reason } : undefined);
+    }),
+  );
   void indexWorkspace(client).catch((err) => console.error(`${MESSAGE_PREFIX}workspace indexing failed`, err));
 }
 

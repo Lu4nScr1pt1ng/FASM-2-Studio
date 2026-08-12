@@ -18,6 +18,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { fasmConfig } from './config';
 import { quoteForShell } from './shellQuote';
 import { COMPILER_PATH_SETTING, Dialect } from './types';
@@ -58,8 +59,8 @@ export interface CompilerResolution {
 const cache = new Map<Dialect, CompilerResolution | null>();
 const inFlight = new Map<Dialect, Promise<CompilerResolution | undefined>>();
 
-function configuredPath(dialect: Dialect): string {
-  return (fasmConfig().get<string>(COMPILER_PATH_SETTING[dialect]) ?? '').trim();
+function configuredPath(dialect: Dialect, resource?: vscode.Uri): string {
+  return (fasmConfig(resource).get<string>(COMPILER_PATH_SETTING[dialect]) ?? '').trim();
 }
 
 function probe(candidate: string): Promise<boolean> {
@@ -110,8 +111,14 @@ async function probeCandidates(dialect: Dialect): Promise<CompilerResolution | u
   return undefined;
 }
 
-export async function resolveCompiler(dialect: Dialect): Promise<CompilerResolution | undefined> {
-  const explicit = configuredPath(dialect);
+/**
+ * `resource` scopes the *configured path* lookup to that file's own workspace folder (the setting
+ * is `machine-overridable`, so a folder may legitimately override it). The auto-detection fallback
+ * below is deliberately not scoped: probing PATH is a property of the machine, identical for every
+ * folder, so its cache stays keyed by dialect alone.
+ */
+export async function resolveCompiler(dialect: Dialect, resource?: vscode.Uri): Promise<CompilerResolution | undefined> {
+  const explicit = configuredPath(dialect, resource);
   if (explicit) return { path: explicit, autoDetected: false };
 
   const cached = cache.get(dialect);

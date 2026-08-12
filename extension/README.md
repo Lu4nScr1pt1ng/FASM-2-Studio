@@ -26,17 +26,39 @@ that, a language server parses your project and gives you:
 - **Live diagnostics from the real compiler** — errors and warnings come from actually running
   fasm2/fasm1 in the background as you type, parsed from its real output, not a hand-rolled
   approximation of its rules. Works for unsaved buffers too.
+- **Occurrence highlighting, folding that matches real block structure** (nested
+  `macro`/`if`/`while` pairs, not line-local guesses), and **clickable `include` paths** — a path
+  that doesn't underline is one your project can't actually resolve.
+- **A quick fix that writes the missing `include`** when you use a macro or constant that exists
+  elsewhere in the workspace but isn't reachable from this file.
+- **Format Document** aligns labels, mnemonics, operands and trailing comments into columns, and
+  indents block bodies. It never reorders or rewrites a token, never touches string contents, and
+  leaves your line endings alone.
 
 `FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file. The
 extension finds your compiler automatically; a status bar item shows which one it picked and lets
 you override it.
 
+`FASM: Build`, `FASM: Build and Run`, `FASM: Run` and `FASM: Debug` are also on the editor title
+bar, the editor context menu, and the explorer's right-click menu for a `.asm` file.
+
 `FASM: Debug` assembles the active file with an injected listing macro (your source is never
-modified) and launches it under gdb (or lldb-mi), with real breakpoints, stepping, and a live register
-view. fasm2 doesn't emit standard debug info by default, so source-line mapping comes from that
-listing instead — which also means there's no call-stack unwinding or typed variables; register
-and memory inspection via gdb's own expression evaluator (`$eax`, `*(dword*)$esp`, ...) is the
-right level of detail for raw assembly anyway. Currently fasm2/fasmg sources only.
+modified) and launches it under gdb (or lldb-mi). fasm2 doesn't emit standard debug info by
+default, so source-line mapping comes from that listing instead — which also means there's no
+call-stack unwinding or typed variables; register and memory inspection via gdb's own expression
+evaluator (`$eax`, `*(dword*)$esp`, ...) is the right level of detail for raw assembly anyway.
+Currently fasm2/fasmg sources only. You get:
+
+- Source breakpoints, plus **conditional** (`$ebx == 4`), **hit-count** and **log points**
+- **Function breakpoints** on any label name, resolved through the listing
+- **Watchpoints** — break when a data label is read or written
+- **Instruction breakpoints** in the disassembly view, with instruction-level stepping
+- Registers grouped by kind with decoded flags, and data labels with string/array previews
+- **Raw memory** read/write, so "View Binary Data" opens a data label in the hex editor
+- **Set next statement**, to move the program counter to another line
+- **Restart** in place, keeping every breakpoint and watchpoint
+- Faults named properly: a SIGSEGV reads as `SIGSEGV (Segmentation fault)`, not "exception"
+- `args` and `env` in `launch.json` for the debugged program
 
 ## Setting up a project
 
@@ -112,6 +134,13 @@ To use the debugger:
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |
+| `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |
+| `fasm2Studio.format.operandColumn` | Column Format Document aligns operands to, measured from the current indent. `0` leaves one space after the mnemonic. |
+| `fasm2Studio.format.commentColumn` | Absolute column Format Document aligns trailing `;` comments to. `0` leaves them one space after the code. |
+
+Every setting except the executable paths is `resource`-scoped, and the paths are
+`machine-overridable` — so in a multi-root workspace a fasm1 project and a fasm2 project can each
+carry their own dialect, include path and preload in their own folder's `.vscode/settings.json`.
 
 ## Source and issues
 

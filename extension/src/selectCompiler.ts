@@ -13,6 +13,7 @@
 import * as vscode from 'vscode';
 import { resolveCompiler, invalidateCompilerCache } from './compilerDiscovery';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
+import { refreshStatusBar } from './statusBar';
 import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
 
 export interface CompilerChoice {
@@ -69,6 +70,11 @@ export function registerSelectCompiler(context: vscode.ExtensionContext): void {
       // project — unlike the dialect, which Select Dialect writes into the workspace.
       await fasmConfig().update(COMPILER_PATH_SETTING[picked.dialect], chosen[0].fsPath, vscode.ConfigurationTarget.Global);
       invalidateCompilerCache();
+      // The status bar names the resolved compiler, so it is stale the moment this returns.
+      // onDidChangeConfiguration would eventually cover it, but only once VS Code has finished
+      // persisting the write — refresh explicitly so the bar reflects the choice as soon as the
+      // confirmation appears, not a beat later.
+      refreshStatusBar();
       void vscode.window.showInformationMessage(`${MESSAGE_PREFIX}${picked.label} compiler set to ${chosen[0].fsPath}`);
     }),
   );
