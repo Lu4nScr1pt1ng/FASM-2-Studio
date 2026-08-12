@@ -568,7 +568,7 @@
     "typecheck": "tsc -p . --noEmit",
     "pretest": "tsc -p tsconfig.test.json",
     "test": "npm run test:unit && node ./out-test/test/runTest.js",
-    "test:unit": "mocha --require tsx 'test/unit/**/*.test.ts'",
+    "test:unit": "mocha --require tsx \"test/unit/**/*.test.ts\"",
     "package": "vsce package --no-dependencies",
     "publish:marketplace": "vsce publish --no-dependencies",
     "publish:openvsx": "ovsx publish --no-dependencies"

@@ -10,7 +10,7 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc -p . --noEmit && tsc -p test --noEmit",
     "pretest": "node esbuild.js",
-    "test": "mocha --require tsx 'test/**/*.test.ts'"
+    "test": "mocha --require tsx \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@fasm2-studio/server": "*",
