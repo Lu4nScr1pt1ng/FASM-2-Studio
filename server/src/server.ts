@@ -116,7 +116,21 @@ function syncWorkspaceIndexSettings(): void {
   workspace.setPreloadInclude(settingsStore.indexPreloadInclude());
 }
 
+/**
+ * Whether the client reported this workspace as trusted. Diagnostics are the one feature here that
+ * runs a program — compiling the workspace's own source with a macro assembler that can read and
+ * write files — so they stay off until it is. Everything else the server answers is pure analysis
+ * of text and runs regardless.
+ *
+ * Defaults to trusted so a client that sends no initializationOptions at all (any non-VS Code LSP
+ * client, and the unit tests) behaves exactly as it did before this existed.
+ */
+let workspaceTrusted = true;
+
 connection.onInitialize((params: InitializeParams): InitializeResult => {
+  const initOptions = params.initializationOptions as { isTrusted?: boolean } | undefined;
+  if (typeof initOptions?.isTrusted === 'boolean') workspaceTrusted = initOptions.isTrusted;
+
   settingsStore.setPullSupported(params.capabilities.workspace?.configuration === true);
   settingsStore.setWorkspaceFolders(
     params.workspaceFolders?.map((f) => f.uri) ?? (params.rootUri ? [params.rootUri] : []),
@@ -184,6 +198,19 @@ connection.onInitialized(() => {
  * duplicating that traversal well is real scope for no benefit. Indexing then runs here,
  * batched/yielded (see Workspace.indexWorkspace), off the interactive request path.
  */
+/** Trust granted after initialize (the user clicked "Trust" on the open folder). Diagnostics were
+ * suppressed for every open document until now, so they all need a first run — nothing else would
+ * trigger one until each file is next edited. */
+connection.onNotification('fasm2Studio/workspaceTrust', (params: { isTrusted: boolean }) => {
+  if (workspaceTrusted === params.isTrusted) return;
+  workspaceTrusted = params.isTrusted;
+  if (!workspaceTrusted) return;
+  for (const doc of documents.all()) {
+    reportDiagnosticsAvailability(doc.uri, undefined);
+    scheduleDiagnostics(doc.uri);
+  }
+});
+
 connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: string[] }) => {
   const scan = workspace
     .indexWorkspace(params.uris ?? [], resolveDialect)
@@ -301,6 +328,11 @@ function reparse(doc: TextDocument): void {
 }
 
 function scheduleDiagnostics(uri: string): void {
+  if (!workspaceTrusted) {
+    reportDiagnosticsAvailability(uri, 'the workspace is not trusted, so the assembler is not run');
+    return;
+  }
+
   const settings = settingsStore.get(uri);
   if (!settings.diagnosticsEnabled) return;
 

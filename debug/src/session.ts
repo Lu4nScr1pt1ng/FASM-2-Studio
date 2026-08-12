@@ -24,7 +24,7 @@ import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
 import { readElfEntryPoint } from './elfEntry';
 import { GdbDriver } from './gdbDriver';
-import { AddressLineMap, buildAddressLineMap } from './listingMap';
+import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from './listingMap';
 import { miData } from './miParser';
 import {
   decodeEflags,
@@ -205,6 +205,9 @@ export class FasmDebugSession extends DebugSession {
     response.body.supportsRestartRequest = true;
     response.body.supportsExceptionInfoRequest = true;
     response.body.supportsTerminateRequest = true;
+    // Lets VS Code ask which lines can actually hold a breakpoint before offering one, and is what
+    // makes the inline "add breakpoint" affordances in the gutter land on real instructions.
+    response.body.supportsBreakpointLocationsRequest = true;
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -363,6 +366,27 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
+  /**
+   * Which lines in a source range can hold a breakpoint at all — answered straight from the
+   * listing's per-file line index, with no gdb round trip.
+   *
+   * VS Code asks this for the range it is about to render, and uses the answer for its inline
+   * breakpoint affordances. Answering it is also the half of the fix that stops a bad breakpoint
+   * from being offered in the first place; setBreakPointsRequest's sliding is the half that
+   * rescues one the user set anyway (from a previous session's saved breakpoints, say).
+   */
+  protected breakpointLocationsRequest(
+    response: DebugProtocol.BreakpointLocationsResponse,
+    args: DebugProtocol.BreakpointLocationsArguments,
+  ): void {
+    const sourcePath = args.source.path ? path.resolve(args.source.path) : undefined;
+    const lines = sourcePath ? (this.addressMap?.mappedLinesByFile.get(sourcePath) ?? []) : [];
+    const last = args.endLine ?? args.line;
+
+    response.body = { breakpoints: lines.filter((line) => line >= args.line && line <= last).map((line) => ({ line })) };
+    this.sendResponse(response);
+  }
+
   protected async setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): Promise<void> {
     const sourcePath = args.source.path ? path.resolve(args.source.path) : undefined;
     const breakpoints: DebugProtocol.Breakpoint[] = [];
@@ -379,17 +403,23 @@ export class FasmDebugSession extends DebugSession {
     await this.clearBreakpointsForFile(sourcePath);
 
     for (const bp of args.breakpoints ?? []) {
-      const address = this.addressMap.locationToAddress.get(`${sourcePath}:${bp.line}`);
-      if (address === undefined) {
-        breakpoints.push({ verified: false, line: bp.line, message: 'No instruction maps to this line' });
+      // Most lines in an asm file produce no code — comments, blanks, bare labels, `include`s,
+      // everything in a data section — and they are exactly what a user clicks when they mean the
+      // instruction just below. Reporting those unverified left a dead grey dot and no breakpoint;
+      // sliding forward to the next line that does produce code matches gdb's own behaviour, and
+      // the adjusted `line` in the response is what moves VS Code's marker to where it really went.
+      const line = nextMappedLineAtOrAfter(this.addressMap, sourcePath, bp.line);
+      const address = line === undefined ? undefined : this.addressMap.locationToAddress.get(`${sourcePath}:${line}`);
+      if (line === undefined || address === undefined) {
+        breakpoints.push({ verified: false, line: bp.line, message: 'No instruction maps to this line or any line after it' });
         continue;
       }
       try {
         const number = await this.insertBreakpoint(`*0x${address.toString(16)}`, bp);
         if (number) this.rememberBreakpoint(sourcePath, number);
-        breakpoints.push({ verified: true, line: bp.line });
+        breakpoints.push({ verified: true, line });
       } catch (err) {
-        breakpoints.push({ verified: false, line: bp.line, message: (err as Error).message });
+        breakpoints.push({ verified: false, line, message: (err as Error).message });
       }
     }
 

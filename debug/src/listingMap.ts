@@ -37,6 +37,34 @@ export interface AddressLineMap {
   addressToLocation: Map<bigint, SourceLocation>;
   /** Keyed by `${fsPath}:${line}` for O(1) breakpoint resolution. */
   locationToAddress: Map<string, bigint>;
+  /** Per source file, the ascending list of lines that actually produced machine code. The
+   * complement of this — blank lines, comments, `include`s, bare labels, macro definition bodies,
+   * everything in a data section — is most of a typical asm file, and is exactly where a user
+   * clicks to set a breakpoint. Kept sorted so nextMappedLineAtOrAfter can binary-search it. */
+  mappedLinesByFile: Map<string, number[]>;
+}
+
+/**
+ * The first line at or after `line` in `fsPath` that has machine code behind it, or undefined if
+ * there is none left in that file.
+ *
+ * This is what lets a breakpoint set on a comment, a blank line or a label land on the instruction
+ * the user plainly meant, the same way gdb and every DAP adapter over it behave. DAP allows the
+ * `setBreakpoints` response to name a different line than was requested precisely so the client
+ * can move its own marker to match, so the adjustment is visible rather than silent.
+ */
+export function nextMappedLineAtOrAfter(map: AddressLineMap, fsPath: string, line: number): number | undefined {
+  const lines = map.mappedLinesByFile.get(fsPath);
+  if (!lines || lines.length === 0) return undefined;
+
+  let lo = 0;
+  let hi = lines.length; // first index whose line is >= `line`
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid] < line) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < lines.length ? lines[lo] : undefined;
 }
 
 const HEADER_RE = /^\[([0-9A-Fa-f]+)\]\s?(.*)$/;
@@ -129,6 +157,7 @@ export function buildCandidateSequence(entryFsPath: string, maxFiles = 500): Can
 export function correlateListing(entries: ListingEntry[], candidates: Candidate[]): AddressLineMap {
   const addressToLocation = new Map<bigint, SourceLocation>();
   const locationToAddress = new Map<string, bigint>();
+  const mappedLinesByFile = new Map<string, number[]>();
 
   let cursor = 0;
   for (const entry of entries) {
@@ -145,11 +174,22 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
     const loc: SourceLocation = { fsPath: candidates[found].fsPath, line: candidates[found].line };
     addressToLocation.set(entry.address, loc);
     const key = `${loc.fsPath}:${loc.line}`;
-    if (!locationToAddress.has(key)) locationToAddress.set(key, entry.address);
+    if (!locationToAddress.has(key)) {
+      locationToAddress.set(key, entry.address);
+      const lines = mappedLinesByFile.get(loc.fsPath);
+      if (lines) lines.push(loc.line);
+      else mappedLinesByFile.set(loc.fsPath, [loc.line]);
+    }
     cursor = found + 1;
   }
 
-  return { addressToLocation, locationToAddress };
+  // Ascending order is nextMappedLineAtOrAfter's precondition. Candidates within a single file are
+  // already walked in line order, but an `include` in the middle of one file interleaves another
+  // file's entries into the same pass, so the per-file runs are appended in fragments rather than
+  // one sorted sweep.
+  for (const lines of mappedLinesByFile.values()) lines.sort((a, b) => a - b);
+
+  return { addressToLocation, locationToAddress, mappedLinesByFile };
 }
 
 export interface BuiltAddressLineMap extends AddressLineMap {

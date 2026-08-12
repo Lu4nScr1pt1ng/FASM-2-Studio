@@ -137,10 +137,22 @@ To use the debugger:
 | `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |
 | `fasm2Studio.format.operandColumn` | Column Format Document aligns operands to, measured from the current indent. `0` leaves one space after the mnemonic. |
 | `fasm2Studio.format.commentColumn` | Absolute column Format Document aligns trailing `;` comments to. `0` leaves them one space after the code. |
+| `fasm2Studio.trace.server` | Logs the traffic between VS Code and the language server into its output channel (`off`/`messages`/`verbose`). Turn it on when reporting a bug about hover, completion, navigation or live error checking. |
 
-Every setting except the executable paths is `resource`-scoped, and the paths are
-`machine-overridable` — so in a multi-root workspace a fasm1 project and a fasm2 project can each
-carry their own dialect, include path and preload in their own folder's `.vscode/settings.json`.
+Every setting except the executable paths and `trace.server` is `resource`-scoped, and the paths
+are `machine-overridable` — so in a multi-root workspace a fasm1 project and a fasm2 project can
+each carry their own dialect, include path and preload in their own folder's
+`.vscode/settings.json`.
+
+## Workspace trust
+
+On a folder you haven't trusted, everything that only reads code keeps working: highlighting,
+hover, completion, go-to-definition, references, folding and formatting. What is withheld is
+everything that starts a process — live error checking, Build, Run and Debug — since those run an
+assembler (and gdb) against source the folder controls. While untrusted, VS Code also ignores
+`fasm2CompilerPath`, `fasm1CompilerPath`, `gdbPath`, `fasm2Preload` and `includePath` from that
+workspace's own settings, so a cloned repository cannot choose which binary would be executed.
+Trusting the folder restores all of it without a reload.
 
 ## Source and issues
 

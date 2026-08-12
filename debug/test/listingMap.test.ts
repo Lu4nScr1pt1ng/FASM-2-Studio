@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, parseListingFile } from '../src/listingMap';
+import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, nextMappedLineAtOrAfter, parseListingFile } from '../src/listingMap';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -125,6 +125,43 @@ describe('correlateListing / buildAddressLineMap (end-to-end, real captured outp
 
     const bpAddress = map.locationToAddress.get(`${entryPath}:7`);
     assert.strictEqual(bpAddress, 0n, 'expected the breakpoint address for line 7 to be 0');
+  });
+
+  // What a breakpoint set on a line that produces no code resolves to. Most lines in an asm file
+  // are like that — blanks, comments, `include`s, data — and they are exactly where a user clicks
+  // when they mean the instruction below.
+  describe('nextMappedLineAtOrAfter', () => {
+    const mapFor = () => buildAddressLineMap(path.join(FIXTURES, 'simple.lst'), path.join(FIXTURES, 'simple.asm'));
+    const simplePath = path.join(FIXTURES, 'simple.asm');
+
+    it('returns the line itself when it already produces code', () => {
+      assert.strictEqual(nextMappedLineAtOrAfter(mapFor(), simplePath, 6), 6);
+    });
+
+    it('slides a blank line forward to the next line that produces code', () => {
+      // simple.asm line 3 is blank; line 4 is the "start:" label, which the listing does record.
+      assert.strictEqual(nextMappedLineAtOrAfter(mapFor(), simplePath, 3), 4);
+    });
+
+    it('gives up rather than wrapping when nothing after this line produces code', () => {
+      // Line 8 ("int 0x80") is the last statement in the file.
+      assert.strictEqual(nextMappedLineAtOrAfter(mapFor(), simplePath, 9), undefined);
+    });
+
+    it('never crosses into another file, since a line number only means something within one', () => {
+      assert.strictEqual(nextMappedLineAtOrAfter(mapFor(), path.join(FIXTURES, 'nonexistent.asm'), 1), undefined);
+    });
+
+    it('keeps each file\'s lines in ascending order even when an include interleaves them', () => {
+      const map = buildAddressLineMap(
+        path.join(FIXTURES, 'with-macro-and-include.lst'),
+        path.join(FIXTURES, 'with-macro-and-include.asm'),
+      );
+      for (const [fsPath, lines] of map.mappedLinesByFile) {
+        assert.deepStrictEqual(lines, [...lines].sort((a, b) => a - b), `${path.basename(fsPath)} is not sorted`);
+        assert.strictEqual(new Set(lines).size, lines.length, `${path.basename(fsPath)} has duplicate lines`);
+      }
+    });
   });
 
   it('never throws when the listing references a candidate that cannot be found', () => {

@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.7.0
+
+### Fixed
+
+- The extension activates on a debug launch, not only on opening a `.asm` file. `activationEvents`
+  listed `onLanguage:fasm` alone, on the assumption that `contributes.debuggers` generates its own
+  implicit activation event the way `contributes.taskDefinitions` does. It does not — VS Code
+  registers an `activationEventsGenerator` for task definitions, languages, commands and a dozen
+  other contribution points, and none for debuggers, while `activateDebuggers` fires only
+  `onDebug`, `onDebugResolve` and `onDebugResolve:<type>`. So F5 against a `launch.json` entry did
+  nothing at all in a window where no fasm file had been opened yet: the adapter descriptor factory
+  is registered during activation, and activation never happened. Now declared as
+  `onDebugResolve:fasm`, with a manifest test that derives the expectation from the debugger
+  contributions themselves.
+- A breakpoint on a line that produces no machine code lands on the next line that does, instead of
+  reporting itself unverified and doing nothing. Comments, blank lines, bare labels, `include`
+  directives and everything in a data section have no listing entry, and they are the majority of
+  lines in a real source file — including, routinely, the line a user clicks when they mean the
+  instruction below it. `AddressLineMap` now carries a sorted per-file index of the lines that did
+  produce code, `nextMappedLineAtOrAfter` binary-searches it, and the adjusted line travels back in
+  the `setBreakpoints` response, which is what moves the marker in the gutter rather than leaving it
+  silently somewhere else. The adapter also declares `supportsBreakpointLocationsRequest` and
+  answers it from the same index, so the inline gutter affordances only offer lines that can hold a
+  breakpoint in the first place. Sliding stops at the end of the file rather than wrapping, and
+  never crosses into another file, where a line number means something else entirely.
+- `fasm2Studio.trace.server` is contributed. `vscode-languageclient` reads `<clientId>.trace.server`
+  regardless, but an undeclared setting does not appear in the settings UI and is marked "Unknown
+  Configuration Setting" when typed into `settings.json` — leaving no way to capture a protocol
+  trace for a bug report about hover, completion, navigation or diagnostics.
+- The integration suite's document-link assertion compares paths rather than strings. The two sides
+  disagree about drive-letter case on Windows and only there: `os.tmpdir()` yields `C:\…`, while
+  anything round-tripped through a `file:` URI — every path the language server returns, since LSP
+  speaks URIs — comes back from `Uri.fsPath` as `c:\…`. Only the drive letter is folded, so a
+  genuine mismatch still prints readably.
+- That suite's `after` hook no longer hangs. The formatting test applies a `WorkspaceEdit` and never
+  saves it, so `closeAllEditors` met a dirty editor and put up a modal "save your changes?" that
+  nothing in a test host answers; the run stalled to its timeout and the temp directory was never
+  removed. It saves first, and a cleanup failure is now warned about rather than thrown, since
+  mocha attributes a throw there to the suite and buries whichever assertion actually failed.
+
+### Workspace trust
+
+`untrustedWorkspaces.supported` was `false`, which disables the extension outright — no
+highlighting, no hover, no completion, no navigation — on any folder the user has not trusted. That
+is the wrong trade for this extension in particular, where "clone an unfamiliar asm project and read
+it" is a large share of why it gets installed, and where none of those features run anything.
+
+It is now `"limited"`, with two guards in place of the blanket refusal:
+
+- `restrictedConfigurations` lists `fasm2CompilerPath`, `fasm1CompilerPath`, `gdbPath`,
+  `fasm2Preload` and `includePath`, so VS Code ignores the workspace's own values for every setting
+  that resolves to a program path or feeds one. A cloned repository cannot choose what would be
+  executed.
+- That alone only governs *which* binary would run, not whether one runs at all, so everything that
+  spawns a process is gated on trust as well: diagnostics in the server, and Build/Run/Debug in the
+  client. Debug is gated in `resolveDebugConfiguration` rather than in the `FASM: Debug` command,
+  since that is the only point every launch passes through.
+
+Trust is not a setting, so it cannot ride the configuration sync: the client sends it in
+`initializationOptions` and pushes a `fasm2Studio/workspaceTrust` notification if it is granted
+later, on which the server runs the first diagnostics for every open document. Granting trust
+restores everything without a window reload. The status bar states the condition and links to
+workspace trust, rather than showing the generic "diagnostics unavailable — click to change the
+compiler", which would send the user to fix something that is not broken.
+
 ## 1.6.0
 
 ### Fixed

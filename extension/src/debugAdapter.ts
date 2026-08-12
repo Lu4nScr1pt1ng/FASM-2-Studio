@@ -7,6 +7,7 @@ import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { runBuildTask } from './taskProvider';
+import { ensureTrusted } from './workspaceTrust';
 
 export const FASM_DEBUG_TYPE = 'fasm';
 
@@ -55,6 +56,10 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     _folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
   ): Promise<vscode.DebugConfiguration | undefined> {
+    // Gated here rather than in the FASM: Debug command because this is the only point every
+    // launch passes through — F5 against a launch.json entry never touches that command.
+    if (!(await ensureTrusted('Debugging'))) return undefined;
+
     if (!config.type && !config.request) {
       // Launched via F5 with no launch.json at all: fall back to the active editor.
       const editor = activeFasmEditor();

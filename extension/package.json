@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "lldb"
   ],
   "activationEvents": [
-    "onLanguage:fasm"
+    "onLanguage:fasm",
+    "onDebugResolve:fasm"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -200,6 +201,22 @@
           "minimum": 0,
           "scope": "resource",
           "description": "Absolute column that Format Document aligns trailing `;` comments to. 0 leaves them one space after the code."
+        },
+        "fasm2Studio.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "enumDescriptions": [
+            "No tracing.",
+            "Log each request/notification the editor and the language server exchange.",
+            "Log each message together with its full JSON payload."
+          ],
+          "default": "off",
+          "scope": "window",
+          "description": "Logs the traffic between VS Code and the FASM language server into its output channel. Turn this on when reporting a bug about hover, completion, navigation or live error checking not working — without it there is nothing to attach."
         }
       }
     },
@@ -518,8 +535,15 @@
   },
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": false,
-      "description": "This extension runs the assembler, and (when debugging) gdb, from paths a workspace can set in its own settings, against source the workspace controls. Assembling an untrusted project would execute whatever it points fasm2Studio.fasm2CompilerPath / fasm2Studio.gdbPath at."
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "fasm2Studio.fasm2CompilerPath",
+        "fasm2Studio.fasm1CompilerPath",
+        "fasm2Studio.gdbPath",
+        "fasm2Studio.fasm2Preload",
+        "fasm2Studio.includePath"
+      ],
+      "description": "Reading code is safe here and stays fully enabled: syntax highlighting, hover, completion, navigation, folding and formatting all work, since none of them run anything. What is withheld is everything that starts a process — live error checking, Build, Run and Debug — because those would execute an assembler (and gdb) against source the workspace controls. The five settings listed above are ignored while the workspace is untrusted, so a cloned repo cannot point them at a binary of its own choosing; trusting the folder restores both them and the disabled features."
     },
     "virtualWorkspaces": {
       "supported": false,

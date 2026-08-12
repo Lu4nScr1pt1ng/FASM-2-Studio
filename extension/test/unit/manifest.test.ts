@@ -9,6 +9,10 @@ const PACKAGE_JSON = path.join(__dirname, '..', '..', 'package.json');
 const GRAMMAR_PATH = path.join(__dirname, '..', '..', 'syntaxes', 'fasm.tmLanguage.json');
 
 interface Manifest {
+  activationEvents: string[];
+  capabilities: {
+    untrustedWorkspaces: { supported: boolean | string; restrictedConfigurations?: string[]; description?: string };
+  };
   contributes: {
     commands: Array<{ command: string; title: string; category?: string }>;
     debuggers: Array<{ type: string; label: string; configurationSnippets?: Array<{ label: string }> }>;
@@ -77,6 +81,61 @@ describe('extension manifest', () => {
         assert.ok(name.startsWith('fasm2Studio.'), `${name} is not namespaced`);
       }
     });
+  });
+
+  describe('activation events', () => {
+    // VS Code generates implicit activation events for several contribution points, but
+    // `contributes.debuggers` is not one of them — its bundle registers an activationEventsGenerator
+    // for taskDefinitions (`onTaskType:`), languages, commands and others, and none for debuggers.
+    // The debug service then calls activateDebuggers, which only fires "onDebug",
+    // "onDebugResolve" and "onDebugResolve:<type>". Relying on onLanguage:fasm alone therefore
+    // means F5 against a launch.json does nothing at all unless a .asm tab happened to be opened
+    // first in that window, since the adapter factory is registered during activation.
+    it('activates on a debug launch, not only on opening a fasm file', () => {
+      for (const debuggerContribution of manifest.contributes.debuggers) {
+        assert.ok(
+          manifest.activationEvents.includes(`onDebugResolve:${debuggerContribution.type}`),
+          `no onDebugResolve:${debuggerContribution.type} — F5 from launch.json would not activate the extension`,
+        );
+      }
+    });
+  });
+
+  describe('workspace trust', () => {
+    const trust = manifest.capabilities.untrustedWorkspaces;
+
+    // Reading unfamiliar assembly is a large share of why this extension gets installed, and
+    // "supported: false" turns off highlighting, hover, completion and navigation along with the
+    // things that actually run a process.
+    it('keeps the read-only language features available in an untrusted workspace', () => {
+      assert.strictEqual(trust.supported, 'limited');
+    });
+
+    // "limited" only means the extension still loads; on its own it would leave the workspace free
+    // to name the executable that gets spawned. Every setting that resolves to a program path, or
+    // that feeds a path into one, has to be listed here for VS Code to ignore it while untrusted.
+    it('restricts every setting that can point at something executable', () => {
+      const restricted = new Set(trust.restrictedConfigurations ?? []);
+      for (const name of ['fasm2CompilerPath', 'fasm1CompilerPath', 'gdbPath', 'fasm2Preload', 'includePath']) {
+        assert.ok(restricted.has(`fasm2Studio.${name}`), `fasm2Studio.${name} is not restricted in an untrusted workspace`);
+      }
+    });
+
+    it('only restricts settings that exist', () => {
+      for (const name of trust.restrictedConfigurations ?? []) {
+        assert.ok(manifest.contributes.configuration.properties[name], `${name} is restricted but is not a setting this extension contributes`);
+      }
+    });
+  });
+
+  it('contributes the language client\'s trace setting, so it is discoverable and not flagged as unknown', () => {
+    // vscode-languageclient reads "<clientId>.trace.server" itself; the client id is the first
+    // argument to the LanguageClient constructor in extension.ts. Without a declaration here the
+    // setting does not appear in the settings UI and hand-adding it to settings.json is marked
+    // "Unknown Configuration Setting" — leaving no way to capture a trace for a bug report.
+    const trace = manifest.contributes.configuration.properties['fasm2Studio.trace.server'];
+    assert.ok(trace, 'fasm2Studio.trace.server is not contributed');
+    assert.deepStrictEqual((trace as { enum?: string[] }).enum, ['off', 'messages', 'verbose']);
   });
 
   it('claims the same language id the task and debugger contributions are built around', () => {

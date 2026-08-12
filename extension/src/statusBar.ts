@@ -14,6 +14,7 @@ import { isFasmDocument } from './activeEditor';
 import { dialectForDocument } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { CONFIG_SECTION } from './config';
+import { isWorkspaceTrusted } from './workspaceTrust';
 
 /** How long to wait after a keystroke before re-detecting the dialect. Detection is a regex scan
  * over the whole buffer, so it is cheap but not free; this keeps it off the per-keystroke path
@@ -64,7 +65,16 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
       if (mine !== generation) return;
 
       const issue = diagnosticsIssue?.uri === editor.document.uri.toString() ? diagnosticsIssue : undefined;
-      if (!compiler) {
+      // Checked before the compiler, because in an untrusted workspace the compiler is beside the
+      // point: nothing is going to be run either way, and the generic "click to change the
+      // compiler" affordance below would send the user to fix something that isn't broken.
+      if (!isWorkspaceTrusted()) {
+        item.text = `$(shield) ${dialect}: restricted`;
+        item.tooltip =
+          'FASM2 Studio — this workspace is not trusted, so live error checking, Build, Run and Debug are off. ' +
+          'Editing, navigation and highlighting are unaffected. Click to manage workspace trust.';
+        item.command = 'workbench.trust.manage';
+      } else if (!compiler) {
         item.text = `$(warning) ${dialect}: compiler not found`;
         item.tooltip = 'FASM2 Studio — no compiler found on PATH. Click to configure one.';
         item.command = 'fasm2Studio.selectCompiler';

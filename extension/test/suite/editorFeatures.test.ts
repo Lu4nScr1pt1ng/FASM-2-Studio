@@ -11,6 +11,26 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+/**
+ * Compares two filesystem paths the way the platform itself would.
+ *
+ * On Windows a path can differ from an equal path only by the case of its drive letter, and the
+ * two sides of these assertions reliably disagree about it: `os.tmpdir()` yields `C:\Users\…`,
+ * while anything that has been through a `file:` URI — which is every path the language server
+ * hands back, since LSP speaks URIs — comes back from `Uri.fsPath` as `c:\Users\…`. A
+ * `strictEqual` on the raw strings therefore fails on Windows for two paths that name the same
+ * file. Only the drive letter is folded, not the whole path: NTFS is case-insensitive but its
+ * *stored* casing is meaningful to read, so upper-casing everything would turn an assertion
+ * failure message into an unreadable one.
+ */
+function samePath(a: string, b: string): boolean {
+  const normalize = (p: string): string => {
+    const normalized = path.normalize(p);
+    return process.platform === 'win32' ? normalized.replace(/^[a-zA-Z]:/, (drive) => drive.toUpperCase()) : normalized;
+  };
+  return normalize(a) === normalize(b);
+}
+
 /** Retries `read` until it returns something non-empty, since the language server answers these
  * only once it has parsed and indexed the document. */
 async function eventually<T>(read: () => Thenable<T | undefined>, isReady: (value: T) => boolean, attempts = 24): Promise<T | undefined> {
@@ -63,8 +83,21 @@ describe('editor features (real VS Code host)', () => {
   });
 
   after(async () => {
+    // The formatting test applies a WorkspaceEdit and never saves it, so its editor is dirty by
+    // the time this runs. `closeAllEditors` on a dirty editor puts up a modal "save your changes?"
+    // that nothing in a test host ever answers — the suite then hangs until the runner's timeout,
+    // and the `fs.rm` below never runs at all. Saving first is what makes the close unattended;
+    // the files are about to be deleted anyway, so what is written is irrelevant.
+    await vscode.workspace.saveAll(false);
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    if (dir) await fs.rm(dir, { recursive: true, force: true });
+    // Never allowed to throw: a cleanup failure here is reported by mocha as the *suite's* error
+    // and buries whichever assertion actually failed, which is the far more useful message. A
+    // leaked directory under os.tmpdir() is not worth that trade.
+    try {
+      if (dir) await fs.rm(dir, { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`could not remove the temp dir ${dir}: ${(err as Error).message}`);
+    }
   });
 
   it('highlights every occurrence of the symbol under the cursor', async function () {
@@ -159,6 +192,7 @@ describe('editor features (real VS Code host)', () => {
       (l) => l.length > 0,
     );
     assert.ok(links && links.length > 0, 'expected a document link for the include path');
-    assert.strictEqual(links![0].target?.fsPath, targetPath);
+    const linked = links![0].target?.fsPath;
+    assert.ok(linked && samePath(linked, targetPath), `expected the link to resolve to ${targetPath}, got ${linked}`);
   });
 });

@@ -12,11 +12,12 @@ import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
-import { createStatusBarItem, setDiagnosticsIssue } from './statusBar';
+import { createStatusBarItem, refreshStatusBar, setDiagnosticsIssue } from './statusBar';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
 import { registerTerminalLinks } from './terminalLinks';
 import { COMPILER_PATH_SETTING } from './types';
 import { createFasmFileWatcher, indexWorkspace } from './workspaceIndexer';
+import { ensureTrusted, isWorkspaceTrusted, onTrustGranted } from './workspaceTrust';
 
 let client: LanguageClient | undefined;
 
@@ -53,9 +54,12 @@ async function resolveActiveEntryFile(file: string): Promise<string | undefined>
   return resolveEntryPointFsPath(client, file);
 }
 
-/** Target file → resolved build entry point, or undefined if either step failed (each already
- * shows its own error/warning). Shared preamble for the build/buildAndRun/run commands. */
-async function resolveBuildTarget(resource?: vscode.Uri): Promise<string | undefined> {
+/** Target file → resolved build entry point, or undefined if any step failed (each already shows
+ * its own error/warning). Shared preamble for the build/buildAndRun/run commands. `action` names
+ * this command in the untrusted-workspace refusal, which comes first because every one of these
+ * ends in a spawned process. */
+async function resolveBuildTarget(action: string, resource?: vscode.Uri): Promise<string | undefined> {
+  if (!(await ensureTrusted(action))) return undefined;
   const file = targetFasmFile(resource);
   if (!file) return undefined;
   return resolveActiveEntryFile(file);
@@ -64,12 +68,12 @@ async function resolveBuildTarget(resource?: vscode.Uri): Promise<string | undef
 function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('fasm2Studio.build', async (resource?: vscode.Uri) => {
-      const entryFile = await resolveBuildTarget(resource);
+      const entryFile = await resolveBuildTarget('Building', resource);
       if (entryFile) await runBuildTask(entryFile);
     }),
 
     vscode.commands.registerCommand('fasm2Studio.buildAndRun', async (resource?: vscode.Uri) => {
-      const entryFile = await resolveBuildTarget(resource);
+      const entryFile = await resolveBuildTarget('Building and running', resource);
       if (!entryFile) return;
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
@@ -78,7 +82,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('fasm2Studio.run', async (resource?: vscode.Uri) => {
-      const entryFile = await resolveBuildTarget(resource);
+      const entryFile = await resolveBuildTarget('Running', resource);
       if (!entryFile) return;
       await runOutputBinary(getDefaultOutputPath(entryFile));
     }),
@@ -139,6 +143,11 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
       { scheme: 'file', language: 'fasm' },
       { scheme: 'untitled', language: 'fasm' },
     ],
+    // Live error checking works by compiling, so the server needs the same trust answer the
+    // build/run/debug commands gate on — it runs in its own process and cannot read
+    // vscode.workspace.isTrusted itself. Sent at initialize and updated by the
+    // 'fasm2Studio/workspaceTrust' notification below if trust is granted later in the session.
+    initializationOptions: { isTrusted: isWorkspaceTrusted() },
     synchronize: {
       configurationSection: CONFIG_SECTION,
       // Forwards create/change/delete events to the server as workspace/didChangeWatchedFiles,
@@ -188,6 +197,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       setDiagnosticsIssue(params.reason ? { uri: params.uri, reason: params.reason } : undefined);
     }),
   );
+  // Granting trust mid-session has to reach the server too, or live error checking stays off
+  // until the window is reloaded — the one state change here that a settings sync can't carry,
+  // since trust is not a setting.
+  onTrustGranted(context, () => {
+    void client?.sendNotification('fasm2Studio/workspaceTrust', { isTrusted: true });
+    refreshStatusBar();
+  });
   void indexWorkspace(client).catch((err) => console.error(`${MESSAGE_PREFIX}workspace indexing failed`, err));
 }
 

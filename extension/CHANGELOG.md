@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.7.0
+
+### Fixed
+
+- **F5 works from `launch.json` without opening a `.asm` file first.** In a fresh window, starting a
+  debug session from the Run and Debug panel did nothing at all unless you had already opened a fasm
+  file in that window — the extension had not woken up yet.
+- **Breakpoints on comments, blank lines and labels now work.** They used to show as a hollow grey
+  dot and never hit, because those lines produce no machine code. A breakpoint set on one now moves
+  to the next line that does produce code — you can see where it went — which is what gdb does and
+  what the line you clicked almost always meant. The gutter also stops offering breakpoints on lines
+  that cannot hold one.
+- **A `fasm2Studio.trace.server` setting**, for capturing what the editor and the language server
+  say to each other. Turn it on if you are reporting a bug about hover, completion, go-to-definition
+  or live error checking; there was previously no way to produce that log.
+
+### Reading code in an untrusted folder
+
+Opening a project you have not trusted no longer switches the whole extension off. Syntax
+highlighting, hover, completion, go-to-definition, references, folding and formatting all keep
+working, because none of them run anything.
+
+What stays off until you trust the folder is everything that starts a process: live error checking,
+Build, Run and Debug. VS Code also ignores that workspace's own compiler, gdb, preload and include
+settings while it is untrusted, so a repository you just cloned cannot point them at a program of
+its choosing. The status bar tells you when this is why something is not running, and clicking it
+takes you to the trust dialog. Trusting the folder turns everything back on immediately — no reload.
+
 ## 1.6.0
 
 ### Fixed
