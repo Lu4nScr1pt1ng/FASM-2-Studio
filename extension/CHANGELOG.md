@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.8.0
+
+### Your program now runs in a terminal, so you can type at it
+
+Debugging used to send the program's output to the Debug Console, which has nowhere to type. A
+program waiting on input just sat there looking frozen. It now runs in a real terminal by default:
+input works, output arrives as it happens, and everything else about the session is unchanged.
+
+Set `"console"` in your `launch.json` to `"externalTerminal"` for a separate window, or
+`"debugConsole"` to go back to the old behaviour. On Windows the program gets its own console
+window, since Windows has no pty to share with gdb.
+
+### Added
+
+- **`FASM: New File`** writes a hello world that already builds and runs — pick Linux or Windows and
+  it fills in the `format` line, the entry point, the output call and the exit. Useful if you are
+  starting from nothing, which the "build and run" walkthrough step previously assumed you were not.
+- **`FASM: Clean Build Output`** deletes the binary and the `.lst` listing a build left behind (to
+  the trash, so a mistyped output path is recoverable).
+- **`FASM: Show Language Server Log`** opens the extension's own output channel — the log you are
+  asked for in a bug report, previously reachable only by hunting through the Output panel's
+  dropdown.
+- **The status bar item is now a menu.** It always showed the dialect and the compiler, but clicking
+  it only ever led to the compiler picker. It now offers both, plus a switch for live error checking,
+  the log, and a server restart — and it leads with whatever is currently wrong.
+
+### Fixed
+
+- **Ctrl+Shift+B builds the open file.** The build tasks were not registered as build tasks, so the
+  editor's own build shortcut did not offer them without an extra step, and they could not be set as
+  the default build task.
+- **The explorer right-click menu** offers Build and Run, Debug and Clean, not just Build.
+
 ## 1.7.0
 
 ### Fixed

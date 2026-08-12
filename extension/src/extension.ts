@@ -3,16 +3,19 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
+import { cleanBuildOutput } from './clean';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
+import { registerNewFile } from './newFile';
 import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDialect } from './selectDialect';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { runOutputBinary } from './runCommand';
-import { createStatusBarItem, refreshStatusBar, setDiagnosticsIssue } from './statusBar';
+import { activeDiagnosticsIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue } from './statusBar';
+import { registerStatusBarMenu } from './statusBarMenu';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
 import { registerTerminalLinks } from './terminalLinks';
 import { COMPILER_PATH_SETTING } from './types';
@@ -85,6 +88,25 @@ function registerCommands(context: vscode.ExtensionContext): void {
       const entryFile = await resolveBuildTarget('Running', resource);
       if (!entryFile) return;
       await runOutputBinary(getDefaultOutputPath(entryFile));
+    }),
+
+    // Resolved through the same entry-point path as Build, so it removes exactly the files that
+    // Build wrote — cleaning an included fragment cleans the program it is part of, rather than
+    // looking for output next to a file that never produced any.
+    vscode.commands.registerCommand('fasm2Studio.clean', async (resource?: vscode.Uri) => {
+      const entryFile = await resolveBuildTarget('Cleaning', resource);
+      if (entryFile) await cleanBuildOutput(entryFile);
+    }),
+
+    // The language client's own channel, which is where fasm2Studio.trace.server writes. Without a
+    // command, reaching it means knowing to open the Output panel and pick the right entry from a
+    // dropdown — so the setting that exists for bug reports had no obvious way to be read.
+    vscode.commands.registerCommand('fasm2Studio.showOutput', () => {
+      if (!client) {
+        void vscode.window.showWarningMessage(`${MESSAGE_PREFIX}the language server is not running.`);
+        return;
+      }
+      client.outputChannel.show(true);
     }),
 
     // The standard escape hatch every LSP-backed extension is expected to have. The server holds
@@ -166,6 +188,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerCommands(context);
   registerSelectCompiler(context);
   registerSelectDialect(context);
+  registerNewFile(context);
+  registerStatusBarMenu(context, activeDiagnosticsIssue);
   createStatusBarItem(context);
   registerTerminalLinks(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));

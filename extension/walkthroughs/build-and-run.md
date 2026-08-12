@@ -1,3 +1,9 @@
+## Nothing to build yet
+
+`FASM: New File` writes a hello world for your platform — the `format` line, the entry point, the
+output call and the exit, already laid out the way Format Document would leave it. Build and run it
+as it stands, then start changing things.
+
 ## Where output goes
 
 By default, next to the source with the extension stripped: `prog.asm` → `prog`.

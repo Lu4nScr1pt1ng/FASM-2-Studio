@@ -14,6 +14,8 @@ labels by name.
 - Data labels with string/array previews, and a raw memory view
 - A disassembly view with instruction-level stepping and instruction breakpoints
 - Set next statement, to jump the program counter to another line
+- A terminal of the program's own, so one that reads stdin can be typed at — `"console"` in
+  `launch.json` switches between `integratedTerminal`, `externalTerminal` and `debugConsole`
 
 ## Requirements
 

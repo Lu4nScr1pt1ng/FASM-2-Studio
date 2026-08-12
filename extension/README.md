@@ -35,9 +35,15 @@ that, a language server parses your project and gives you:
   indents block bodies. It never reorders or rewrites a token, never touches string contents, and
   leaves your line endings alone.
 
-`FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file. The
-extension finds your compiler automatically; a status bar item shows which one it picked and lets
-you override it.
+`FASM: New File` writes a hello world that already builds and runs — Linux (ELF64) or Windows
+(PE64), with the `format` line, the entry point and the exit filled in — so there is something to
+press play on straight away.
+
+`FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, and are
+ordinary build tasks, so `Ctrl+Shift+B` runs them too. The extension finds your compiler
+automatically; a status bar item shows which one it picked, and clicking it opens a menu for the
+dialect, the compiler, live error checking, the language server's log and a server restart.
+`FASM: Clean Build Output` removes what a build wrote.
 
 `FASM: Build`, `FASM: Build and Run`, `FASM: Run` and `FASM: Debug` are also on the editor title
 bar, the editor context menu, and the explorer's right-click menu for a `.asm` file.
@@ -59,6 +65,8 @@ Currently fasm2/fasmg sources only. You get:
 - **Restart** in place, keeping every breakpoint and watchpoint
 - Faults named properly: a SIGSEGV reads as `SIGSEGV (Segmentation fault)`, not "exception"
 - `args` and `env` in `launch.json` for the debugged program
+- **A terminal of its own**, so a program that reads stdin can be typed at — `"console"` picks
+  between `integratedTerminal` (default), `externalTerminal` and `debugConsole`
 
 ## Setting up a project
 

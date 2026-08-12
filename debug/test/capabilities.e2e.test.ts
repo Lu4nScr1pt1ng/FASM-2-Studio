@@ -7,106 +7,11 @@
 // passing test here means the capability genuinely works rather than that the adapter answers the
 // request.
 import * as assert from 'assert';
-import { ChildProcessWithoutNullStreams, spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-
-function isAvailable(command: string): boolean {
-  const result = spawnSync(command, ['--version'], { timeout: 5000 });
-  return !(result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT');
-}
-
-interface RawDapMessage {
-  type: 'response' | 'event';
-  request_seq?: number;
-  success?: boolean;
-  message?: string;
-  event?: string;
-  body?: unknown;
-}
-
-class DapClient {
-  private buffer = Buffer.alloc(0);
-  private seq = 1;
-  private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  private readonly eventWaiters: Array<{ event: string; predicate?: (body: unknown) => boolean; resolve: (body: unknown) => void }> = [];
-  readonly events: Array<{ event: string; body: unknown }> = [];
-
-  constructor(proc: ChildProcessWithoutNullStreams) {
-    this.proc = proc;
-    proc.stdout.on('data', (chunk: Buffer) => this.onData(chunk));
-  }
-  private readonly proc: ChildProcessWithoutNullStreams;
-
-  private onData(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    for (;;) {
-      const headerEnd = this.buffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
-      const match = /Content-Length: (\d+)/.exec(this.buffer.subarray(0, headerEnd).toString('utf8'));
-      if (!match) return;
-      const length = parseInt(match[1], 10);
-      const bodyStart = headerEnd + 4;
-      if (this.buffer.length < bodyStart + length) return;
-      const body = this.buffer.subarray(bodyStart, bodyStart + length).toString('utf8');
-      this.buffer = this.buffer.subarray(bodyStart + length);
-      this.handleMessage(JSON.parse(body) as RawDapMessage);
-    }
-  }
-
-  private handleMessage(msg: RawDapMessage): void {
-    if (msg.type === 'response') {
-      const p = this.pending.get(msg.request_seq!);
-      if (!p) return;
-      this.pending.delete(msg.request_seq!);
-      if (msg.success) p.resolve(msg.body);
-      else p.reject(new Error(msg.message ?? 'request failed'));
-    } else if (msg.type === 'event') {
-      this.events.push({ event: msg.event!, body: msg.body });
-      for (let i = this.eventWaiters.length - 1; i >= 0; i--) {
-        const w = this.eventWaiters[i];
-        if (w.event === msg.event && (!w.predicate || w.predicate(msg.body))) {
-          this.eventWaiters.splice(i, 1);
-          w.resolve(msg.body);
-        }
-      }
-    }
-  }
-
-  sendRequest<T = unknown>(command: string, args?: unknown): Promise<T> {
-    const seq = this.seq++;
-    const payload = JSON.stringify({ seq, type: 'request', command, arguments: args });
-    this.proc.stdin.write(`Content-Length: ${Buffer.byteLength(payload, 'utf8')}\r\n\r\n${payload}`);
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(seq, { resolve: resolve as (v: unknown) => void, reject });
-    });
-  }
-
-  waitForEvent(event: string, predicate?: (body: unknown) => boolean, timeoutMs = 15000): Promise<unknown> {
-    const already = this.events.find((e) => e.event === event && (!predicate || predicate(e.body)));
-    if (already) return Promise.resolve(already.body);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for DAP event "${event}"`)), timeoutMs);
-      this.eventWaiters.push({
-        event,
-        predicate,
-        resolve: (body) => {
-          clearTimeout(timer);
-          resolve(body);
-        },
-      });
-    });
-  }
-
-  /** Every console/stdout OutputEvent seen so far, concatenated. */
-  output(): string {
-    return this.events
-      .filter((e) => e.event === 'output')
-      .map((e) => (e.body as { output?: string }).output ?? '')
-      .join('');
-  }
-}
+import { DapClient, isAvailable } from './dapClient';
 
 /** Counts to 5 in ebx, then writes a value to a data label and exits. Chosen so a conditional
  * breakpoint, a hit-count breakpoint and a watchpoint all have something real to observe. */

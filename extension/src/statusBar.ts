@@ -14,6 +14,7 @@ import { isFasmDocument } from './activeEditor';
 import { dialectForDocument } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { CONFIG_SECTION } from './config';
+import { STATUS_BAR_MENU_COMMAND } from './statusBarMenu';
 import { isWorkspaceTrusted } from './workspaceTrust';
 
 /** How long to wait after a keystroke before re-detecting the dialect. Detection is a regex scan
@@ -42,6 +43,13 @@ let diagnosticsIssue: { uri: string; reason: string } | undefined;
 export function setDiagnosticsIssue(issue: { uri: string; reason: string } | undefined): void {
   diagnosticsIssue = issue;
   refreshStatusBar();
+}
+
+/** The standing diagnostics problem for the file the user is looking at, if there is one — read by
+ * the status bar menu so it can lead with it. */
+export function activeDiagnosticsIssue(): string | undefined {
+  const active = vscode.window.activeTextEditor?.document.uri.toString();
+  return diagnosticsIssue && diagnosticsIssue.uri === active ? diagnosticsIssue.reason : undefined;
 }
 
 export function createStatusBarItem(context: vscode.ExtensionContext): vscode.StatusBarItem {
@@ -77,15 +85,15 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
       } else if (!compiler) {
         item.text = `$(warning) ${dialect}: compiler not found`;
         item.tooltip = 'FASM2 Studio — no compiler found on PATH. Click to configure one.';
-        item.command = 'fasm2Studio.selectCompiler';
+        item.command = STATUS_BAR_MENU_COMMAND;
       } else if (issue) {
         item.text = `$(warning) ${dialect}: diagnostics unavailable`;
-        item.tooltip = `FASM2 Studio — using ${compiler.path}, but live error checking is not running: ${issue.reason}. Click to change the compiler.`;
-        item.command = 'fasm2Studio.selectCompiler';
+        item.tooltip = `FASM2 Studio — using ${compiler.path}, but live error checking is not running: ${issue.reason}. Click for options.`;
+        item.command = STATUS_BAR_MENU_COMMAND;
       } else {
         item.text = `$(tools) ${dialect} (${compiler.path})`;
-        item.tooltip = `FASM2 Studio — using ${compiler.path}${compiler.autoDetected ? ' (auto-detected)' : ''}. Click to change.`;
-        item.command = 'fasm2Studio.selectCompiler';
+        item.tooltip = `FASM2 Studio — using ${compiler.path}${compiler.autoDetected ? ' (auto-detected)' : ''}. Click to change the dialect, the compiler, or live error checking.`;
+        item.command = STATUS_BAR_MENU_COMMAND;
       }
       item.show();
     } catch {

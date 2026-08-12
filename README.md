@@ -205,9 +205,16 @@ comment, and a line it can't confidently parse is left exactly as written. It ne
 inserts or rewrites a token, and it preserves your line endings.
 
 `FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, from the
-palette, the editor title bar, the editor context menu, or the explorer. The extension finds your
-compiler automatically; a status bar item shows which one it picked and lets you override it. In
-terminal output, fasm's own `file.asm [12]:` error headers are clickable.
+palette, the editor title bar, the editor context menu, or the explorer — and they are ordinary VS
+Code build tasks, so `Ctrl+Shift+B` reaches them too. The extension finds your compiler
+automatically; a status bar item shows which one it picked, and clicking it opens a menu for the
+dialect, the compiler, live error checking, the language server's log and a server restart. In
+terminal output, fasm's own `file.asm [12]:` error headers are clickable. `FASM: Clean Build
+Output` removes the binary and listing a build wrote.
+
+Starting from nothing, `FASM: New File` writes a hello world that already builds and runs — ELF64
+for Linux, PE64 for Windows — so the first thing you see is a working program rather than an empty
+buffer and a `format` directive to look up.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source file is never
 modified) and launches it under gdb (or lldb-mi). Since fasm2 doesn't emit DWARF/CodeView debug
@@ -215,6 +222,12 @@ info, source-line mapping comes from that listing rather than a standard debug f
 no call-stack unwinding or typed variables — what you get instead is a live register view and
 gdb-expression evaluation (`$eax`, `*(dword*)$esp`, and so on), which is the right level of detail
 for raw assembly anyway.
+
+The program runs in a terminal of its own, so it can be typed into as well as read — a program
+blocked in a `read` syscall is the normal case in assembly, and the Debug Console has no stdin to
+answer it with. `"console"` in `launch.json` chooses between `integratedTerminal` (the default),
+`externalTerminal`, and `debugConsole` for output-only in the Debug Console. On Windows the program
+gets its own console window instead, since there is no pty to hand to gdb there.
 
 On top of breakpoints, stepping and continue: conditional, hit-count and log points; function
 breakpoints on any label name; watchpoints on a data label; instruction breakpoints in the

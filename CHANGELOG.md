@@ -1,5 +1,90 @@
 # Changelog
 
+## 1.8.0
+
+### The debugged program gets a terminal
+
+Its output went to the Debug Console as DAP output events, and the Debug Console has no stdin to
+offer. A program blocked in a `read` syscall therefore sat there with nothing to say why, and
+"read a value, print it back" is most of what anyone writes while learning assembly.
+
+A `console` launch attribute now chooses where the program's own input and output live —
+`integratedTerminal` (the new default), `externalTerminal`, or `debugConsole` for the old
+behaviour. The terminal is a real one: the adapter sends DAP's `runInTerminal` reverse request, the
+client opens a terminal and runs a holder command in it, that command reports its tty back through
+a temp file, and gdb's `-inferior-tty-set` points the inferior's stdin/stdout/stderr at the same
+tty. From then on the program talks to the terminal directly and the adapter is not in the middle.
+
+- The holder exits by itself when the adapter deletes the handshake file at the end of the session,
+  rather than being killed: killing it would close an integrated terminal panel and take the
+  program's output with it. It also gives up after 12 hours, so an adapter that dies without
+  cleaning up cannot leave an `sh` sleeping until the machine is rebooted.
+- Every failure degrades to the Debug Console and says why — a client that never declared
+  `supportsRunInTerminalRequest`, a client that refuses the request, a terminal that never reports a
+  tty, a gdb that rejects the command. The program still runs; only its input stops working.
+- The handshake is started during `launch` but awaited in `configurationDone`, immediately before
+  `-exec-run`. Awaiting it inside `launchRequest` delays the launch response by however long the
+  client takes to open a terminal — seconds, since it is a real UI action — and a launch response
+  that lands after the first `stopped` event is one VS Code silently drops. That is the same
+  regression the register-name lookup in `launchRequest` is deliberately written to avoid; it was
+  caught here by the extension's own real-VS-Code debug tests, which timed out waiting for a session
+  that had already stopped.
+- Windows has no pty to hand to gdb, so a terminal setting there issues `-gdb-set new-console on`
+  instead, giving the program its own console window. Best-effort and unverified, like the rest of
+  the Windows debug path.
+- Verified end to end on Linux: `debug/test/inferiorTerminal.e2e.test.ts` runs the real adapter
+  against real gdb and a real fasm2 binary, plays the client's half of `runInTerminal` with
+  util-linux's `script` (whose entire job is running a command under a pty), types a line at the
+  program, and asserts the program's answer comes back on the terminal and *not* through the Debug
+  Console. The test program prefixes its output with `got: ` precisely because a pty echoes what is
+  typed at it, so asserting on the input text alone would pass without the program ever running.
+
+### Added
+
+- `FASM: New File` writes a hello world that already builds and runs — ELF64 for Linux, PE64 for
+  Windows, ordered with the running platform first. The walkthrough's "build and run" step told the
+  user to open a `.asm` file and press play, which assumes they have one; someone installing this to
+  learn fasm has neither the file nor the boilerplate. Both templates are laid out to the
+  formatter's own default columns, so Format Document on a fresh file is a no-op, and both are
+  checked by assembling them with the real compiler rather than by inspection — a starter program
+  that does not build is worse than none, since the reader has no way to tell their setup from our
+  typo.
+- `FASM: Clean Build Output` removes the binary and the `.lst` listing a build wrote, resolved
+  through the same entry-point logic as Build so cleaning an included fragment cleans the program it
+  belongs to. Deletion goes through the trash: these are derived files, but `buildOutputPath` is
+  user-configurable and a mistyped one should be recoverable.
+- `FASM: Show Language Server Log` opens the client's output channel. `fasm2Studio.trace.server` was
+  added in 1.7.0 so bug reports could carry a protocol trace, but reading it still meant knowing to
+  open the Output panel and pick the right entry from a dropdown.
+- Clicking the status bar item opens a menu instead of jumping straight to the compiler picker. It
+  displays the dialect as well as the compiler, and `FASM: Select Dialect` — the setting most likely
+  to be wrong, since a fasm1 project is not auto-detectable by design — was reachable only from the
+  command palette. The menu leads with whatever is currently broken: a missing compiler first, then
+  live error checking that has stopped running, otherwise the dialect. It also carries an in-place
+  toggle for `diagnosticsEnabled`, the log, and the server restart.
+
+### Fixed
+
+- Build tasks are in the Build group. `taskProvider` never set `task.group`, which filed both
+  contributed tasks under "other tasks": Ctrl+Shift+B offered them only behind an extra "no build
+  task is configured" step, and "Configure Default Build Task" could not pin one.
+- The explorer context menu offers Build and Run, Debug and Clean, not just Build — right-clicking a
+  `.asm` file to run it is at least as natural a gesture as right-clicking it to assemble it.
+
+### Tests
+
+- `npm run test --workspace extension` now runs the unit suite as well as the integration one. The
+  manifest tests added in 1.7.0 lived under `test/unit`, which only `test:unit` ran and nothing in
+  CI called — so they had never actually run on a pull request.
+- A new integration test asserts every command in `contributes.commands` is registered by the
+  running extension. The manifest declares them and `extension.ts` registers them with nothing
+  connecting the two, so a command contributed but never registered reaches the user as "command not
+  found" from the palette entry the manifest put there.
+- The raw-DAP client the end-to-end debug tests are built on moved into `debug/test/dapClient.ts`.
+  It was copied into two suites, which had already drifted apart in small ways, and the terminal
+  test needed a third copy — plus reverse-request handling, which is what makes a `runInTerminal`
+  test possible at all.
+
 ## 1.7.0
 
 ### Fixed

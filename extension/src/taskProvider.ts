@@ -107,6 +107,11 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
 
   const task = new vscode.Task(def, vscode.TaskScope.Workspace, name, 'fasm', execution);
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: true };
+  // Without a group, VS Code files these under "other tasks": Ctrl+Shift+B (Run Build Task) offers
+  // them only behind an extra "no build task is configured" step, and "Configure Default Build
+  // Task" cannot pin one — for an extension whose whole point is assembling the open file, the
+  // editor's standard build gesture should reach it directly.
+  task.group = vscode.TaskGroup.Build;
   return task;
 }
 

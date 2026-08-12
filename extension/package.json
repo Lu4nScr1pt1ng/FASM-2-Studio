@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -222,6 +222,11 @@
     },
     "commands": [
       {
+        "command": "fasm2Studio.newFile",
+        "title": "New File",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.build",
         "title": "Build",
         "category": "FASM"
@@ -242,6 +247,11 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.clean",
+        "title": "Clean Build Output",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.selectDialect",
         "title": "Select Dialect",
         "category": "FASM"
@@ -252,8 +262,18 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.showOutput",
+        "title": "Show Language Server Log",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.restartLanguageServer",
         "title": "Restart Language Server",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.statusBarMenu",
+        "title": "Show Status Bar Menu",
         "category": "FASM"
       }
     ],
@@ -346,6 +366,21 @@
                 "description": "Command-line arguments passed to the debugged program.",
                 "default": []
               },
+              "console": {
+                "type": "string",
+                "enum": [
+                  "integratedTerminal",
+                  "externalTerminal",
+                  "debugConsole"
+                ],
+                "enumDescriptions": [
+                  "A terminal in the panel. The program can be typed into as well as read.",
+                  "A separate terminal window, for a program that wants the whole screen to itself.",
+                  "The Debug Console. Output only — a program that reads stdin will wait forever."
+                ],
+                "default": "integratedTerminal",
+                "description": "Where the debugged program's own input and output go. Only a terminal can carry input, so a program that reads stdin needs one; the Debug Console can show output but has nothing to type into. On Windows a terminal setting gives the program its own console window instead, since there is no pty for gdb to share."
+              },
               "env": {
                 "type": "object",
                 "additionalProperties": {
@@ -398,6 +433,14 @@
         {
           "command": "fasm2Studio.debug",
           "when": "resourceLangId == fasm"
+        },
+        {
+          "command": "fasm2Studio.clean",
+          "when": "resourceLangId == fasm"
+        },
+        {
+          "command": "fasm2Studio.statusBarMenu",
+          "when": "false"
         }
       ],
       "editor/title/run": [
@@ -439,6 +482,21 @@
           "command": "fasm2Studio.build",
           "when": "resourceLangId == fasm",
           "group": "fasm@1"
+        },
+        {
+          "command": "fasm2Studio.buildAndRun",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@2"
+        },
+        {
+          "command": "fasm2Studio.debug",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@3"
+        },
+        {
+          "command": "fasm2Studio.clean",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@4"
         }
       ]
     },
@@ -478,7 +536,7 @@
           {
             "id": "buildAndRun",
             "title": "Build and run",
-            "description": "Open a `.asm` file and use the ▷ button in the editor title bar, or the command palette.\n\nIncluded fragments are handled for you: building an `.inc` with no `format` of its own assembles the real entry point that includes it.\n[Build and Run](command:fasm2Studio.buildAndRun)",
+            "description": "Open a `.asm` file and use the ▷ button in the editor title bar, or the command palette.\n\nDon't have one yet? Create a hello world that already builds and runs — pick your platform and it writes the `format` line, the entry point and the exit for you.\n\nIncluded fragments are handled for you: building an `.inc` with no `format` of its own assembles the real entry point that includes it.\n[New File](command:fasm2Studio.newFile)\n[Build and Run](command:fasm2Studio.buildAndRun)",
             "media": {
               "markdown": "walkthroughs/build-and-run.md",
               "altText": "Building and running"
@@ -509,7 +567,7 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc -p . --noEmit",
     "pretest": "tsc -p tsconfig.test.json",
-    "test": "node ./out-test/test/runTest.js",
+    "test": "npm run test:unit && node ./out-test/test/runTest.js",
     "test:unit": "mocha --require tsx 'test/unit/**/*.test.ts'",
     "package": "vsce package --no-dependencies",
     "publish:marketplace": "vsce publish --no-dependencies",

@@ -120,6 +120,17 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       }
     }
 
+    // A terminal by default, not the Debug Console: assembly programs are console programs, and a
+    // program blocked on a `read` syscall with no stdin to answer it looks exactly like a hung
+    // debugger. Output-only programs are unaffected beyond which panel their output lands in.
+    const CONSOLE_KINDS = ['integratedTerminal', 'externalTerminal', 'debugConsole'];
+    if (config.console === undefined) {
+      config.console = 'integratedTerminal';
+    } else if (!CONSOLE_KINDS.includes(config.console as string)) {
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}"console" in launch.json must be one of ${CONSOLE_KINDS.join(', ')}.`);
+      return undefined;
+    }
+
     const program = (config.program as string) ?? getDefaultOutputPath(asmFile);
     config.program = program;
     config.listingFile = (config.listingFile as string) ?? getListingPath(program);

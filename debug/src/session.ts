@@ -24,6 +24,7 @@ import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
 import { readElfEntryPoint } from './elfEntry';
 import { GdbDriver } from './gdbDriver';
+import { ConsoleKind, handshakeFilePath, holderCommand, isTerminalConsole, releaseTerminal, runInTerminalKind, waitForTty } from './inferiorTerminal';
 import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from './listingMap';
 import { miData } from './miParser';
 import {
@@ -73,6 +74,11 @@ const MAX_X86_INSTRUCTION_BYTES = 15;
  * rather than asking gdb to disassemble an unbounded byte range. Far larger than any real VS Code
  * Disassembly View page (typically a few hundred instructions). */
 const MAX_DISASSEMBLE_WINDOW_BYTES = 2_000_000;
+/** How long to wait for the client to open a terminal for the debugged program. Generous, because
+ * it covers a user-visible action on the client's side (opening a panel, spawning a shell) rather
+ * than a message round trip — but bounded, since a client that never answers must not hang the
+ * launch forever. */
+const RUN_IN_TERMINAL_TIMEOUT_MS = 15_000;
 
 /** The underlying MI command for one machine-instruction step: "-exec-next-instruction" (gdb's
  * `nexti`) runs straight over a `call` instead of diving into it, landing right after it returns —
@@ -130,6 +136,10 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
   /** Extra environment variables for the debugged program. Merged over the adapter's own
    * environment, which gdb passes down to the inferior it starts. */
   env?: Record<string, string>;
+  /** Where the debugged program's own stdin/stdout live — the Debug Console (default, output only)
+   * or a real terminal, which is the only one of the two that can be typed into. See
+   * inferiorTerminal.ts. */
+  console?: ConsoleKind;
 }
 
 export class FasmDebugSession extends DebugSession {
@@ -174,13 +184,25 @@ export class FasmDebugSession extends DebugSession {
     // can't cover a hard SIGKILL (unrecoverable by any process, by OS design), but it makes the
     // ordinary shutdown path clean rather than leaky.
     const shutdown = () => {
+      // Same reason the gdb child is disposed here: this path skips disconnect/terminate entirely,
+      // and the terminal holder would keep an otherwise finished terminal waiting.
+      releaseTerminal(this.terminalHandshakeFile);
       void this.gdb?.dispose().finally(() => process.exit(0));
     };
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
   }
 
-  protected initializeRequest(response: DebugProtocol.InitializeResponse, _args: DebugProtocol.InitializeRequestArguments): void {
+  /** Whether the client can open a terminal for us on request — a "console" launch attribute
+   * asking for one is only answerable if it can. */
+  private clientSupportsRunInTerminal = false;
+  /** The file this session's terminal holder is waiting on; deleting it releases the terminal. */
+  private terminalHandshakeFile: string | undefined;
+  /** In-flight terminal handshake, started during launch and awaited before the program runs. */
+  private terminalSetup: Promise<void> | undefined;
+
+  protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
+    this.clientSupportsRunInTerminal = args.supportsRunInTerminalRequest === true;
     response.body = response.body ?? {};
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsEvaluateForHovers = true;
@@ -273,6 +295,22 @@ export class FasmDebugSession extends DebugSession {
       // macOS path.
       void this.gdb.sendCommand('-gdb-set disassembly-flavor intel').catch(() => {});
 
+      // Started here but deliberately *not* awaited here — configurationDone waits for it instead,
+      // which is the last moment before the program actually starts and therefore the last moment
+      // the tty has to be settled by. Awaiting it inside launchRequest instead delays the launch
+      // response by however long the client takes to open a terminal (seconds, since it is a real
+      // UI action), and a launch response that lands after the first 'stopped' event is one VS Code
+      // silently drops — the same regression the register-name lookup above is written to avoid,
+      // caught here by the extension's own real-VS-Code debug tests.
+      if (isTerminalConsole(args.console)) {
+        const cwd = args.cwd ?? path.dirname(args.program);
+        this.terminalSetup = this.attachInferiorTerminal(args.console!, cwd).catch((err: Error) => {
+          // Nothing in the session may be left waiting on this promise: a rejection here means the
+          // program keeps its output in the Debug Console, not that it fails to run.
+          this.sendEvent(new OutputEvent(`could not attach a terminal (${err.message}) — the program keeps its output here.\n`, 'stderr'));
+        });
+      }
+
       if (args.stopOnEntry) {
         // gdb's own `start` command needs a symbol table to resolve "main", which these binaries
         // don't have — read the entry point straight out of the ELF header instead (stable,
@@ -290,6 +328,68 @@ export class FasmDebugSession extends DebugSession {
       this.sendResponse(response);
     } catch (err) {
       this.sendErrorResponse(response, 1, `Failed to launch debug session: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Gives the debugged program a terminal of its own, so it can be typed into as well as read.
+   *
+   * Every failure here degrades to the Debug Console rather than failing the launch, and says why:
+   * the program still runs, it just cannot be interacted with — and the one thing worse than that
+   * is a program that silently ignores what you asked for.
+   */
+  private async attachInferiorTerminal(kind: ConsoleKind, cwd: string): Promise<void> {
+    if (!this.gdb) return;
+
+    // Windows has no pty for gdb to be pointed at, and -inferior-tty-set is a no-op there. gdb's
+    // own answer is a separate console window for the inferior, which is at least a real console
+    // with a real stdin. Untested — the debugger side of this extension is verified on Linux — so
+    // it is best-effort and says what it did.
+    if (process.platform === 'win32') {
+      try {
+        await this.gdb.sendCommand('-gdb-set new-console on');
+        this.sendEvent(new OutputEvent('The program gets its own console window: Windows has no pty to hand to gdb.\n', 'console'));
+      } catch (err) {
+        this.sendEvent(new OutputEvent(`could not give the program its own console (${(err as Error).message}) — its output stays here.\n`, 'stderr'));
+      }
+      return;
+    }
+
+    if (!this.clientSupportsRunInTerminal) {
+      this.sendEvent(
+        new OutputEvent('This client cannot open a terminal on request, so the program keeps its output here and has no stdin.\n', 'stderr'),
+      );
+      return;
+    }
+
+    const handshakeFile = handshakeFilePath();
+    const opened = await new Promise<DebugProtocol.RunInTerminalResponse | undefined>((resolve) => {
+      this.runInTerminalRequest(
+        { kind: runInTerminalKind(kind), title: 'FASM program', cwd, args: holderCommand(handshakeFile) },
+        RUN_IN_TERMINAL_TIMEOUT_MS,
+        (response) => resolve(response),
+      );
+    });
+
+    if (!opened?.success) {
+      releaseTerminal(handshakeFile);
+      this.sendEvent(new OutputEvent(`The client did not open a terminal (${opened?.message ?? 'no response'}) — the program keeps its output here.\n`, 'stderr'));
+      return;
+    }
+
+    const tty = await waitForTty(handshakeFile);
+    if (!tty) {
+      releaseTerminal(handshakeFile);
+      this.sendEvent(new OutputEvent('The terminal opened but never reported a tty — the program keeps its output here.\n', 'stderr'));
+      return;
+    }
+
+    try {
+      await this.gdb.sendCommand(`-inferior-tty-set ${tty}`);
+      this.terminalHandshakeFile = handshakeFile;
+    } catch (err) {
+      releaseTerminal(handshakeFile);
+      this.sendEvent(new OutputEvent(`gdb refused the terminal (${(err as Error).message}) — the program keeps its output here.\n`, 'stderr'));
     }
   }
 
@@ -360,6 +460,9 @@ export class FasmDebugSession extends DebugSession {
   protected async configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse): Promise<void> {
     this.sendResponse(response);
     try {
+      // The program's stdin/stdout have to be pointed at their terminal before it starts, not
+      // after — a program that reads on its first instruction would otherwise race the handshake.
+      await this.terminalSetup;
       await this.gdb?.sendCommand('-exec-run');
     } catch (err) {
       this.sendEvent(new OutputEvent(`failed to start program: ${(err as Error).message}\n`, 'stderr'));
@@ -1613,11 +1716,15 @@ export class FasmDebugSession extends DebugSession {
   }
 
   protected async disconnectRequest(response: DebugProtocol.DisconnectResponse): Promise<void> {
+    releaseTerminal(this.terminalHandshakeFile);
+    this.terminalHandshakeFile = undefined;
     await this.gdb?.dispose();
     this.sendResponse(response);
   }
 
   protected async terminateRequest(response: DebugProtocol.TerminateResponse): Promise<void> {
+    releaseTerminal(this.terminalHandshakeFile);
+    this.terminalHandshakeFile = undefined;
     await this.gdb?.dispose();
     this.sendResponse(response);
   }
