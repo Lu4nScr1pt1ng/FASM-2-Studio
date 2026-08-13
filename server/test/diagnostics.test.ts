@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
-import { parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+import { FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
 
 // This project's fasm/fasm1 output never produces a MarkupContent message — only the LSP type
 // allows for one (a 3.18 protocol addition) — so asserting it's a plain string here is safe.
@@ -546,5 +546,49 @@ describe('runDiagnostics (integration, real assemblers)', () => {
       assert.strictEqual(result.toolError, undefined);
       assert.deepStrictEqual(result.diagnostics, []);
     });
+  });
+});
+
+describe('noteFirstErrorOnly', () => {
+  const uri = 'file:///project/main.asm';
+  const error = (line: number): Diagnostic => ({
+    severity: DiagnosticSeverity.Error,
+    range: { start: { line, character: 0 }, end: { line, character: 10 } },
+    message: 'illegal instruction.',
+    source: 'fasm',
+  });
+  const warning = (line: number): Diagnostic => ({ ...error(line), severity: DiagnosticSeverity.Warning });
+
+  it('explains that a lone fasm1 error is hiding whatever comes after it', () => {
+    const diagnostics = [error(4)];
+    noteFirstErrorOnly(uri, 'fasm1', diagnostics);
+    assert.strictEqual(diagnostics[0].relatedInformation?.length, 1);
+    assert.strictEqual(diagnostics[0].relatedInformation?.[0].message, FASM1_FIRST_ERROR_NOTE);
+    assert.strictEqual(diagnostics[0].relatedInformation?.[0].location.uri, uri);
+  });
+
+  it('says nothing for fasm2, which is run with -e and reports every error at once', () => {
+    const diagnostics = [error(4)];
+    noteFirstErrorOnly(uri, 'fasm2', diagnostics);
+    assert.strictEqual(diagnostics[0].relatedInformation, undefined);
+  });
+
+  it('says nothing when several errors came back, since the run plainly did not stop at one', () => {
+    const diagnostics = [error(4), error(9)];
+    noteFirstErrorOnly(uri, 'fasm1', diagnostics);
+    assert.ok(diagnostics.every((d) => d.relatedInformation === undefined));
+  });
+
+  it('ignores warnings, which fasm1 carries on past', () => {
+    const diagnostics = [warning(2), error(4), warning(6)];
+    noteFirstErrorOnly(uri, 'fasm1', diagnostics);
+    assert.strictEqual(diagnostics[1].relatedInformation?.length, 1);
+    assert.strictEqual(diagnostics[0].relatedInformation, undefined);
+  });
+
+  it('does nothing to a clean run', () => {
+    const diagnostics: Diagnostic[] = [];
+    noteFirstErrorOnly(uri, 'fasm1', diagnostics);
+    assert.deepStrictEqual(diagnostics, []);
   });
 });

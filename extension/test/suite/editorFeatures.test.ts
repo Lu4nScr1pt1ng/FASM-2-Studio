@@ -178,6 +178,104 @@ describe('editor features (real VS Code host)', () => {
     );
   });
 
+  it('offers a quick fix correcting a misspelled mnemonic', async function () {
+    this.timeout(30000);
+    const typoPath = path.join(dir, 'typo.asm');
+    await fs.writeFile(typoPath, ['format ELF64 executable 3', 'entry start', '', 'start:', '\tsyscal', ''].join('\n'), 'utf8');
+    const typoDoc = await vscode.workspace.openTextDocument(typoPath);
+    await vscode.window.showTextDocument(typoDoc);
+
+    const range = new vscode.Range(new vscode.Position(4, 1), new vscode.Position(4, 7));
+    const actions = await eventually(
+      () => vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', typoDoc.uri, range),
+      (a) => a.length > 0,
+    );
+    assert.ok(
+      actions?.some((a) => /Change 'syscal' to 'syscall'/.test(a.title)),
+      `expected a spelling fix, got ${JSON.stringify(actions?.map((a) => a.title))}`,
+    );
+  });
+
+  it('completes a filename inside an include directive', async function () {
+    this.timeout(30000);
+    await fs.writeFile(path.join(dir, 'completable.inc'), 'nop\n', 'utf8');
+    const typingPath = path.join(dir, 'typing.asm');
+    await fs.writeFile(typingPath, ['format binary', "include '", ''].join('\n'), 'utf8');
+    const typingDoc = await vscode.workspace.openTextDocument(typingPath);
+    await vscode.window.showTextDocument(typingDoc);
+
+    // Just after the opening quote on line 1.
+    const position = new vscode.Position(1, 9);
+    const list = await eventually(
+      () => vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', typingDoc.uri, position),
+      (l) => l.items.length > 0,
+    );
+    const labels = (list?.items ?? []).map((i) => (typeof i.label === 'string' ? i.label : i.label.label));
+    assert.ok(labels.includes('completable.inc'), `expected the sibling include among ${JSON.stringify(labels.slice(0, 20))}`);
+    // The identifier list has no business inside a quoted path.
+    assert.ok(!labels.includes('mov'), 'mnemonics must not be offered inside a string literal');
+  });
+
+  it('grows the selection one construct at a time', async function () {
+    this.timeout(20000);
+    // Its own file rather than the shared one: the formatting test above applies its edits to that
+    // document, which moves every column this test asserts on.
+    const selectPath = path.join(dir, 'select.asm');
+    await fs.writeFile(selectPath, ['format binary', '', 'macro save reg', '\tpush reg', '\tpop reg', 'end macro', ''].join('\n'), 'utf8');
+    const selectDoc = await vscode.workspace.openTextDocument(selectPath);
+    await vscode.window.showTextDocument(selectDoc);
+
+    // On "reg" in "\tpush reg" (line 3), inside "macro save reg" (2) .. "end macro" (5).
+    const ranges = await eventually(
+      () =>
+        vscode.commands.executeCommand<vscode.SelectionRange[]>('vscode.executeSelectionRangeProvider', selectDoc.uri, [
+          new vscode.Position(3, 7),
+        ]),
+      (r) => r.length > 0 && !!r[0].parent,
+    );
+    assert.ok(ranges && ranges.length === 1, 'expected one chain for the one position given');
+
+    const steps: vscode.Range[] = [];
+    for (let node: vscode.SelectionRange | undefined = ranges![0]; node; node = node.parent) steps.push(node.range);
+    assert.ok(steps.length >= 3, `expected several growth steps, got ${steps.length}`);
+    // Each step must strictly contain the one before it, or Shift+Alt+Right shrinks the selection.
+    for (let i = 1; i < steps.length; i++) {
+      assert.ok(steps[i].contains(steps[i - 1]), `step ${i} does not contain step ${i - 1}`);
+    }
+    // One of them is the enclosing "macro ... end macro".
+    assert.ok(
+      steps.some((r) => r.start.line === 2 && r.end.line === 5),
+      `no macro-block step in ${JSON.stringify(steps.map((r) => `${r.start.line}-${r.end.line}`))}`,
+    );
+  });
+
+  it('builds a call hierarchy from a label to the routine that reaches it', async function () {
+    this.timeout(30000);
+    const callsPath = path.join(dir, 'calls.asm');
+    await fs.writeFile(
+      callsPath,
+      ['format ELF64 executable 3', 'entry start', '', 'start:', '\tcall helper', '\tret', '', 'helper:', '\tret', ''].join('\n'),
+      'utf8',
+    );
+    const callsDoc = await vscode.workspace.openTextDocument(callsPath);
+    await vscode.window.showTextDocument(callsDoc);
+
+    // On the "helper:" definition, line 7.
+    const items = await eventually(
+      () =>
+        vscode.commands.executeCommand<vscode.CallHierarchyItem[]>('vscode.prepareCallHierarchy', callsDoc.uri, new vscode.Position(7, 2)),
+      (i) => i.length > 0,
+    );
+    assert.ok(items && items.length > 0, 'expected the hierarchy to root at "helper"');
+    assert.strictEqual(items![0].name, 'helper');
+
+    const incoming = await vscode.commands.executeCommand<vscode.CallHierarchyIncomingCall[]>(
+      'vscode.provideIncomingCalls',
+      items![0],
+    );
+    assert.deepStrictEqual((incoming ?? []).map((c) => c.from.name), ['start']);
+  });
+
   it('links the path in an include directive to the file it resolves to', async function () {
     this.timeout(30000);
     const targetPath = path.join(dir, 'linked.inc');

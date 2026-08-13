@@ -17,7 +17,7 @@ import { Token, TokenType, tokenizeDocument } from '../parser/tokenizer';
  * control directives; `rmatch`/`rawmatch` close with `end match`, which the nearest-matching-opener
  * search below handles without needing to be special-cased.
  */
-const END_KEYWORD_BLOCKS = new Set([
+export const END_KEYWORD_BLOCKS = new Set([
   'macro',
   'virtual',
   'if',
@@ -36,7 +36,7 @@ const END_KEYWORD_BLOCKS = new Set([
 ]);
 
 /** Blocks closed by a dedicated single keyword rather than `end <keyword>`. */
-const DEDICATED_CLOSERS: Record<string, ReadonlySet<string>> = {
+export const DEDICATED_CLOSERS: Record<string, ReadonlySet<string>> = {
   ends: new Set(['struct', 'struc', 'union']),
   endp: new Set(['proc']), // the fasm1 proc/endp macros
 };
@@ -49,18 +49,25 @@ interface OpenBlock {
   line: number;
 }
 
+/**
+ * How many leading tokens a `label:`/`label::` prefix occupies, so the statement itself can be read
+ * past it. A block can be preceded by a label on the same line ("done: end if" is rare, "start:
+ * macro" is not, but both are legal).
+ */
+export function labelPrefixLength(code: Token[]): number {
+  if (code[0]?.type === TokenType.Ident && code[1]?.type === TokenType.Punct && code[1].text === ':') {
+    return code[2]?.type === TokenType.Punct && code[2].text === ':' ? 3 : 2;
+  }
+  return 0;
+}
+
 /** The statement keyword a line starts with, ignoring an optional leading `label:` and any
  * comment, or undefined for a line that starts with something else. */
 function statementKeyword(tokens: Token[]): { keyword: string; second?: string } | undefined {
   const code = tokens.filter((t) => t.type !== TokenType.Comment);
   if (code.length === 0) return undefined;
 
-  let start = 0;
-  // A block can be preceded by a label on the same line ("done: end if" is rare, "start: macro"
-  // is not, but both are legal) — step over "ident:" / "ident::" before reading the keyword.
-  if (code[0].type === TokenType.Ident && code[1]?.type === TokenType.Punct && code[1].text === ':') {
-    start = code[2]?.type === TokenType.Punct && code[2].text === ':' ? 3 : 2;
-  }
+  const start = labelPrefixLength(code);
   const first = code[start];
   if (!first || first.type !== TokenType.Ident) return undefined;
   const second = code[start + 1];

@@ -9,6 +9,8 @@ const PACKAGE_JSON = path.join(__dirname, '..', '..', 'package.json');
 const GRAMMAR_PATH = path.join(__dirname, '..', '..', 'syntaxes', 'fasm.tmLanguage.json');
 
 interface Manifest {
+  name: string;
+  publisher: string;
   activationEvents: string[];
   categories: string[];
   extensionKind?: string[];
@@ -29,6 +31,7 @@ interface Manifest {
     taskDefinitions: Array<{ type: string }>;
     semanticTokenScopes: Array<{ language: string; scopes: Record<string, string[]> }>;
     configurationDefaults: Record<string, Record<string, unknown>>;
+    keybindings: Array<{ command: string; key: string; mac?: string; when?: string }>;
   };
 }
 
@@ -298,5 +301,50 @@ describe('extension manifest', () => {
     const defaults = manifest.contributes.configurationDefaults;
     assert.deepStrictEqual(Object.keys(defaults), ['[fasm]'], 'the default must stay scoped to this language');
     assert.strictEqual(defaults['[fasm]']['editor.semanticHighlighting.enabled'], true);
+  });
+
+  // Several general-purpose assembly extensions also claim ".asm". With more than one formatter
+  // registered for a language and no default named, Format Document stops to ask which one — every
+  // time — instead of formatting.
+  it('names itself the default formatter for FASM, so Format Document never opens a picker', () => {
+    const defaults = manifest.contributes.configurationDefaults;
+    assert.strictEqual(defaults['[fasm]']['editor.defaultFormatter'], `${manifest.publisher}.${manifest.name}`);
+  });
+
+  describe('keybindings', () => {
+    // A keybinding that fires while a Python file is focused would run a fasm build against it.
+    it('scopes every binding to a focused FASM editor', () => {
+      for (const binding of manifest.contributes.keybindings) {
+        assert.ok(binding.when?.includes('resourceLangId == fasm'), `${binding.command} is not scoped to fasm files`);
+        assert.ok(binding.when?.includes('editorTextFocus'), `${binding.command} fires without an editor focused`);
+      }
+    });
+
+    it('binds each of the four things you do to a file, so none of them needs the palette', () => {
+      const bound = new Set(manifest.contributes.keybindings.map((b) => b.command));
+      for (const command of ['fasm2Studio.build', 'fasm2Studio.run', 'fasm2Studio.debug', 'fasm2Studio.clean']) {
+        assert.ok(bound.has(command), `${command} has no keybinding`);
+      }
+    });
+
+    it('gives every binding a mac chord, since ctrl is not the modifier there', () => {
+      for (const binding of manifest.contributes.keybindings) {
+        assert.ok(binding.mac, `${binding.command} has no mac binding`);
+      }
+    });
+
+    it('never binds two commands to the same chord', () => {
+      for (const platform of ['key', 'mac'] as const) {
+        const chords = manifest.contributes.keybindings.map((b) => b[platform]);
+        assert.strictEqual(new Set(chords).size, chords.length, `duplicate ${platform} chord`);
+      }
+    });
+
+    it('binds every command it names', () => {
+      const contributed = new Set(manifest.contributes.commands.map((c) => c.command));
+      for (const binding of manifest.contributes.keybindings) {
+        assert.ok(contributed.has(binding.command), `${binding.command} is bound but not contributed`);
+      }
+    });
   });
 });

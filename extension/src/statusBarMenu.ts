@@ -33,7 +33,11 @@ async function toggleDiagnostics(resource: vscode.Uri | undefined, enabled: bool
   );
 }
 
-export function registerStatusBarMenu(context: vscode.ExtensionContext, getDiagnosticsIssue: () => string | undefined): void {
+export function registerStatusBarMenu(
+  context: vscode.ExtensionContext,
+  getDiagnosticsIssue: () => string | undefined,
+  getIndexingIssue: () => string | undefined,
+): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(STATUS_BAR_MENU_COMMAND, async () => {
       const document = vscode.window.activeTextEditor?.document;
@@ -45,7 +49,13 @@ export function registerStatusBarMenu(context: vscode.ExtensionContext, getDiagn
       const diagnosticsEnabled = fasmConfig(resource).get<boolean>(DIAGNOSTICS_SETTING, true);
 
       const picked = await vscode.window.showQuickPick(
-        menuItems({ dialect, compilerPath: compiler?.path, diagnosticsEnabled, diagnosticsIssue: getDiagnosticsIssue() }),
+        menuItems({
+          dialect,
+          compilerPath: compiler?.path,
+          diagnosticsEnabled,
+          diagnosticsIssue: getDiagnosticsIssue(),
+          indexingIssue: getIndexingIssue(),
+        }),
         { placeHolder: `FASM2 Studio — ${DIALECT_LABEL[dialect]}${compiler ? ` via ${compiler.path}` : ''}` },
       );
       if (!picked) return;

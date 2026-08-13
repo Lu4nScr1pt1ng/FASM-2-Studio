@@ -117,6 +117,18 @@ function getStaticItemsCache(dialect: Dialect, isa: Isa): { items: CompletionIte
 }
 
 /**
+ * Every static name this dialect/ISA combination knows — mnemonics, registers, directives, format
+ * keywords, size specifiers, word-like operators.
+ *
+ * Exposed because a second feature needs exactly this set for the opposite purpose: code actions
+ * have to tell a misspelling apart from a name the assembler genuinely knows, and rebuilding that
+ * list separately would let the two drift.
+ */
+export function staticKeywords(dialect: Dialect, isa: Isa): ReadonlySet<string> {
+  return getStaticItemsCache(dialect, isa).labels;
+}
+
+/**
  * Where on a line the cursor is, as far as ranking is concerned.
  *
  * "statement" is the position a mnemonic or directive goes — the first token of a line, or the

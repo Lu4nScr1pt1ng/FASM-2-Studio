@@ -12,6 +12,10 @@ export interface MenuState {
   diagnosticsEnabled: boolean;
   /** Set when the server reported it cannot run the compiler for this file (see statusBar.ts). */
   diagnosticsIssue: string | undefined;
+  /** Set when the workspace scan behind every cross-file feature did not finish (see
+   * statusBar.ts). Restarting the server is what rebuilds it, so that entry leads when this is
+   * the standing problem. */
+  indexingIssue?: string | undefined;
 }
 
 export interface MenuItem {
@@ -58,20 +62,31 @@ export function menuItems(state: MenuState): MenuItem[] {
     action: TOGGLE_DIAGNOSTICS_ACTION,
   };
 
+  const restart: MenuItem = {
+    label: '$(debug-restart) Restart language server',
+    description: state.indexingIssue ? `index incomplete: ${state.indexingIssue}` : undefined,
+    detail: 'Rebuilds the workspace index and re-detects the compiler.',
+    action: 'fasm2Studio.restartLanguageServer',
+  };
+
   const rest: MenuItem[] = [
     {
       label: '$(output) Show language server log',
       detail: 'The extension’s own output channel — start here for a bug report.',
       action: 'fasm2Studio.showOutput',
     },
+    restart,
     {
-      label: '$(debug-restart) Restart language server',
-      detail: 'Rebuilds the workspace index and re-detects the compiler.',
-      action: 'fasm2Studio.restartLanguageServer',
+      label: '$(bug) Report an issue',
+      detail: 'Collects your platform, versions and resolved tool paths into a report to attach.',
+      action: 'fasm2Studio.reportIssue',
     },
   ];
 
   if (!state.compilerPath) return [compiler, dialect, diagnostics, ...rest];
   if (state.diagnosticsIssue) return [diagnostics, compiler, dialect, ...rest];
+  // A stale index makes navigation quietly wrong rather than visibly broken, so when that is the
+  // standing problem the one action that fixes it leads instead of sitting last.
+  if (state.indexingIssue) return [restart, dialect, compiler, diagnostics, ...rest.filter((i) => i !== restart)];
   return [dialect, compiler, diagnostics, ...rest];
 }

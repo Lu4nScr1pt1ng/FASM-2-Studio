@@ -2,10 +2,17 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  CallHierarchyIncomingCall,
+  CallHierarchyIncomingCallsParams,
+  CallHierarchyItem,
+  CallHierarchyOutgoingCall,
+  CallHierarchyOutgoingCallsParams,
+  CallHierarchyPrepareParams,
   CodeAction,
   CodeActionKind,
   CodeActionParams,
   CompletionItem,
+  CompletionParams,
   createConnection,
   DefinitionParams,
   Diagnostic,
@@ -34,13 +41,14 @@ import {
   Range,
   ReferenceParams,
   RenameParams,
+  SelectionRange,
+  SelectionRangeParams,
   SemanticTokens,
   SemanticTokensParams,
   SignatureHelp,
   SignatureHelpParams,
   SymbolInformation,
   TextDocumentChangeEvent,
-  TextDocumentPositionParams,
   TextDocumentSyncKind,
   TextDocuments,
   TextEdit,
@@ -51,26 +59,29 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
 import { invalidateCompilerCache, resolveCompilerOnPath } from './compilerDiscovery';
 import { detectDialect } from './dialect';
+import { incomingCalls, outgoingCalls, prepareCallHierarchy } from './features/callHierarchy';
 import { getCodeActions } from './features/codeActions';
 import { getCompletions, resolveCompletionItem } from './features/completion';
 import { getDefinitions } from './features/definition';
 import { getDocumentHighlights } from './features/documentHighlight';
 import { getDocumentLinks } from './features/documentLink';
 import { getDocumentSymbols } from './features/documentSymbols';
-import { runDiagnostics } from './features/diagnostics';
+import { noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
 import { detectEol, FormatOptions, formatLines } from './features/format';
 import { getFoldingRanges } from './features/foldingRange';
 import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
 import { getHover } from './features/hover';
+import { getIncludePathCompletions, includePathContext, stringContext } from './features/includePathCompletion';
 import { detectIsa } from './isa';
 import { buildLiveShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
 import { getRenameEdit, isRenameable } from './features/rename';
+import { getSelectionRanges } from './features/selectionRange';
 import { getSemanticTokens, SEMANTIC_TOKENS_LEGEND } from './features/semanticTokens';
 import { getSignatureHelp } from './features/signatureHelp';
 import { getWorkspaceSymbols } from './features/workspaceSymbols';
 import { buildCandidateSequence, correlateListing } from './listing/listingMap';
-import { FasmSettings, SettingsStore } from './settings';
+import { FasmSettings, SettingsStore, splitIncludePath } from './settings';
 import { Dialect } from './types';
 import { Workspace } from './workspace';
 
@@ -146,7 +157,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       // resolveProvider: the ~1600-entry static tables ship without their documentation strings
       // and have them filled in per highlighted row instead — see features/completion.ts.
-      completionProvider: { resolveProvider: true, triggerCharacters: ['.', '#'] },
+      // The quote/separator triggers are for paths inside `include '...'` (see
+      // features/includePathCompletion.ts); onCompletion returns nothing for them anywhere else,
+      // so typing a string or a division never pops an unwanted list.
+      completionProvider: { resolveProvider: true, triggerCharacters: ['.', '#', "'", '"', '/', '\\'] },
       hoverProvider: true,
       definitionProvider: true,
       documentSymbolProvider: true,
@@ -159,6 +173,8 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       referencesProvider: true,
       renameProvider: { prepareProvider: true },
       workspaceSymbolProvider: true,
+      selectionRangeProvider: true,
+      callHierarchyProvider: true,
       signatureHelpProvider: { triggerCharacters: [' ', ','] },
       // Full-document only: these are cheap to recompute (one tokenizer pass plus a set lookup per
       // identifier) and a delta protocol would add real bookkeeping for no measurable gain.
@@ -226,6 +242,10 @@ connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: st
     .indexWorkspace(params.uris ?? [], resolveDialect)
     .then(({ indexed, skipped }) => {
       connection.console.info(`fasm2-studio: indexed ${indexed} workspace file(s), skipped ${skipped}.`);
+      // The client is waiting on this to close its progress indicator: the notification that
+      // started the scan returns the moment it is sent, so completion is the only thing that can
+      // tell the client how long cross-file navigation was actually still warming up for.
+      void connection.sendNotification('fasm2Studio/workspaceIndexed', { indexed, skipped });
       // A document already open (and diagnosed) before indexing finished may have compiled
       // standalone instead of via its real entry point (findEntryFile needs the index to walk
       // the include graph) — now that the index is populated, redo it for every open document.
@@ -233,7 +253,17 @@ connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: st
         scheduleDiagnostics(doc.uri);
       }
     })
-    .catch((err) => logHandlerError('indexWorkspaceFiles', err))
+    .catch((err) => {
+      logHandlerError('indexWorkspaceFiles', err);
+      // Reported rather than swallowed: a failed scan leaves go-to-definition and rename quietly
+      // answering from a partial index, which looks like the feature being wrong rather than
+      // absent.
+      void connection.sendNotification('fasm2Studio/workspaceIndexed', {
+        indexed: 0,
+        skipped: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    })
     .finally(() => {
       if (indexingInFlight === scan) indexingInFlight = undefined;
     });
@@ -640,6 +670,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       return;
     }
 
+    noteFirstErrorOnly(uri, dialect, result.diagnostics);
     connection.sendDiagnostics({ uri, diagnostics: result.diagnostics });
     reportDiagnosticsAvailability(uri, undefined);
 
@@ -708,7 +739,12 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
   }
 });
 
-connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] => {
+/** The trigger characters that exist only for path completion. Typed anywhere else they must
+ * produce nothing at all — a quote in `db 'text'` or a division in `mov eax, 4/2` is not a request
+ * for the identifier list. */
+const PATH_TRIGGER_CHARACTERS = new Set(["'", '"', '/', '\\']);
+
+connection.onCompletion((params: CompletionParams): CompletionItem[] => {
   try {
     const doc = documents.get(params.textDocument.uri);
     // The text before the cursor on its own line is all the context ranking needs: it decides
@@ -716,6 +752,21 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionItem[] =
     const linePrefix = doc
       ? doc.getText({ start: { line: params.position.line, character: 0 }, end: params.position })
       : '';
+
+    const includeCtx = includePathContext(linePrefix);
+    if (includeCtx) {
+      return getIncludePathCompletions(
+        includeCtx,
+        params.position,
+        uriToFsPath(params.textDocument.uri),
+        splitIncludePath(settingsStore.get(params.textDocument.uri).includePath),
+      );
+    }
+    // Inside any other string literal there is nothing to offer: a mnemonic is not a plausible
+    // completion for the contents of `db 'hello'`, and the list appearing there was noise.
+    if (stringContext(linePrefix)) return [];
+    if (params.context?.triggerCharacter && PATH_TRIGGER_CHARACTERS.has(params.context.triggerCharacter)) return [];
+
     return getCompletions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), linePrefix);
   } catch (err) {
     logHandlerError('onCompletion', err);
@@ -858,6 +909,48 @@ connection.onDocumentLinks((params: DocumentLinkParams): DocumentLink[] => {
   }
 });
 
+connection.languages.callHierarchy.onPrepare((params: CallHierarchyPrepareParams): CallHierarchyItem[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const word = getWordAtPosition(doc, params.position);
+    if (!word) return [];
+    return prepareCallHierarchy(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word);
+  } catch (err) {
+    logHandlerError('onPrepareCallHierarchy', err);
+    return [];
+  }
+});
+
+connection.languages.callHierarchy.onIncomingCalls((params: CallHierarchyIncomingCallsParams): CallHierarchyIncomingCall[] => {
+  try {
+    return incomingCalls(workspace, params.item);
+  } catch (err) {
+    logHandlerError('onIncomingCalls', err);
+    return [];
+  }
+});
+
+connection.languages.callHierarchy.onOutgoingCalls((params: CallHierarchyOutgoingCallsParams): CallHierarchyOutgoingCall[] => {
+  try {
+    return outgoingCalls(workspace, currentDialect(params.item.uri), params.item);
+  } catch (err) {
+    logHandlerError('onOutgoingCalls', err);
+    return [];
+  }
+});
+
+connection.onSelectionRanges((params: SelectionRangeParams): SelectionRange[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    return getSelectionRanges(doc.getText(), params.positions);
+  } catch (err) {
+    logHandlerError('onSelectionRanges', err);
+    return [];
+  }
+});
+
 connection.onFoldingRanges((params: FoldingRangeParams): FoldingRange[] => {
   try {
     const doc = documents.get(params.textDocument.uri);
@@ -875,7 +968,14 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     if (!doc) return [];
     const word = getWordAtPosition(doc, params.range.start);
     if (!word) return [];
-    return getCodeActions(workspace, params.textDocument.uri, currentDialect(params.textDocument.uri), word, doc.getText());
+    return getCodeActions(
+      workspace,
+      params.textDocument.uri,
+      currentDialect(params.textDocument.uri),
+      word,
+      getWordRangeAtPosition(doc, params.range.start),
+      doc.getText(),
+    );
   } catch (err) {
     logHandlerError('onCodeAction', err);
     return [];

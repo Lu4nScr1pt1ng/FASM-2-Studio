@@ -52,6 +52,26 @@ export function activeDiagnosticsIssue(): string | undefined {
   return diagnosticsIssue && diagnosticsIssue.uri === active ? diagnosticsIssue.reason : undefined;
 }
 
+/**
+ * Set when the workspace scan behind every cross-file feature did not finish.
+ *
+ * Window-wide rather than per-file, because the index is: go-to-definition, find-references, rename
+ * and workspace symbol search all answer from it, and a partial one gives *incomplete* answers
+ * rather than no answer — which reads as those features being broken. Naming the state is the
+ * difference between "rename missed a file" and "rename is unreliable".
+ */
+let indexingIssue: string | undefined;
+
+export function setIndexingIssue(issue: string | undefined): void {
+  indexingIssue = issue;
+  refreshStatusBar();
+}
+
+/** The standing workspace-index problem, if there is one — read by the status bar menu. */
+export function activeIndexingIssue(): string | undefined {
+  return indexingIssue;
+}
+
 export function createStatusBarItem(context: vscode.ExtensionContext): vscode.StatusBarItem {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   context.subscriptions.push(item);
@@ -89,6 +109,14 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
       } else if (issue) {
         item.text = `$(warning) ${dialect}: diagnostics unavailable`;
         item.tooltip = `FASM2 Studio — using ${compiler.path}, but live error checking is not running: ${issue.reason}. Click for options.`;
+        item.command = STATUS_BAR_MENU_COMMAND;
+      } else if (indexingIssue) {
+        // Ranked below the diagnostics issue: that one stops errors appearing at all, while this
+        // one degrades cross-file navigation. Both are worth saying; only one fits.
+        item.text = `$(warning) ${dialect}: index incomplete`;
+        item.tooltip =
+          `FASM2 Studio — using ${compiler.path}, but the workspace scan did not finish: ${indexingIssue}. ` +
+          'Go-to-definition, find-references, rename and symbol search may miss files. Click for options.';
         item.command = STATUS_BAR_MENU_COMMAND;
       } else {
         item.text = `$(tools) ${dialect} (${compiler.path})`;

@@ -206,8 +206,36 @@ compile the error checking already runs, so it costs one extra flag rather than 
 with it off nothing is added to that compile at all. Off by default, fasm2/fasmg only.
 
 You also get occurrence highlighting, structural folding (matched `macro`/`if`/`while` pairs
-rather than line-local marker guesses, plus `;region`), clickable `include` paths, a quick fix that
-writes a missing `include` for a symbol defined elsewhere in the workspace, and Format Document.
+rather than line-local marker guesses, plus `;region`), clickable `include` paths, and Format
+Document.
+
+Two quick fixes cover the two things that can be wrong with a name that doesn't resolve: it exists
+elsewhere in the workspace and this file can't see it (writes the `include`), or it's misspelled
+(offers the names that do exist, from the instruction set your project actually uses plus every
+symbol your includes reach). Neither is bound to a compiler diagnostic — those need a trusted
+workspace and a working compiler, which is exactly when nothing else would point at the mistake
+either. A name wrong only in its capitalization is reported as that, because fasmg is case-sensitive
+where fasm1 is not.
+
+The path inside `include '...'` completes too, against the same directories the assembler would
+search — the including file's own first, then `fasm2Studio.includePath` — so nothing is offered that
+would then fail to resolve. Picking a directory re-opens the list for what is inside it.
+
+Expand selection (`Shift+Alt+Right`) grows by operand, statement, line, enclosing block, then file,
+instead of the editor's own word-then-whole-file fallback, which is what you get in a language with
+no brackets to stop at. Call hierarchy answers "what reaches this label, and what does it reach" as
+a tree; every reference counts as an edge rather than only those under a `call`, since `call` alone
+misses a tail call written as `jmp`, and a list of x86's conditional jumps would be wrong for every
+other instruction set fasmg can assemble.
+
+Errors from fasm1 carry a note that it stops at the first one, so a file with three mistakes showing
+one at a time reads as the assembler's behaviour rather than as unreliable error checking. fasm2 is
+run with `-e 200` and reports up to that many at once.
+
+`FASM: Report Issue` collects what a bug report here always needs — platform, which assembler and
+debugger were found and their versions, the settings you changed, and any standing problem the
+status bar is showing — into a document to review and paste. It is never sent anywhere on its own,
+since it carries absolute paths from your machine.
 
 The formatter aligns labels, mnemonics, operands and trailing comments into columns and indents
 block bodies, driven by the same tokenizer as everything else — so a `;` inside a string is not a

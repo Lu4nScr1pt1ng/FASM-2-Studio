@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.12.0
+
+### Completion for include paths
+
+Type `include '` and you get the files and folders that are actually there — next to your source
+first, then wherever `fasm2Studio.includePath` points, in the same order the assembler searches. Pick
+a folder and it offers what is inside it, so a nested path finishes in one go.
+
+Nothing is offered that the assembler would not find, and only the part you are still typing gets
+replaced — the `sub/` you already committed stays put.
+
+While this was being added: completion no longer pops up inside ordinary strings. A mnemonic was
+never a plausible completion for the contents of `db 'hello'`.
+
+### It now offers to fix a misspelled name
+
+A quick fix on an unknown name suggests the ones that exist — `syscal` → `syscall`, or your own
+`message_lop` → `message_loop`. It draws on the instruction set your project actually uses plus every
+symbol your includes reach, so it suggests real answers rather than plausible-looking ones.
+
+A name that is only wrong in its capitalization is called out for what it is: `MOV` in a fasm2 file
+is a real mistake with exactly one answer, because fasmg is case-sensitive where fasm1 was not.
+
+It stays quiet where it should: short names, macro parameters, and anything spelled correctly get no
+lightbulb at all.
+
+### A single fasm1 error now tells you there may be more
+
+fasm1 stops at the first error it finds, so a file with three mistakes shows you one, then one, then
+one. That looks like error checking being unreliable. The error now says so itself. (fasm2 reports up
+to 200 at a time and is unaffected.)
+
+### Expand selection, and a call hierarchy
+
+**Shift+Alt+Right** grows the selection a construct at a time — the operand, the instruction, the
+line, the enclosing `macro`/`if`/`while`, then the file. Previously it went from one word to the
+whole file, since assembly has no brackets for the editor to stop at.
+
+**Show Call Hierarchy** on a label answers "what reaches this, and what does this reach" as a tree
+you can expand, instead of a flat list of line numbers. Tail calls written as `jmp` count, and so
+does a jump table's `dd handler` — that is how the routine is actually reached.
+
+### FASM: Report Issue
+
+Collects the things a bug report about this extension always needs — your platform, which assembler
+and debugger were found and their versions, and the settings you changed — into a document you can
+read and then paste. Nothing is sent anywhere on its own; it contains paths from your machine, so
+what leaves it is your call.
+
+### The workspace scan now shows what it is doing
+
+Go-to-definition, find-references, rename and symbol search all answer from an index built when the
+folder opens. It now reports progress while that runs, and if it does not finish, the status bar says
+so instead of leaving those features quietly answering from half a project.
+
+### Smaller
+
+- Format Document no longer asks which formatter to use when another assembly extension is installed.
+- `FASM: Debug` is `Ctrl+Alt+D`, `FASM: Clean Build Output` is `Ctrl+Alt+Shift+C` (`Cmd` on macOS).
+
 ## 1.11.0
 
 ### Step backwards through your program

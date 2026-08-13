@@ -17,8 +17,9 @@ import { invalidateDebuggerCache } from './gdbDiscovery';
 import { disposeInferiorTerminal } from './inferiorTerminal';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
+import { registerReportIssue } from './reportIssue';
 import { runOutputBinary } from './runCommand';
-import { activeDiagnosticsIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue } from './statusBar';
+import { activeDiagnosticsIssue, activeIndexingIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue, setIndexingIssue } from './statusBar';
 import { registerStatusBarMenu } from './statusBarMenu';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
 import { registerTerminalLinks } from './terminalLinks';
@@ -130,11 +131,12 @@ function registerCommands(context: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Window, title: `${MESSAGE_PREFIX}restarting the language server…` },
         async () => {
           await client!.restart();
-          // The index lives in the server process, so it goes with it — rebuild rather than
-          // leaving cross-file navigation quietly answering from nothing.
-          await indexWorkspace(client!);
         },
       );
+      // The index lives in the server process, so it goes with it — rebuild rather than leaving
+      // cross-file navigation quietly answering from nothing. Outside the progress call above
+      // because it reports progress (and any failure) of its own.
+      await runWorkspaceIndex(client);
     }),
 
     vscode.commands.registerCommand('fasm2Studio.debug', async (resource?: vscode.Uri) => {
@@ -155,6 +157,29 @@ function registerCommands(context: vscode.ExtensionContext): void {
       });
     })
   );
+}
+
+/**
+ * Runs the workspace scan and records whether it actually finished.
+ *
+ * Every cross-file feature — go-to-definition across files, find-references, rename, symbol search
+ * — answers from the index this builds. A scan that fails leaves those answering from a partial
+ * one, which looks exactly like the features being unreliable rather than unavailable, so the
+ * outcome is put somewhere the user can see it instead of into a console.
+ */
+async function runWorkspaceIndex(client: LanguageClient | undefined): Promise<void> {
+  if (!client) return;
+  try {
+    const result = await indexWorkspace(client);
+    setIndexingIssue(result.issue);
+    if (result.issue) {
+      client.outputChannel.appendLine(`${MESSAGE_PREFIX}workspace indexing did not finish: ${result.issue}`);
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    setIndexingIssue(reason);
+    client.outputChannel.appendLine(`${MESSAGE_PREFIX}workspace indexing failed: ${reason}`);
+  }
 }
 
 function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
@@ -198,7 +223,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerSelectDialect(context);
   registerNewFile(context);
   registerPickProcess(context);
-  registerStatusBarMenu(context, activeDiagnosticsIssue);
+  registerReportIssue(context);
+  registerStatusBarMenu(context, activeDiagnosticsIssue, activeIndexingIssue);
   createStatusBarItem(context);
   registerTerminalLinks(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
@@ -241,7 +267,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void client?.sendNotification('fasm2Studio/workspaceTrust', { isTrusted: true });
     refreshStatusBar();
   });
-  void indexWorkspace(client).catch((err) => console.error(`${MESSAGE_PREFIX}workspace indexing failed`, err));
+  void runWorkspaceIndex(client);
 }
 
 export async function deactivate(): Promise<void> {

@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -115,7 +115,8 @@
     ],
     "configurationDefaults": {
       "[fasm]": {
-        "editor.semanticHighlighting.enabled": true
+        "editor.semanticHighlighting.enabled": true,
+        "editor.defaultFormatter": "Lu4nScr1pt1ng.fasm2-studio"
       }
     },
     "snippets": [
@@ -309,6 +310,11 @@
         "command": "fasm2Studio.pickProcess",
         "title": "Pick Process to Attach To",
         "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.reportIssue",
+        "title": "Report Issue",
+        "category": "FASM"
       }
     ],
     "keybindings": [
@@ -322,6 +328,18 @@
         "command": "fasm2Studio.run",
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.debug",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.clean",
+        "key": "ctrl+alt+shift+c",
+        "mac": "cmd+alt+shift+c",
         "when": "editorTextFocus && resourceLangId == fasm"
       }
     ],

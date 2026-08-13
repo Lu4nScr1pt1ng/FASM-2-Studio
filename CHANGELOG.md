@@ -1,5 +1,116 @@
 # Changelog
 
+## 1.12.0
+
+### Path completion inside `include '...'`
+
+The include graph this whole server is built on was the one thing it could not help you type.
+`documentLink.ts` made an existing include clickable and `codeActions.ts` would *write* one for a
+symbol you had already used, but a path typed from scratch got nothing — `completionContext()`
+knew only `statement` and `operand`, and the trigger characters were `.` and `#`.
+
+`server/src/features/includePathCompletion.ts` resolves the directory exactly as
+`Workspace.resolveIncludePath` (and fasmg itself) does: the including file's own directory first,
+then each `fasm2Studio.includePath` entry. Offering a name the assembler would not then find would
+be worse than offering nothing. A name present in two bases is offered once, for the base that wins.
+Directories re-trigger the suggestion so a nested path completes in one pass; the text edit replaces
+only the partial name, never the `sub/` already committed. Both separators count as a boundary,
+since fasmg accepts either on any host.
+
+`'`, `"`, `/` and `\` join the trigger characters, and the handler is what keeps them from becoming
+noise: inside any *other* string literal completion now returns nothing at all (a mnemonic was never
+a plausible completion for the contents of `db 'hello'`), and a path trigger typed outside a string
+— a division, an apostrophe in a comment — returns nothing rather than the identifier list.
+
+### "Did you mean" quick fixes
+
+`codeActions.ts` had one fix, for a name that exists but is unreachable. The other thing that can be
+wrong with an unresolved name is that it is misspelled, and the ~1600-entry keyword table holding
+the right spelling was already in memory.
+
+`features/spelling.ts` is a length-bounded Levenshtein with a row-minimum early exit; the candidate
+pool is `staticKeywords(dialect, isa)` — newly exported from `completion.ts` so the two cannot drift
+— unioned with every symbol reachable through the include graph. Three guards keep it quiet:
+
+- **Exact membership is checked first**, which is also what keeps the cost off the common path: a
+  correctly-spelled `mov` returns on a Set lookup rather than scanning the table.
+- **Macro parameters count as known.** They are used like symbols but never defined as one, so every
+  reference to a parameter inside its own macro body looks unresolvable. Without this, `mov dest,
+  src` drew a lightbulb offering to "correct" a perfectly good parameter.
+- **Distance scales with length**: one edit at three characters or more, two only from eight. `ax`
+  and `al` are not typos of each other.
+
+A pure case difference ranks as certain and suppresses the edit-distance runners-up entirely —
+fasmg is case-sensitive where fasm1 is not, so `MOV` in a fasm2 file has exactly one right answer,
+and listing `movd`/`movq` beside it would bury it.
+
+Neither fix is bound to a compiler diagnostic, for a reason now stated correctly in that file's
+header: diagnostics need a trusted workspace, a compiler that was found and a compile that
+finished, so binding to one would withdraw the fix in exactly the cases where nothing else points at
+the mistake.
+
+### A lone fasm1 error now says that it is hiding the next one
+
+fasm2 is run with `-e 200` and reports up to that many problems at once. fasm1 takes no such flag and
+stops dead at its first error, so a file with three mistakes shows one, then one, then one, across
+three edit-and-save cycles — which reads exactly like a linter that is slow or broken.
+
+`noteFirstErrorOnly` attaches that fact as `relatedInformation`, and only when there is exactly one
+error: a run that reported several plainly did not stop at the first, and the note would be false.
+Warnings neither trigger it nor suppress it, since fasm1 carries on past those.
+
+### The workspace scan reports progress, and failure
+
+`indexWorkspace` was `void`ed with a `console.error` catch. Every cross-file feature answers from
+that index, so a scan that failed left go-to-definition, find-references, rename and symbol search
+quietly answering from a partial one — indistinguishable from those features being wrong.
+
+The server now sends `fasm2Studio/workspaceIndexed` on completion (and on failure, with the reason);
+without it a progress indicator would be meaningless, since sending the scan notification returns
+the moment it is written. The client shows window progress for the real duration, and records the
+outcome in the status bar (`index incomplete`, with what went wrong) rather than a console. When
+that is the standing problem, the status bar menu promotes "Restart language server" — the one entry
+that rebuilds it — to the front.
+
+### Selection ranges and call hierarchy
+
+`selectionRangeProvider`: token → operand → statement → line → each enclosing block → file. The
+editor's own fallback grows by word, then by bracket pair, then by the whole document, which in
+assembly means it jumps from `eax` to the file. Blocks come from the same matched-pair walk folding
+uses (`END_KEYWORD_BLOCKS`/`DEDICATED_CLOSERS`/`labelPrefixLength` are now shared rather than copied),
+but cover the closing line too: half a `macro` is not a construct. Bracket depth keeps the comma in
+`[ebx + 4]` from splitting an operand, and steps identical to the one before them are dropped.
+
+`callHierarchyProvider`: incoming and outgoing edges over labels and macros, with a routine's body
+delimited by the next definition of the same rank — assembly has no closing brace, so that is what
+makes "which routine is this reference inside" answerable. An edge is *any* reference, not one under
+a `call`: restricting to a mnemonic list means picking one, and `call` alone misses every tail call
+written as `jmp` while the full set of x86 conditional jumps is wrong for every other instruction
+set fasmg can assemble. The cost is that a jump table's `dd handler` appears as an edge, which is
+honest — that is how it is reached.
+
+### FASM: Report Issue
+
+Almost every bug worth reporting against this extension depends on facts only the reporter's machine
+has: which of two byte-identical fasmg builds is on PATH, whether a preload is configured, which gdb,
+which platform. Asking for those one round-trip at a time is how a bug report takes a week.
+
+The command collects them — versions, resolved tool paths and where each came from, the settings
+actually changed from their defaults, and any standing diagnostics/index problem — and opens the
+result as a document. It is never sent anywhere on its own: it carries absolute paths from the
+user's machine, so what leaves it is their decision, made while looking at what they would send. In
+an untrusted workspace the version probes are skipped and say so, since spawning a binary named by
+workspace settings is precisely what that mode forbids.
+
+### Smaller
+
+- `editor.defaultFormatter` is pinned for `[fasm]`. Several general-purpose assembly extensions also
+  claim `.asm`, and with more than one formatter registered and no default named, Format Document
+  stops to ask which one — every time — instead of formatting.
+- `FASM: Debug` and `FASM: Clean Build Output` have keybindings, alongside the existing Build and
+  Run. The manifest tests now assert every binding is scoped to a focused fasm editor, carries a mac
+  chord, and does not collide with another.
+
 ## 1.11.0
 
 ### A missing debugger is now found before the launch, not from inside it

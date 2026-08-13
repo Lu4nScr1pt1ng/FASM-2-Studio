@@ -29,8 +29,17 @@ that, a language server parses your project and gives you:
 - **Occurrence highlighting, folding that matches real block structure** (nested
   `macro`/`if`/`while` pairs, not line-local guesses), and **clickable `include` paths** — a path
   that doesn't underline is one your project can't actually resolve.
-- **A quick fix that writes the missing `include`** when you use a macro or constant that exists
-  elsewhere in the workspace but isn't reachable from this file.
+- **Quick fixes for a name that doesn't resolve** — either it exists elsewhere in the workspace and
+  this file can't reach it (writes the `include`), or it's misspelled (offers the names that do
+  exist, drawn from your project's own instruction set and symbols). A name that's only wrong in
+  its capitalization is called out as exactly that, since fasmg is case-sensitive where fasm1 isn't.
+- **Completion for the path inside `include '...'`**, resolved the way the assembler resolves it:
+  next to your source first, then `fasm2Studio.includePath`. Pick a folder and it offers what's
+  inside.
+- **Expand selection** (`Shift+Alt+Right`) grows by operand, instruction, line, enclosing
+  `macro`/`if`/`while`, then file — rather than jumping from one word straight to the whole file.
+- **Call hierarchy** on a label: what reaches it, and what it reaches, as a tree. Tail calls written
+  as `jmp` and jump-table entries count, because that's how the routine is actually reached.
 - **Format Document** aligns labels, mnemonics, operands and trailing comments into columns, and
   indents block bodies. It never reorders or rewrites a token, never touches string contents, and
   leaves your line endings alone.

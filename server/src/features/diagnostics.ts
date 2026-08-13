@@ -328,6 +328,37 @@ export function parseDiagnostics(output: string, sourceFsPath: string): Diagnost
   return parseOutput(output, sourceFsPath).diagnostics;
 }
 
+/**
+ * What a lone fasm1 error does not say for itself: there may well be more, and they are not being
+ * withheld — the assembler never got far enough to find them.
+ *
+ * fasm2 is run with `-e 200` and reports up to that many problems at once, so the file the user
+ * sees marked up is the whole truth. fasm1 takes no such flag and stops dead at its first error, so
+ * a file with three mistakes shows one, then one, then one, across three edit-and-save cycles. That
+ * reads exactly like a linter that is slow or broken unless something says otherwise.
+ */
+export const FASM1_FIRST_ERROR_NOTE =
+  'flat assembler 1 stops at the first error, so any later mistakes in this file have not been ' +
+  'reported yet — fix this one and the next will appear.';
+
+/**
+ * Attaches that note to a lone fasm1 error, in place.
+ *
+ * Only when there is exactly one: a run that somehow reported several has plainly not stopped at
+ * the first, and the note would be false. Warnings are not counted — fasm1 keeps going past those,
+ * so they neither trigger the note nor suppress it.
+ */
+export function noteFirstErrorOnly(uri: string, dialect: Dialect | undefined, diagnostics: Diagnostic[]): void {
+  if (dialect !== 'fasm1') return;
+  const errors = diagnostics.filter((d) => d.severity === DiagnosticSeverity.Error);
+  if (errors.length !== 1) return;
+  const error = errors[0];
+  error.relatedInformation = [
+    ...(error.relatedInformation ?? []),
+    { location: { uri, range: { start: error.range.start, end: error.range.start } }, message: FASM1_FIRST_ERROR_NOTE },
+  ];
+}
+
 /** An error the compiler reported against some other file in the build — most often an `include`
  * that this document pulls in. */
 export interface ForeignError {

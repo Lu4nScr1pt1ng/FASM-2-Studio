@@ -1,20 +1,29 @@
-// Quick fix: "the symbol you just wrote exists, but this file cannot see it — add the `include`".
+// Two quick fixes for a name that does not resolve, offered together because they are the two
+// things that can be wrong with one: the name is right but unreachable (add the `include`), or the
+// name is simply misspelled (change it to the one that exists).
+//
+// Quick fix 1: "the symbol you just wrote exists, but this file cannot see it — add the `include`".
 //
 // This closes a loop the extension already had half of. definition.ts deliberately falls back to a
 // workspace-wide lookup when the include graph turns up nothing, with the comment "so the user can
 // go add the `include` themselves" — the information needed to *write* that line was already
 // computed, and the user was then left to do it by hand. This offers it as an edit instead.
 //
-// It is offered on the cursor position rather than bound to a compiler diagnostic on purpose. The
-// diagnostics here come from the real assembler, and fasm stops at its first error, so binding to
-// one would mean the fix is only ever available for whichever missing symbol happens to be first
-// in the file.
+// Both are offered on the cursor position rather than bound to a compiler diagnostic on purpose.
+// The diagnostics here come from running the real assembler, which needs a trusted workspace, a
+// compiler that was found, and a compile that finished — so binding to one would withdraw the fix
+// in exactly the situations where nothing else is going to point at the mistake either. Under
+// fasm1 it would also mean the fix is only ever available for whichever mistake happens to be
+// first in the file, since that assembler stops there (see diagnostics.ts's noteFirstErrorOnly).
 
-import { CodeAction, CodeActionKind, TextEdit } from 'vscode-languageserver/node';
+import { CodeAction, CodeActionKind, Range, TextEdit } from 'vscode-languageserver/node';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
+import { detectIsa } from '../isa';
 import { Dialect, ParsedDocument } from '../types';
 import { Workspace } from '../workspace';
+import { staticKeywords } from './completion';
+import { closestNames } from './spelling';
 
 /** Cap on how many alternative files are offered for one symbol. A name defined in a dozen places
  * is almost always a macro-package convention rather than a real choice, and a lightbulb menu with
@@ -69,7 +78,14 @@ export function includeInsertLine(doc: ParsedDocument, text: string): number {
   return afterHeader;
 }
 
-export function getCodeActions(workspace: Workspace, uri: string, dialect: Dialect, word: string, documentText: string): CodeAction[] {
+export function getCodeActions(
+  workspace: Workspace,
+  uri: string,
+  dialect: Dialect,
+  word: string,
+  wordRange: Range | undefined,
+  documentText: string,
+): CodeAction[] {
   const doc = workspace.getDocument(uri);
   if (!doc || !word) return [];
 
@@ -81,6 +97,18 @@ export function getCodeActions(workspace: Workspace, uri: string, dialect: Diale
   // definition the include-graph walk skipped for scoping reasons).
   if (doc.symbols.some((s) => s.name === word)) return [];
 
+  const actions = [...includeActions(workspace, uri, doc, word, documentText)];
+  if (wordRange) actions.push(...spellingActions(workspace, uri, dialect, word, wordRange));
+
+  // The first suggestion is the one the lightbulb applies with a single keystroke, so mark it —
+  // but only when there is exactly one, since preferring an arbitrary member of several equally
+  // plausible fixes is a guess dressed up as a recommendation.
+  if (actions.length === 1) actions[0].isPreferred = true;
+
+  return actions;
+}
+
+function includeActions(workspace: Workspace, uri: string, doc: ParsedDocument, word: string, documentText: string): CodeAction[] {
   const candidates = workspace.findSymbolAnywhere(word);
   if (candidates.length === 0) return [];
 
@@ -112,10 +140,55 @@ export function getCodeActions(workspace: Workspace, uri: string, dialect: Diale
     if (actions.length >= MAX_SUGGESTIONS) break;
   }
 
-  // The first suggestion is the one the lightbulb applies with a single keystroke, so mark it —
-  // but only when there is exactly one, since preferring an arbitrary member of several equally
-  // plausible files is a guess dressed up as a recommendation.
-  if (actions.length === 1) actions[0].isPreferred = true;
-
   return actions;
+}
+
+/**
+ * Quick fix 2: the name is not right anywhere — it is a misspelling of one that is.
+ *
+ * Deliberately not bound to a compiler diagnostic, for the same reason the include fix is not:
+ * diagnostics need a trusted workspace and a working compiler, and this has to keep working in the
+ * cases where those are missing — which are exactly the cases where nothing else is going to point
+ * at the mistake either.
+ *
+ * The pool is everything that would actually assemble here: the dialect's and this file's ISA's own
+ * keyword tables, plus every symbol reachable through the include graph. A name from an unincluded
+ * file is deliberately *not* in it — that is the other quick fix's job, and offering to rewrite a
+ * correctly-spelled name into a lookalike would be the worse of the two answers.
+ */
+function spellingActions(workspace: Workspace, uri: string, dialect: Dialect, word: string, wordRange: Range): CodeAction[] {
+  const known = new Set<string>(staticKeywords(dialect, detectIsa(workspace, uri, dialect)));
+  if (known.has(word)) return [];
+
+  for (const doc of workspace.walkIncludeGraph(uri, dialect)) {
+    for (const sym of doc.symbols) {
+      known.add(sym.name);
+      // A macro's parameters are the one class of name that is used like a symbol but never
+      // defined as one, so every reference to a parameter inside its own macro body looks
+      // unresolvable from here. Counting them as known is what keeps `mov dest, src` from drawing
+      // a lightbulb offering to "correct" a perfectly good parameter into something else.
+      for (const param of macroParameterNames(sym.params)) known.add(param);
+    }
+  }
+  if (known.has(word)) return [];
+
+  return closestNames(word, known).map((suggestion) => ({
+    title:
+      suggestion.distance === 0
+        ? `Change '${word}' to '${suggestion.name}' (this dialect is case-sensitive)`
+        : `Change '${word}' to '${suggestion.name}'`,
+    kind: CodeActionKind.QuickFix,
+    edit: { changes: { [uri]: [{ range: wordRange, newText: suggestion.name }] } },
+  }));
+}
+
+/** The individual names out of a macro's raw parameter list as written, e.g. "dest*,src&" or
+ * "count:8" — fasmg's per-parameter markers (`*` required, `?` optional, `&` greedy) and default
+ * values are not part of the name a body refers to. */
+export function macroParameterNames(params: string | undefined): string[] {
+  if (!params) return [];
+  return params
+    .split(',')
+    .map((part) => /^[A-Za-z_.@$?%][A-Za-z0-9_.@$?%]*/.exec(part.trim())?.[0] ?? '')
+    .filter((name) => name.length > 0);
 }
