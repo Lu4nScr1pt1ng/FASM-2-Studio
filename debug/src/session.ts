@@ -255,6 +255,11 @@ export class FasmDebugSession extends DebugSession {
     // Lets VS Code ask which lines can actually hold a breakpoint before offering one, and is what
     // makes the inline "add breakpoint" affordances in the gutter land on real instructions.
     response.body.supportsBreakpointLocationsRequest = true;
+    // The Debug Console here is a raw gdb command line (see evaluateRequest's 'repl' branch), which
+    // is only usable if you already know gdb's command set by heart. gdb can complete its own
+    // commands, and this is what lets the console ask it to.
+    response.body.supportsCompletionsRequest = true;
+    response.body.completionTriggerCharacters = [' ', '-', '$'];
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -1778,6 +1783,42 @@ export class FasmDebugSession extends DebugSession {
    * sending, removed right after), so it never fires during the existing step implementation's own
    * internal -exec-step-instruction loop (stepToNextLine) — that loop never calls this method.
    */
+  /**
+   * Completes a partly-typed Debug Console command by asking gdb, which is the only thing that
+   * knows its own command set — and knows it for the exact build in use, rather than from a list
+   * baked in here that would drift.
+   *
+   * gdb answers with whole commands ("info reg" → "info registers"), so each target replaces
+   * everything typed so far rather than being appended to it. Failure is answered with an empty
+   * list: a console that offers nothing is the status quo, while an error popup on a keystroke is
+   * not.
+   */
+  protected async completionsRequest(
+    response: DebugProtocol.CompletionsResponse,
+    args: DebugProtocol.CompletionsArguments,
+  ): Promise<void> {
+    const prefix = args.text.slice(0, Math.max(0, args.column - 1));
+    response.body = { targets: [] };
+    if (!this.gdb || !prefix.trim()) {
+      this.sendResponse(response);
+      return;
+    }
+
+    try {
+      const quoted = prefix.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const result = await this.gdb.sendCommand(`-complete "${quoted}"`, CONSOLE_COMMAND_TIMEOUT_MS);
+      const matches = miData(result)?.matches;
+      if (Array.isArray(matches)) {
+        response.body.targets = matches
+          .filter((match): match is string => typeof match === 'string')
+          .map((match) => ({ label: match, start: 0, length: prefix.length }));
+      }
+    } catch {
+      // Older gdbs predate -complete, and lldb-mi never had it. No completions, no error.
+    }
+    this.sendResponse(response);
+  }
+
   private async runConsoleCommand(command: string): Promise<void> {
     if (!this.gdb) return;
     const onRunning = () => this.sendEvent(new ContinuedEvent(MAIN_THREAD_ID));

@@ -299,15 +299,56 @@ describe('parseDiagnostics (header shapes seen in real project builds)', () => {
 });
 
 describe('a build that fails entirely inside an included file', () => {
-  it('reports the real cause instead of showing a clean file', async function () {
-    // Validating against real projects, this was every remaining case where the compiler and the
-    // editor disagreed: the assembler stops on a bad `include` before reaching any line of this
-    // document, so filtering to this file's own errors left nothing to show at all.
-    const compilerPath = [process.env.FASM2_STUDIO_TEST_FASM1, 'fasm1', 'fasm'].find((c) => {
+  /** A fasm1-family compiler to run for real, or undefined if none is installed. */
+  function findFasm1(): string | undefined {
+    return [process.env.FASM2_STUDIO_TEST_FASM1, 'fasm1', 'fasm'].find((c) => {
       if (!c) return false;
       const probe = spawnSync(c, [], { timeout: 5000 });
       return !probe.error;
     });
+  }
+
+  it('marks the error in the file that actually holds it', async function () {
+    // Validating against real projects, this was every remaining case where the compiler and the
+    // editor disagreed: the assembler stops on a bad `include` before reaching any line of this
+    // document, so filtering to this file's own errors left nothing to show at all. Naming the
+    // culprit in a status-bar sentence was the first fix; putting the squiggle on its actual line,
+    // in a file the user can click straight to, is the point of foreignDiagnostics.
+    const compilerPath = findFasm1();
+    if (!compilerPath) this.skip();
+    this.timeout(15000);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-foreign-'));
+    try {
+      const included = path.join(dir, 'base.inc');
+      fs.writeFileSync(included, "include 'does/not/exist.inc'\n");
+      const file = path.join(dir, 'prog.asm');
+      fs.writeFileSync(file, "format binary\ninclude 'base.inc'\n");
+
+      const result = await runDiagnostics({
+        compilerPath,
+        sourceFsPath: file,
+        cwd: dir,
+        dialect: 'fasm1',
+        workspaceFolders: [dir],
+      });
+
+      assert.deepStrictEqual(result.diagnostics, [], 'the error is not on a line of this document');
+      const forIncluded = result.foreignDiagnostics?.get(included);
+      assert.ok(forIncluded?.length, 'a failing build must never look clean');
+      assert.strictEqual(forIncluded[0].range.start.line, 0, 'the include is on the first line of base.inc');
+      // Diagnostic.message is typed string | MarkupContent by the LSP types; ours is always plain.
+      assert.match(String(forIncluded[0].message), /not found/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps summarizing an error located outside the workspace, rather than marking up a file the user does not own', async function () {
+    // A single mistake reaches the assembler's own library easily, and squiggles appearing in an
+    // installed package the user cannot edit are noise. They must still be reported *somehow* —
+    // the invariant is that a failing build never looks clean, not that it always has a squiggle.
+    const compilerPath = findFasm1();
     if (!compilerPath) this.skip();
     this.timeout(15000);
 
@@ -317,9 +358,16 @@ describe('a build that fails entirely inside an included file', () => {
       const file = path.join(dir, 'prog.asm');
       fs.writeFileSync(file, "format binary\ninclude 'base.inc'\n");
 
-      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, dialect: 'fasm1' });
+      // An unrelated folder: nothing under `dir` counts as part of the workspace.
+      const result = await runDiagnostics({
+        compilerPath,
+        sourceFsPath: file,
+        cwd: dir,
+        dialect: 'fasm1',
+        workspaceFolders: [path.join(os.tmpdir(), 'fasm2-studio-somewhere-else')],
+      });
 
-      assert.deepStrictEqual(result.diagnostics, [], 'the error is not on a line of this document');
+      assert.strictEqual(result.foreignDiagnostics, undefined, 'nothing outside the workspace may be marked up');
       assert.ok(result.toolError, 'a failing build must never look clean');
       assert.match(result.toolError, /base\.inc/, 'expected the failing include to be named');
     } finally {

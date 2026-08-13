@@ -14,6 +14,15 @@ export interface LiveShadowRoot {
   compileFsPath: string;
   /** cwd to run the compiler with, so its relative `include`s resolve inside the shadow tree. */
   cwd: string;
+  /**
+   * The real project path a compiler-reported shadow path stands for, or undefined for a path
+   * outside the shadow tree (already real, or somewhere else entirely).
+   *
+   * The compiler only ever sees shadow paths, so every location it prints for an *included* file
+   * names a temp directory that will be deleted moments later. Diagnostics reported against those
+   * files have to be translated back before they can be attached to anything the user can open.
+   */
+  toRealPath: (fsPath: string) => string | undefined;
   cleanup: () => Promise<void>;
 }
 
@@ -36,23 +45,37 @@ export async function buildLiveShadowRoot(targetFsPath: string, liveFsPath: stri
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
 
   const shadowRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-shadow-'));
-  let shadowTargetDir: string;
+  let mirrored: MirroredChain;
   try {
-    shadowTargetDir = await mirrorAncestorChain(targetDir, shadowRoot);
-    await mirrorWithOverride(targetDir, shadowTargetDir, rel.split(path.sep), liveContent);
+    mirrored = await mirrorAncestorChain(targetDir, shadowRoot);
+    await mirrorWithOverride(targetDir, mirrored.shadowTargetDir, rel.split(path.sep), liveContent);
   } catch {
     await fs.promises.rm(shadowRoot, { recursive: true, force: true }).catch(() => undefined);
     return undefined;
   }
 
   return {
-    compileFsPath: path.join(shadowTargetDir, path.basename(targetFsPath)),
-    cwd: shadowTargetDir,
+    compileFsPath: path.join(mirrored.shadowTargetDir, path.basename(targetFsPath)),
+    cwd: mirrored.shadowTargetDir,
+    // The shadow tree is a positional copy of the real one — same directory names, same depth,
+    // rooted at shadowRoot instead of realRoot — so the translation is just a swap of that prefix.
+    toRealPath: (fsPath: string) => {
+      const relToRoot = path.relative(shadowRoot, fsPath);
+      if (!relToRoot || relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) return undefined;
+      return path.join(mirrored.realRoot, relToRoot);
+    },
     cleanup: () => fs.promises.rm(shadowRoot, { recursive: true, force: true }).then(
       () => undefined,
       () => undefined,
     ),
   };
+}
+
+interface MirroredChain {
+  /** Shadow path corresponding to the real `targetDir`. */
+  shadowTargetDir: string;
+  /** Real directory that `shadowRoot` itself stands for — the base of the positional copy. */
+  realRoot: string;
 }
 
 /**
@@ -64,12 +87,13 @@ export async function buildLiveShadowRoot(targetFsPath: string, liveFsPath: stri
  * real path — exactly what mirrorWithOverride already does for targetDir's own siblings, just
  * repeated one level at a time on the way down. Returns the shadow path corresponding to targetDir.
  */
-async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promise<string> {
+async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promise<MirroredChain> {
   const root = path.parse(targetDir).root;
   const allSegments = targetDir.slice(root.length).split(path.sep).filter(Boolean);
   const segments = allSegments.slice(-ANCESTOR_LEVELS);
 
-  let realDir = path.join(root, ...allSegments.slice(0, allSegments.length - segments.length));
+  const realRoot = path.join(root, ...allSegments.slice(0, allSegments.length - segments.length));
+  let realDir = realRoot;
   let shadowDir = shadowRoot;
   for (const segment of segments) {
     await fs.promises.mkdir(shadowDir, { recursive: true });
@@ -89,7 +113,7 @@ async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promi
     realDir = path.join(realDir, segment);
     shadowDir = path.join(shadowDir, segment);
   }
-  return shadowDir;
+  return { shadowTargetDir: shadowDir, realRoot };
 }
 
 async function mirrorWithOverride(realDir: string, shadowDir: string, overrideRelParts: string[], overrideContent: string): Promise<void> {

@@ -98,4 +98,49 @@ describe('buildLiveShadowRoot', () => {
     const shadow = await buildLiveShadowRoot(missing, missing, 'format binary\n');
     assert.strictEqual(shadow, undefined);
   });
+
+  describe('toRealPath', () => {
+    // The compiler only ever sees the shadow tree, so every location it reports for an included
+    // file names a temp directory about to be deleted. Diagnostics for those files are unusable
+    // until translated back.
+    it('translates a reported shadow path back to the real project file', async () => {
+      const main = path.join(dir, 'main.asm');
+      const sibling = path.join(dir, 'sibling.inc');
+      fs.writeFileSync(main, "format binary\ninclude 'sibling.inc'\n");
+      fs.writeFileSync(sibling, 'db 1\n');
+
+      const shadow = await buildLiveShadowRoot(main, main, "format binary\ninclude 'sibling.inc'\n");
+      assert.ok(shadow);
+      assert.strictEqual(shadow!.toRealPath(path.join(shadow!.cwd, 'sibling.inc')), sibling);
+
+      await shadow!.cleanup();
+    });
+
+    it('translates a path in a mirrored ancestor directory, not just the compile directory', async () => {
+      const main = path.join(dir, 'src', 'main.asm');
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(main, "format binary\ninclude '../shared.inc'\n");
+      const shared = path.join(dir, 'shared.inc');
+      fs.writeFileSync(shared, 'db 1\n');
+
+      const shadow = await buildLiveShadowRoot(main, main, "format binary\ninclude '../shared.inc'\n");
+      assert.ok(shadow);
+      assert.strictEqual(shadow!.toRealPath(path.join(shadow!.cwd, '..', 'shared.inc')), shared);
+
+      await shadow!.cleanup();
+    });
+
+    it('returns undefined for a path that was never part of the shadow tree', async () => {
+      const main = path.join(dir, 'main.asm');
+      fs.writeFileSync(main, 'format binary\n');
+
+      const shadow = await buildLiveShadowRoot(main, main, 'format binary\n');
+      assert.ok(shadow);
+      // An absolute path the compiler printed for a file it found elsewhere — the assembler's own
+      // include library, say — is already real and must be handed back untranslated.
+      assert.strictEqual(shadow!.toRealPath('/usr/share/fasm2/include/format/elfexe.inc'), undefined);
+
+      await shadow!.cleanup();
+    });
+  });
 });

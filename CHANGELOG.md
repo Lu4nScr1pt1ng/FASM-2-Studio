@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.10.0
+
+### Errors are reported in the file that holds them
+
+`runDiagnostics` filtered the compiler's output down to the document being edited and collapsed
+everything else into a single `toolError` string, which the client showed as a status-bar
+"diagnostics unavailable". For an include tree — which is what a fasm project is — that meant the
+common case had no squiggle anywhere: the file with the mistake was never marked, and the file being
+edited looked clean.
+
+- `CompileResult` gained `foreignDiagnostics`, a map of absolute path to `Diagnostic[]`, and the
+  server publishes each entry against that file's own URI.
+- **Compiler paths are translated back through the shadow tree.** Diagnostics compile a live buffer
+  from a positional copy under `/tmp` (`liveShadow.ts`), so every location the compiler prints for an
+  included file names a directory about to be deleted. `LiveShadowRoot` now exposes `toRealPath`,
+  which swaps the shadow root prefix for the real one; without it the published URIs pointed at
+  temp files.
+- **A file must exist *and* be inside a workspace folder to be marked up.** Existence rules out the
+  path in `include 'does/not/exist.inc'`. The workspace check rules out the assembler's own library:
+  a single missing include leaves a package macro holding an impossible value, and fasmg reports
+  that consequence against `<fasm2>/include/format/elfexe.inc` — a file the user cannot fix.
+  Anything failing either test still goes to the `toolError` summary, so the invariant that a
+  failing build never looks clean is unchanged.
+- **Retraction is ownership-tracked.** A file nobody has open has no event that would ever clear its
+  diagnostics, so `foreignDiagnosticOwners` records who published what; a mark is retracted only
+  when no other open document still reports it, and open documents are skipped entirely since each
+  compiles the project itself.
+
+### Numeric literal hover
+
+Hovering a numeric literal converts it — decimal, hex, bit pattern grouped into nibbles, the signed
+reading when the value's sign bit is set for its narrowest machine width, and the ASCII character
+for a printable byte. The base the literal is already written in is omitted.
+
+The accepted grammar is fasmg's own `convert_number` (`source/expressions.inc`), cross-checked by
+assembling every form against fasm2/fasmg g.kp60 and fasm1 1.73.32:
+
+- Two prefixes only, `$` and `0x`. The `0x` test is `cmp word [edx],'0x'` — a two-byte literal
+  compare — so it is case-sensitive: `0X1F` is not a number.
+- Bases otherwise come from a trailing `h`/`b`/`o`/`q`/`d`, folded case-insensitively.
+- **`0b1010` and `0o17` are not binary and octal.** There is no `0b`/`0o` prefix in that routine, so
+  they reach the decimal path and are rejected for the embedded letter. Reading them the C way would
+  have reported a value for source that does not assemble.
+- `_` and `'` are digit separators in every base.
+
+### Run Without Debugging actually ran the debugger
+
+`noDebug` was handled nowhere, so Ctrl+F5 on a fasm file started gdb and stopped the program on its
+first instruction. `resolveDebugConfiguration` now builds, runs it in a terminal, and returns
+`undefined` to cancel the session. Checked before the fasm2-only dialect gate, since fasm1 builds and
+runs perfectly well and only *debugging* is fasm2-only.
+
+### Run and Debug disagreed about the working directory
+
+`runOutputBinary` created its terminal with no `cwd`, inheriting the workspace root, while a debug
+launch defaults `cwd` to the source file's directory — so a program opening a relative data file
+worked under F5 and failed under Run. Both now use the source directory. A terminal's cwd is fixed at
+creation, so a leftover `FASM` terminal rooted elsewhere is replaced rather than reused.
+
+### Debug Console completion
+
+`supportsCompletionsRequest`, answered from gdb's own `-complete`. The console is a raw gdb command
+line, which is only usable if you already know gdb's command set; the completions come from the gdb
+actually in use rather than a list baked into the adapter. Failure — an older gdb, or lldb-mi, which
+never had `-complete` — yields an empty list rather than an error on a keystroke.
+
+### Also
+
+- `onTaskType:fasm` activation, so a `tasks.json` with `"type": "fasm"` resolves before any `.asm`
+  tab has been opened.
+
 ## 1.9.0
 
 ### Attach: debugging a program you did not start

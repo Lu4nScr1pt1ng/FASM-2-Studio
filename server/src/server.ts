@@ -8,6 +8,7 @@ import {
   CompletionItem,
   createConnection,
   DefinitionParams,
+  Diagnostic,
   DidChangeConfigurationParams,
   DocumentFormattingParams,
   DocumentHighlight,
@@ -420,6 +421,64 @@ function reportDiagnosticsAvailability(uri: string, reason: string | undefined):
   connection.sendNotification('fasm2Studio/diagnosticsUnavailable', { uri, reason });
 }
 
+/**
+ * Which *other* files each document's last compile reported errors in, so a fixed error can be
+ * cleared from a file nothing is going to recompile on its own.
+ *
+ * Diagnostics are published per URI and stay until replaced, so a file that is not open has no
+ * event of its own that would ever retract them — this is the only record that they were put there
+ * and by whom. Keyed by the document whose compile produced them, because several open files in one
+ * project legitimately report the same broken include, and the last one to be fixed must not erase
+ * the marks the others still stand behind.
+ */
+const foreignDiagnosticOwners = new Map<string, Set<string>>();
+
+/** The open workspace folders as filesystem paths, for deciding which files may carry diagnostics
+ * of their own (see placeForeignErrors). Non-`file:` folders have no path and are skipped. */
+function workspaceFolderPaths(): string[] {
+  const paths: string[] = [];
+  for (const folderUri of settingsStore.workspaceFolders()) {
+    try {
+      const parsed = URI.parse(folderUri);
+      if (parsed.scheme === 'file') paths.push(parsed.fsPath);
+    } catch {
+      // A folder URI we can't parse simply doesn't contribute one.
+    }
+  }
+  return paths;
+}
+
+/**
+ * Publishes `uri`'s compile errors that landed in other files, and retracts the ones it previously
+ * put there that are now gone.
+ *
+ * Open documents are deliberately skipped: each one compiles the whole project itself and publishes
+ * its own, better-filtered result, so writing over it here would mean two compiles racing to own
+ * one file's squiggles.
+ */
+function publishForeignDiagnostics(ownerUri: string, foreign: Map<string, Diagnostic[]> | undefined): void {
+  const published = new Set<string>();
+  for (const [fsPath, diagnostics] of foreign ?? []) {
+    const foreignUri = URI.file(fsPath).toString();
+    if (foreignUri === ownerUri || documents.get(foreignUri)) continue;
+    connection.sendDiagnostics({ uri: foreignUri, diagnostics });
+    published.add(foreignUri);
+  }
+
+  for (const staleUri of foreignDiagnosticOwners.get(ownerUri) ?? []) {
+    if (published.has(staleUri)) continue;
+    const claimedElsewhere = [...foreignDiagnosticOwners].some(
+      ([owner, uris]) => owner !== ownerUri && uris.has(staleUri),
+    );
+    if (!claimedElsewhere && !documents.get(staleUri)) {
+      connection.sendDiagnostics({ uri: staleUri, diagnostics: [] });
+    }
+  }
+
+  if (published.size > 0) foreignDiagnosticOwners.set(ownerUri, published);
+  else foreignDiagnosticOwners.delete(ownerUri);
+}
+
 async function runDiagnosticsFor(uri: string, generation: number): Promise<void> {
   const doc = documents.get(uri);
   if (!doc) return;
@@ -433,6 +492,8 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     const reason = `no ${dialect} compiler found on PATH (set fasm2Studio.${dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath'} or install it)`;
     connection.console.warn(`fasm2-studio: diagnostics unavailable for ${uri}: ${reason}.`);
     connection.sendDiagnostics({ uri, diagnostics: [] });
+    // Nothing was compiled, so any marks left in other files by an earlier run are now unfounded.
+    publishForeignDiagnostics(uri, undefined);
     reportDiagnosticsAvailability(uri, reason);
     return;
   }
@@ -456,6 +517,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   let compileFsPath = fsPath;
   let cwd = fsPath ? path.dirname(fsPath) : undefined;
   let reportForFsPath: string | undefined;
+  let toRealPath: ((p: string) => string | undefined) | undefined;
 
   // This file may be a fragment with no `format` of its own (an .inc/.asm meant only to be
   // `include`d into a real program) — compiling it standalone is meaningless and its real errors
@@ -495,6 +557,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       compileFsPath = shadow.compileFsPath;
       cwd = shadow.cwd;
       shadowCleanup = shadow.cleanup;
+      toRealPath = shadow.toRealPath;
     }
   }
 
@@ -521,12 +584,18 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       // (and would be rejected) there.
       preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
       dialect,
+      toRealPath,
+      workspaceFolders: workspaceFolderPaths(),
     });
 
     // A newer edit (or diagnostics being disabled) arrived while the compiler was running; drop
     // this stale result instead of overwriting fresher-but-not-yet-ready diagnostics with old ones.
     if (diagnosticGenerations.get(uri) !== generation) return;
     if (!documents.get(uri)) return;
+
+    // Published before the toolError branch below returns: a build that failed entirely inside an
+    // include still located that error precisely, and that is the case this exists for.
+    publishForeignDiagnostics(uri, result.foreignDiagnostics);
 
     if (result.toolError) {
       connection.console.warn(`fasm2-studio: diagnostics unavailable for ${uri}: ${result.toolError}`);
@@ -591,6 +660,9 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     dialectCache.delete(uri);
     diagnosticGenerations.delete(uri);
     diagnosticsUnavailableReason.delete(uri);
+    // This document is no longer compiling anything, so it can no longer vouch for the errors it
+    // reported in other files — retract them unless another open document reports them too.
+    publishForeignDiagnostics(uri, undefined);
     const timer = diagnosticTimers.get(uri);
     if (timer) clearTimeout(timer);
     diagnosticTimers.delete(uri);

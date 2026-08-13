@@ -81,14 +81,17 @@ function registerCommands(context: vscode.ExtensionContext): void {
       if (!entryFile) return;
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
-        await runOutputBinary(getDefaultOutputPath(entryFile));
+        await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile));
       }
     }),
 
     vscode.commands.registerCommand('fasm2Studio.run', async (resource?: vscode.Uri) => {
       const entryFile = await resolveBuildTarget('Running', resource);
       if (!entryFile) return;
-      await runOutputBinary(getDefaultOutputPath(entryFile));
+      // The source file's directory, not the output's: fasm2Studio.buildOutputPath can send the
+      // binary off to a "bin/" of its own, and a program's relative paths are written against
+      // where its source lives. This is the same directory a debug launch defaults "cwd" to.
+      await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile));
     }),
 
     // Resolved through the same entry-point path as Build, so it removes exactly the files that

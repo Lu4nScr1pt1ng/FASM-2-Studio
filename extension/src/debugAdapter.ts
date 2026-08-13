@@ -7,6 +7,7 @@ import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { PICK_PROCESS_COMMAND } from './pickProcess';
+import { runOutputBinary } from './runCommand';
 import { runBuildTask } from './taskProvider';
 import { ensureTrusted } from './workspaceTrust';
 
@@ -121,6 +122,17 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       if (!entryFile) return undefined;
       asmFile = entryFile;
       config.asmFile = entryFile;
+    }
+
+    // "Run Without Debugging" (Ctrl+F5) reaches the debug machinery like any other launch, just
+    // with noDebug set — so left unhandled it started gdb and stopped the program on its first
+    // instruction, which is the exact opposite of what was asked for. There is nothing for a
+    // debug adapter to do here: build it, run it in a terminal, and cancel the session by
+    // returning undefined. Attach has no meaning without a debugger, so it is left alone.
+    if (config.noDebug && config.request !== 'attach') {
+      const exitCode = await runBuildTask(asmFile);
+      if (exitCode === 0) await runOutputBinary(getDefaultOutputPath(asmFile), path.dirname(asmFile));
+      return undefined;
     }
 
     const dialect = await dialectFor(asmFile);

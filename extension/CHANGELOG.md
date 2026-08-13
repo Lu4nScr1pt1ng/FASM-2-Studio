@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.10.0
+
+### Errors now appear in the file that actually has them
+
+A fasm project is an include tree, so the mistake is usually not in the file you're looking at. Until
+now that case had no squiggle anywhere: the broken file was never marked, the file you were editing
+looked clean, and all you got was a status-bar note that live error checking wasn't running.
+
+Errors are now reported on the line that holds them, in the file that holds it — click the Problems
+entry and you land on it, whether or not that file was ever open. Mistakes located in the assembler's
+own bundled includes are still summarized rather than marked up: that's not a file you can fix.
+
+### Hover a number to convert it
+
+Hovering a numeric literal shows it in decimal, hex, and as a bit pattern grouped into nibbles, plus
+what it reads as signed (`0FFh` → `-1` in a byte) and which character it is when it's a printable
+one (`65` → `'A'`). No more switching to a calculator to read a flag mask.
+
+It accepts exactly what the assembler does, which is worth knowing: `$1F`, `0x1F`, `1Fh`, `1010b`,
+`17o`, `17q`, `99d`, and `_` or `'` as digit separators. Notably `0b1010` and `0o17` are *not* valid
+fasm — there's no `0b`/`0o` prefix — so they're not offered a conversion, because they wouldn't
+assemble.
+
+### Run Without Debugging no longer starts the debugger
+
+Ctrl+F5 on a fasm file used to launch gdb and stop on the first instruction — the opposite of what it
+says. It now builds and runs the program in a terminal, and works for fasm1 sources too.
+
+### Run and Debug now agree on the working directory
+
+A program that opens a data file next to its source worked under F5 but failed under Run, because
+Run started it from the workspace root instead of the source's own directory. Both now use the same
+directory.
+
+### Debug Console command completion
+
+The Debug Console takes raw gdb commands, and now completes them — type `info reg` and it offers
+`info registers`. The suggestions come from the gdb you're actually running.
+
+### Also
+
+- A `tasks.json` using `"type": "fasm"` now works even if you haven't opened a `.asm` file yet.
+
 ## 1.9.0
 
 ### Debug a program you didn't start, or one that already crashed

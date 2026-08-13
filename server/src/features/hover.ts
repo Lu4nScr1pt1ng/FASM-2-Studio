@@ -3,6 +3,7 @@ import { Hover, MarkupKind } from 'vscode-languageserver/node';
 import { detectIsa } from '../isa';
 import { Dialect, SymbolKind } from '../types';
 import { isLocalInScope, pickInScopeSymbol, Workspace } from '../workspace';
+import { characterReading, groupBinary, NumericLiteral, parseNumericLiteral, signedReading } from './numericLiteral';
 import directivesData from '../data/directives.json';
 import instructionsData from '../data/instructions.json';
 import registersData from '../data/registers.json';
@@ -125,6 +126,11 @@ export function getHover(workspace: Workspace, uri: string, dialect: Dialect, wo
     return markdown(renderTagged(word === '@@' ? '@@' : lower, 'Anonymous label', explanations[word === '@@' ? '@@' : lower]));
   }
 
+  // Before the symbol lookups below, but after the built-in tokens above: a numeric literal can
+  // never collide with any of them, since a fasm identifier may not begin with a digit.
+  const literal = parseNumericLiteral(word);
+  if (literal) return markdown(renderNumericLiteral(literal));
+
   const special = SPECIAL_SYMBOLS[word];
   if (special) return markdown(renderTagged(word, 'Built-in symbol', special));
 
@@ -236,6 +242,40 @@ function renderInstructions(entries: InstructionEntry[]): string {
 
 function renderTagged(name: string, tag: string, summary: string): string {
   return [`**${name}** — *${tag}*`, '', summary].join('\n');
+}
+
+const BASE_NAMES: Record<number, string> = { 2: 'binary', 8: 'octal', 10: 'decimal', 16: 'hexadecimal' };
+
+/**
+ * The same value in the bases assembly actually gets read in, written the way fasm would accept it
+ * back — so a row can be copied straight into the source rather than translated by hand first. The
+ * base the literal is already written in is left out: repeating it is noise, and its absence is
+ * what makes the row that answers the question easy to find.
+ */
+function renderNumericLiteral(literal: NumericLiteral): string {
+  const { value, base } = literal;
+  const rows: Array<[string, string]> = [];
+
+  // Octal is deliberately never offered: nothing in x86 is expressed in it, and the one literal
+  // form that would want it is the octal literal itself, where the row would just repeat the
+  // heading.
+  if (base !== 10) rows.push(['Decimal', `\`${value}\``]);
+  if (base !== 16) rows.push(['Hex', `\`0x${value.toString(16).toUpperCase()}\``]);
+  if (base !== 2) rows.push(['Binary', `\`${groupBinary(value.toString(2))}b\``]);
+
+  const signed = signedReading(value);
+  if (signed) rows.push([`Signed (${signed.label})`, `\`${signed.text}\``]);
+
+  const char = characterReading(value);
+  if (char) rows.push(['Character', `\`${char}\``]);
+
+  return [
+    `**${literal.text}** — *${BASE_NAMES[base]} literal*`,
+    '',
+    '| | |',
+    '|---|---|',
+    ...rows.map(([label, rendered]) => `| ${label} | ${rendered} |`),
+  ].join('\n');
 }
 
 const SIZE_KIND_LABELS: Record<SizeSpecifierEntry['kind'], string> = {

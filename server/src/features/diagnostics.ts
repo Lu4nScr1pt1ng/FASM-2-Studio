@@ -14,6 +14,15 @@ import { Dialect } from '../types';
 
 export interface CompileResult {
   diagnostics: Diagnostic[];
+  /**
+   * Errors belonging to *other* files of the same project, keyed by their absolute real path.
+   *
+   * fasm projects are include trees, so the file holding the mistake is very often not the file
+   * being edited. Reporting these only as a status-bar sentence left the actual broken line
+   * unmarked in a file the user could open — so they are handed back as ordinary diagnostics for
+   * the caller to publish against those files' own URIs.
+   */
+  foreignDiagnostics?: Map<string, Diagnostic[]>;
   /** Set when the compiler could not be run at all (missing binary, spawn failure, timeout). */
   toolError?: string;
 }
@@ -71,6 +80,14 @@ export interface RunCompilerOptions {
    * rejects every flag fasmg takes — so getting this wrong silently disables diagnostics. Defaults
    * to fasm2, the dialect this extension is primarily built around. */
   dialect?: Dialect;
+  /** Translates a path the compiler printed back to the real project file it stands for, for
+   * callers that compile a positional copy rather than the project itself (see liveShadow.ts).
+   * Returning undefined means "not one of mine", and the path is used as-is. */
+  toRealPath?: (fsPath: string) => string | undefined;
+  /** Directories (absolute paths) whose files may carry diagnostics of their own — the open
+   * workspace folders. Errors located outside them are summarized rather than marked up; see
+   * placeForeignErrors. Leave unset to accept any file that exists. */
+  workspaceFolders?: readonly string[];
 }
 
 /**
@@ -151,12 +168,22 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     // would show a clean file for a project that does not build, with no hint of why; validating
     // against real projects, this was every single case where the compiler and the editor
     // disagreed (a missing include in kbdasm, in bitRAKE's playground, in microcaml).
-    if (diagnostics.length === 0 && foreignErrors.length > 0) {
-      const first = foreignErrors[0];
-      const more = foreignErrors.length > 1 ? ` (+${foreignErrors.length - 1} more)` : '';
-      return { diagnostics: [], toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}` };
+    //
+    // Whichever of those errors can be pinned to a file that exists on disk becomes a real
+    // diagnostic on that file, so the broken line is marked where it actually is. The rest — a
+    // path that resolves to nothing, which is exactly what a *missing* include reports — have
+    // nowhere to be shown, and still need the summary below to avoid vanishing.
+    const { foreignDiagnostics, unplaceable } = placeForeignErrors(foreignErrors, opts);
+    if (diagnostics.length === 0 && unplaceable.length > 0) {
+      const first = unplaceable[0];
+      const more = unplaceable.length > 1 ? ` (+${unplaceable.length - 1} more)` : '';
+      return {
+        diagnostics: [],
+        foreignDiagnostics,
+        toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}`,
+      };
     }
-    return { diagnostics };
+    return { diagnostics, foreignDiagnostics };
   } finally {
     fs.promises.unlink(tmpOut).catch(() => undefined);
   }
@@ -307,4 +334,63 @@ function parseOutput(output: string, sourceFsPath: string): ParsedOutput {
   }
 
   return { diagnostics, foreignErrors };
+}
+
+/**
+ * Splits the errors that belong to other files into ones that can be shown where they happened and
+ * ones that cannot.
+ *
+ * A file must both exist and belong to the workspace to be marked up. Existence rules out a path
+ * the compiler only tried to open. The workspace check rules out the assembler's own library, which
+ * a single mistake reaches surprisingly easily: a missing `include` leaves a package macro holding
+ * an impossible value, and fasmg reports that consequence against a line of
+ * `<fasm2>/include/format/elfexe.inc` — a file the user did not write, cannot fix, and would not
+ * expect to see turn red. Both kinds fall through to the summary message instead of disappearing.
+ */
+function placeForeignErrors(
+  foreignErrors: readonly ForeignError[],
+  opts: RunCompilerOptions,
+): { foreignDiagnostics: Map<string, Diagnostic[]> | undefined; unplaceable: ForeignError[] } {
+  const foreignDiagnostics = new Map<string, Diagnostic[]>();
+  const unplaceable: ForeignError[] = [];
+
+  for (const error of foreignErrors) {
+    const fsPath = resolveReportedPath(error.file, opts);
+    if (!fsPath) {
+      unplaceable.push(error);
+      continue;
+    }
+    const lineNo = Math.max(0, error.line - 1); // ForeignError.line is 1-based, LSP lines are not
+    const forFile = foreignDiagnostics.get(fsPath) ?? [];
+    forFile.push({
+      severity: DiagnosticSeverity.Error,
+      range: { start: { line: lineNo, character: 0 }, end: { line: lineNo, character: Number.MAX_SAFE_INTEGER } },
+      message: error.message,
+      source: 'fasm',
+    });
+    foreignDiagnostics.set(fsPath, forFile);
+  }
+
+  return { foreignDiagnostics: foreignDiagnostics.size > 0 ? foreignDiagnostics : undefined, unplaceable };
+}
+
+/** A path as the compiler printed it — relative to the directory it ran in, and naming the compile
+ * tree rather than the project when those differ — resolved to a real workspace file, or undefined
+ * if it doesn't name one. */
+function resolveReportedPath(rawPath: string, opts: RunCompilerOptions): string | undefined {
+  const absolute = path.isAbsolute(rawPath) ? rawPath : path.resolve(opts.cwd, rawPath);
+  const real = opts.toRealPath?.(absolute) ?? absolute;
+  if (opts.workspaceFolders?.length && !opts.workspaceFolders.some((folder) => isInside(folder, real))) {
+    return undefined;
+  }
+  try {
+    return fs.statSync(real).isFile() ? real : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isInside(folder: string, fsPath: string): boolean {
+  const rel = path.relative(folder, fsPath);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }

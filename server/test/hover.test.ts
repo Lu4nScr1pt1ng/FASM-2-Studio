@@ -749,4 +749,35 @@ describe('getHover', () => {
       assert.ok(v.includes('x86 instruction'), `expected x86 prose for an undefined-here mnemonic, got: ${v}`);
     });
   });
+
+  describe('numeric literals', () => {
+    const hover = (word: string): string => value(getHover(new Workspace(), 'file:///a.asm', 'fasm2', word));
+
+    it('converts a hex constant to the bases it is actually read in', () => {
+      const v = hover('0FFh');
+      assert.ok(v.includes('255'), `expected the decimal value, got: ${v}`);
+      assert.ok(v.includes('1111_1111b'), `expected the bit pattern, got: ${v}`);
+    });
+
+    it('omits the base the literal is already written in', () => {
+      // The row answering the question has to be easy to find; repeating the input is noise.
+      const v = hover('0x1F');
+      assert.ok(!v.includes('| Hex |'), `hex literal should not restate its hex value, got: ${v}`);
+      assert.ok(v.includes('31'));
+    });
+
+    it('reads a mask with its high bit set as the negative it also is', () => {
+      assert.ok(hover('0FFh').includes('-1'));
+    });
+
+    it('names the character a byte constant stands for', () => {
+      assert.ok(hover('65').includes("'A'"));
+    });
+
+    it('says nothing about a token that only looks like a literal', () => {
+      // 0b1010 does not assemble; claiming it is 10 would be inventing a value for broken source.
+      const v = getHover(new Workspace(), 'file:///a.asm', 'fasm2', '0b1010');
+      assert.strictEqual(v, undefined);
+    });
+  });
 });

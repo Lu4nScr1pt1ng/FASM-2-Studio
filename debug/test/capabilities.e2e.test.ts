@@ -133,9 +133,45 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
         'supportsGotoTargetsRequest',
         'supportsRestartRequest',
         'supportsExceptionInfoRequest',
+        'supportsCompletionsRequest',
       ]) {
         assert.strictEqual(capabilities[capability], true, `${capability} not declared`);
       }
+    } finally {
+      proc.kill();
+    }
+  });
+
+  it('completes a partly-typed Debug Console command from gdb\'s own command set', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(loop);
+    try {
+      // The Debug Console is a raw gdb command line, so the completions have to come from gdb
+      // rather than a list baked into the adapter — "info reg" is a command only gdb knows.
+      const completions = await client.sendRequest<{ targets: Array<{ label: string; start?: number; length?: number }> }>(
+        'completions',
+        { text: 'info reg', column: 9 },
+      );
+      const labels = completions.targets.map((t) => t.label);
+      assert.ok(labels.includes('info registers'), `expected "info registers" among ${JSON.stringify(labels)}`);
+      // Whole-command matches replace everything typed, rather than appending to it.
+      assert.strictEqual(completions.targets[0].start, 0);
+      assert.strictEqual(completions.targets[0].length, 8);
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  it('answers an empty list rather than failing when there is nothing to complete', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(loop);
+    try {
+      const completions = await client.sendRequest<{ targets: unknown[] }>('completions', { text: '', column: 1 });
+      assert.deepStrictEqual(completions.targets, []);
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
     } finally {
       proc.kill();
     }
