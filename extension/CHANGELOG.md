@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.9.0
+
+### Debug a program you didn't start, or one that already crashed
+
+Debugging could only ever run a program forwards from its entry point. An `attach` configuration now
+takes either a running process or a core dump:
+
+```json
+{ "type": "fasm", "request": "attach", "name": "Attach", "asmFile": "${file}",
+  "processId": "${command:fasm2Studio.pickProcess}" }
+```
+
+`processId` defaults to a picker, since a pid is different every run. Attaching stops the process
+where it stands, and breakpoints, stepping, registers and memory all work from there. Closing the
+session leaves it running — attaching to something is not a request to end it.
+
+Point `coreFile` at a core dump instead and you get the post-mortem: the signal that killed it named
+up front (`SIGSEGV (Segmentation fault)`), the faulting instruction resolved to its source line, and
+the frozen registers, memory and data labels all readable. Nothing can be resumed, and asking says
+so plainly rather than reporting gdb's misleading "The program is not being run".
+
+Both need the `.lst` listing from the build that made *that* binary, so attach never quietly rebuilds
+one — a listing from since-edited source would point confidently at the wrong lines. If it's missing,
+it asks. On Linux, attaching to a process VS Code didn't start also needs
+`/proc/sys/kernel/yama/ptrace_scope` set to `0`; gdb says so if it isn't.
+
+### Fixed
+
+- **"Compiler not found" is no longer a dead end.** Every entry in `FASM: Select Compiler` opened a
+  file dialog — including for the one person guaranteed to end up there, someone who has not
+  installed an assembler at all and has nothing to browse to. It now leads with where to get one,
+  and offers **Look again**: detection runs once per session, so installing an assembler in another
+  window and coming back used to keep reporting "not found" until you reloaded the window.
+- **`FASM: New File` is in File > New File...**, not just the command palette — which matters most
+  for the people it was written for, who don't have a source file yet.
+
+### Added
+
+- Links to the flat assembler download page from the setup walkthrough and the docs, which
+  previously named the site without linking it.
+
 ## 1.8.0
 
 ### Your program now runs in a terminal, so you can type at it

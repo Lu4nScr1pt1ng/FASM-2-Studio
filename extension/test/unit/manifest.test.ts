@@ -10,12 +10,20 @@ const GRAMMAR_PATH = path.join(__dirname, '..', '..', 'syntaxes', 'fasm.tmLangua
 
 interface Manifest {
   activationEvents: string[];
+  categories: string[];
+  extensionKind?: string[];
   capabilities: {
     untrustedWorkspaces: { supported: boolean | string; restrictedConfigurations?: string[]; description?: string };
   };
   contributes: {
-    commands: Array<{ command: string; title: string; category?: string }>;
-    debuggers: Array<{ type: string; label: string; configurationSnippets?: Array<{ label: string }> }>;
+    commands: Array<{ command: string; title: string; shortTitle?: string; category?: string }>;
+    menus: Record<string, Array<{ command: string; when?: string; group?: string }>>;
+    debuggers: Array<{
+      type: string;
+      label: string;
+      configurationSnippets?: Array<{ label: string }>;
+      configurationAttributes?: Record<string, { properties: Record<string, { description?: string; default?: unknown }> }>;
+    }>;
     configuration: { properties: Record<string, { description?: string; type?: string }> };
     languages: Array<{ id: string; extensions: string[] }>;
     taskDefinitions: Array<{ type: string }>;
@@ -53,6 +61,57 @@ describe('extension manifest', () => {
     });
   });
 
+  describe('"New File" discoverability', () => {
+    // FASM: New File exists for someone who has no .asm file yet — and until this entry, the only
+    // way to reach it was the command palette, which is not where VS Code teaches people to make
+    // a file. File > New File... is, and it is populated from this menu alone.
+    it('appears in File > New File..., which is where a user without a source file looks', () => {
+      const entries = manifest.contributes.menus['file/newFile'] ?? [];
+      assert.ok(
+        entries.some((e) => e.command === 'fasm2Studio.newFile'),
+        'fasm2Studio.newFile is not contributed to file/newFile',
+      );
+    });
+
+    // That picker renders each entry with renderShortTitle, so a command whose title is just
+    // "New File" comes out indistinguishable from the built-in "New Text File" sitting next to it.
+    it('gives the entry a short title that says what kind of file it makes', () => {
+      const newFile = manifest.contributes.commands.find((c) => c.command === 'fasm2Studio.newFile');
+      assert.ok(newFile?.shortTitle, 'fasm2Studio.newFile has no shortTitle to render there');
+      assert.notStrictEqual(newFile.shortTitle, newFile.title, 'the short title adds nothing over the plain title');
+    });
+
+    it('every menu entry names a command this extension contributes', () => {
+      const contributed = new Set(manifest.contributes.commands.map((c) => c.command));
+      for (const [menu, entries] of Object.entries(manifest.contributes.menus)) {
+        for (const entry of entries) {
+          assert.ok(contributed.has(entry.command), `${menu} references ${entry.command}, which is not contributed`);
+        }
+      }
+    });
+  });
+
+  describe('where the extension runs', () => {
+    // Diagnostics, Build, Run and Debug all spawn a compiler and gdb against files on disk, and the
+    // language server indexes the real workspace — all of which exist on the remote side of a
+    // Remote-SSH/WSL/Codespaces window, not the local UI side. VS Code infers a kind when none is
+    // declared; stating it keeps a UI-side host from ever being chosen for an extension that has
+    // nothing to run there.
+    it('declares itself a workspace extension, since everything it does needs the real filesystem', () => {
+      assert.deepStrictEqual(manifest.extensionKind, ['workspace']);
+    });
+  });
+
+  describe('marketplace categories', () => {
+    // Categories are how the marketplace is browsed, and each of these is a headline feature: a
+    // language, a debugger, live compiler diagnostics, snippets, and Format Document.
+    it('claims a category for every headline feature, including the formatter', () => {
+      for (const category of ['Programming Languages', 'Snippets', 'Linters', 'Formatters', 'Debuggers']) {
+        assert.ok(manifest.categories.includes(category), `missing category: ${category}`);
+      }
+    });
+  });
+
   describe('debugger contributions', () => {
     // "Add Configuration..." composes the debugger's label with the snippet's label, the same way
     // the palette composes category with title.
@@ -66,6 +125,42 @@ describe('extension manifest', () => {
         });
       }
     }
+  });
+
+  describe('attach configurations', () => {
+    const fasm = manifest.contributes.debuggers.find((d) => d.type === 'fasm')!;
+
+    // A debugger that only declares "launch" gets no attach UI at all — "Add Configuration..."
+    // offers nothing for it, and a hand-written attach entry is rejected before the adapter sees it.
+    it('declares attach, not only launch', () => {
+      assert.ok(fasm.configurationAttributes?.attach, 'no attach configurationAttributes');
+    });
+
+    it('documents both attach targets, since which one you have decides the whole session', () => {
+      const properties = fasm.configurationAttributes!.attach!.properties;
+      assert.ok(properties.processId, 'attach has no "processId"');
+      assert.ok(properties.coreFile, 'attach has no "coreFile"');
+      for (const [name, schema] of Object.entries(properties)) {
+        assert.ok(schema.description && schema.description.trim().length > 0, `attach.${name} has no description`);
+      }
+    });
+
+    // A pid is different on every run, so a config that makes you go and look one up is one that
+    // has to be edited every time it is used.
+    it('defaults processId to the picker rather than to a number that is stale immediately', () => {
+      const processId = fasm.configurationAttributes!.attach!.properties.processId;
+      assert.strictEqual(processId.default, '${command:fasm2Studio.pickProcess}');
+      assert.ok(
+        manifest.contributes.commands.some((c) => c.command === 'fasm2Studio.pickProcess'),
+        'the picker the default substitutes is not a contributed command',
+      );
+    });
+
+    it('offers a snippet for each attach target, so neither has to be written from the schema', () => {
+      const labels = (fasm.configurationSnippets ?? []).map((s) => s.label.toLowerCase());
+      assert.ok(labels.some((l) => l.includes('attach')), 'no attach snippet');
+      assert.ok(labels.some((l) => l.includes('core')), 'no core dump snippet');
+    });
   });
 
   describe('settings', () => {

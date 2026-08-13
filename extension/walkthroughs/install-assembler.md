@@ -1,3 +1,13 @@
+## Where to get one
+
+Everything is on the [flat assembler download page](https://flatassembler.net/download.php):
+
+- **fasm2** — the current assembler, distributed as `fasmg` plus the standard x86 package.
+- **fasm1** — classic flat assembler, if that is what your project is written for.
+
+Unpack it and put the executable on your `PATH`. `~/.local/bin` on Linux/macOS is checked even when
+your desktop session doesn't put it on `PATH`, so it is the safest place to drop the binary.
+
 ## Why this step exists
 
 FASM2 Studio ships no compiler. It drives whatever `fasm2`/`fasm1` you have installed, the same
@@ -16,4 +26,5 @@ The status bar shows the dialect and the resolved executable for the file you ar
 $(tools) fasm2 (/home/you/.local/bin/fasm2)
 ```
 
-If it reads **compiler not found**, click it.
+If it reads **compiler not found**, click it. Detection runs once per session, so if you installed
+an assembler after opening this window, pick **Look again** rather than reloading.

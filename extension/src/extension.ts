@@ -13,6 +13,7 @@ import { registerSelectDialect } from './selectDialect';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { FasmInlineValuesProvider } from './inlineValues';
+import { registerPickProcess } from './pickProcess';
 import { runOutputBinary } from './runCommand';
 import { activeDiagnosticsIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue } from './statusBar';
 import { registerStatusBarMenu } from './statusBarMenu';
@@ -189,6 +190,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerSelectCompiler(context);
   registerSelectDialect(context);
   registerNewFile(context);
+  registerPickProcess(context);
   registerStatusBarMenu(context, activeDiagnosticsIssue);
   createStatusBarItem(context);
   registerTerminalLinks(context);

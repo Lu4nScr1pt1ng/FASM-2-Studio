@@ -37,12 +37,16 @@ that, a language server parses your project and gives you:
 
 `FASM: New File` writes a hello world that already builds and runs — Linux (ELF64) or Windows
 (PE64), with the `format` line, the entry point and the exit filled in — so there is something to
-press play on straight away.
+press play on straight away. It sits in **File > New File…** alongside the built-in entries, as
+well as in the command palette.
 
 `FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, and are
 ordinary build tasks, so `Ctrl+Shift+B` runs them too. The extension finds your compiler
 automatically; a status bar item shows which one it picked, and clicking it opens a menu for the
-dialect, the compiler, live error checking, the language server's log and a server restart.
+dialect, the compiler, live error checking, the language server's log and a server restart. If it
+finds no assembler at all, `FASM: Select Compiler` leads with where to get one and a re-detect —
+detection is cached for the session, so installing one mid-session otherwise looks like nothing
+happened.
 `FASM: Clean Build Output` removes what a build wrote.
 
 `FASM: Build`, `FASM: Build and Run`, `FASM: Run` and `FASM: Debug` are also on the editor title
@@ -67,6 +71,37 @@ Currently fasm2/fasmg sources only. You get:
 - `args` and `env` in `launch.json` for the debugged program
 - **A terminal of its own**, so a program that reads stdin can be typed at — `"console"` picks
   between `integratedTerminal` (default), `externalTerminal` and `debugConsole`
+
+### Attaching to something you didn't start
+
+An `attach` configuration debugs a program this editor did not launch — either a running process or
+the core dump of one that already died:
+
+```json
+{ "type": "fasm", "request": "attach", "name": "Attach", "asmFile": "${file}",
+  "processId": "${command:fasm2Studio.pickProcess}" }
+```
+
+```json
+{ "type": "fasm", "request": "attach", "name": "Core", "asmFile": "${file}",
+  "coreFile": "${workspaceFolder}/core" }
+```
+
+`processId` defaults to a picker, since a pid is different on every run. Attaching to a live process
+stops it where it stands, and everything above works from there; ending the session leaves it
+running unless you explicitly ask for the program to be terminated.
+
+A core dump is post-mortem. Registers, memory, data labels and the faulting source line are all
+readable, the signal that killed it is named up front (`SIGSEGV (Segmentation fault)`), and anything
+that would resume it is refused in those terms rather than with gdb's misleading "The program is not
+being run".
+
+Both need the `.lst` listing from the build that produced *that* binary — a rebuilt listing would
+map addresses onto source lines they never belonged to — so attach never rebuilds one behind your
+back. If it's missing, it says so and asks first.
+
+On Linux, attaching to a process this editor did not start also requires
+`/proc/sys/kernel/yama/ptrace_scope` to be `0`. gdb says so plainly if it isn't.
 
 ## Setting up a project
 

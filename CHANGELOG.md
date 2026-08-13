@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.9.0
+
+### Attach: debugging a program you did not start
+
+The adapter was launch-only, so the debugger had nothing to say about the two situations an
+assembly program most often puts you in — a process already running somewhere else, and a fault
+that already happened. An `attach` request now covers both.
+
+- **A live process.** `-target-attach <pid>` stops it and gdb reports that stop as its own
+  `*stopped` record, so it arrives through the existing `onStopped` path with no special handling;
+  from there every launch-path feature (breakpoints, stepping, memory, watchpoints) applies
+  unchanged. `processId` accepts a string as well as a number, because a `${command:...}` picker
+  substitution produces one.
+- **A core dump.** `-target-select core <file>` answers `^connected` and — verified against real
+  gdb — emits *no* `*stopped` record at all, so the adapter synthesizes one; without it the session
+  sits at "attached" showing no frame, no registers and no source line, which is the entire content
+  of a post-mortem session. The signal is recovered from gdb's console stream
+  (`Program terminated with signal SIGSEGV, Segmentation fault.`), since there is no
+  signal-name/signal-meaning field the way a live stop has, and it feeds the same `exceptionInfo`
+  path that makes a live fault read as `SIGSEGV (Segmentation fault)`.
+- **A core is never resumable**, and says so in those terms. Left to gdb, continue/step/pause on a
+  core answer "The program is not being run", which describes a program that failed to start and
+  sends the reader looking for a launch problem that does not exist.
+- **Ending the session leaves an attached process running**, per the protocol's own default —
+  you attached to something you did not start, possibly long-running, and closing a debugger is not
+  a request to end it. Both directions have to be explicit: quitting gdb while attached *always*
+  detaches, so `terminateDebuggee` kills through the console `kill` command with confirm off. gdb
+  has no MI command for that — `-exec-abort` answers "Undefined MI command" — which only a real
+  session tells you; the end-to-end test is what pinned it down.
+- **Restart is withdrawn on attach** via a capabilities event. Capabilities are answered at
+  `initialize`, before anything knows which request is coming, and `-exec-run` against an attached
+  target starts a fresh copy of the binary while leaving the process being debugged untouched.
+  `restartRequest` refuses as a backstop for a client that asks anyway.
+- **The listing is never rebuilt for an attach.** It has to describe the binary that is already
+  running, and a rebuild from since-edited source maps addresses onto lines they never belonged to —
+  a debugger confidently pointing at the wrong place. A missing listing prompts, stating that
+  assumption, instead of silently rebuilding or dead-ending.
+- `${command:fasm2Studio.pickProcess}` lists processes (`ps` / `tasklist`), most recently started
+  first — pids ascend, so the program you just started is nearly always the highest, rather than
+  something to scroll a few hundred system daemons to find.
+- Verified end to end on Linux against real gdb and real fasm2 binaries
+  (`debug/test/attach.e2e.test.ts`): attaching to a running process maps its PC to a source line and
+  steps; disconnect leaves it alive; `terminateDebuggee` kills it; a core dump reports SIGSEGV,
+  resolves the faulting instruction to its line, reads back the frozen registers, and refuses to
+  continue. Two details the fixtures exist for — the spin program sets `PR_SET_PTRACER_ANY` on
+  itself, since yama's `ptrace_scope` is 1 on most distributions and gdb here is a sibling rather
+  than an ancestor, so without it the test would only ever exercise the refusal path; and the core
+  is produced by driving gdb (`run` + `generate-core-file`) rather than by faulting and hoping,
+  since `core_pattern` routes cores to systemd-coredump on most modern systems. The "process is
+  gone" assertions watch the child's own exit event rather than probing with `kill(pid, 0)`, which
+  answers "still there" for a zombie and would have passed a debuggee that was never killed.
+
+### "Compiler not found" is no longer a dead end
+
+Every entry in `FASM: Select Compiler` opened a file dialog, so the one user guaranteed to arrive
+there — the status bar says "compiler not found" because they have never installed an assembler —
+was sent to browse a filesystem with nothing on it. There was not a single URL anywhere in
+`extension/src` or the walkthrough media.
+
+- Two entries added: where to get one (the setup walkthrough, falling back to the download page if
+  it cannot be opened), and "Look again", which drops the session-long detection cache. That cache
+  is why installing an assembler in another window and coming back still reported "not found", with
+  the only recoveries being a language server restart or a window reload.
+- Ordered like the status bar menu, on the same principle: with nothing installed those two lead,
+  since browsing cannot help; with a working install they go last. The prompt changes too — asking
+  someone who has no assembler which executable they want to point at is a question they cannot
+  answer.
+- `flatassembler.net/download.php` is now linked from the walkthrough step and both READMEs, rather
+  than named as unlinked text in one step description.
+
+### Added
+
+- **`FASM: New File` appears in File > New File...**, populated from `contributes.menus`. It was
+  reachable only from the command palette, which is not where VS Code teaches people to create a
+  file — and that command exists specifically for someone who has no source file yet. Given a
+  `shortTitle`, since that picker renders one and a bare "New File" is indistinguishable from the
+  built-in entry beside it.
+- `extensionKind: ["workspace"]`. VS Code infers a kind when none is declared; stating it keeps a
+  UI-side host from ever being chosen for an extension whose every feature spawns a process against
+  files on disk.
+- The `Formatters` marketplace category, which a shipped Format Document had never claimed.
+
+### Internal
+
+- `launchRequest`'s setup is extracted to `startTarget`, shared with `attachRequest` — the address
+  map, the driver wiring, the register-name lookup and the Intel disassembly flavour are identical
+  either way, and what differs is only how the target starts existing.
+- `processList.ts` and `attachTarget.ts` hold the parsing and validation for the above, importing
+  nothing from `vscode`/the adapter respectively so both can be asserted directly. The extension's
+  own integration suite caught the first attempt at this: it loads the esbuild output, and a
+  contributed command that is never registered fails a test written for exactly that.
+
 ## 1.8.0
 
 ### The debugged program gets a terminal

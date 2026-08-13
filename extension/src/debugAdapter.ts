@@ -6,6 +6,7 @@ import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { resolveEntryPointFsPath } from './entryPointResolver';
+import { PICK_PROCESS_COMMAND } from './pickProcess';
 import { runBuildTask } from './taskProvider';
 import { ensureTrusted } from './workspaceTrust';
 
@@ -40,6 +41,8 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
    * is constructed during activation, so the current value has to be looked up at call time. */
   constructor(private readonly getClient: () => LanguageClient | undefined) {}
 
+  /** Index 0 is load-bearing: resolveDebugConfiguration falls back to it for "F5 with no
+   * launch.json at all", which must be the launch config rather than one that asks for a pid. */
   provideDebugConfigurations(): vscode.DebugConfiguration[] {
     return [
       {
@@ -49,7 +52,39 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
         asmFile: '${file}',
         stopOnEntry: true,
       },
+      {
+        type: FASM_DEBUG_TYPE,
+        request: 'attach',
+        name: 'Attach to running FASM program',
+        asmFile: '${file}',
+        processId: `\${command:${PICK_PROCESS_COMMAND}}`,
+      },
     ];
+  }
+
+  /**
+   * The listing an attach session needs, or undefined if the user declined to produce one.
+   *
+   * Attach is the one case where building is not obviously the right thing to do: the listing has
+   * to describe the binary that is *already running* (or that produced the core), and a rebuild
+   * from since-edited source would map addresses onto source lines they never belonged to — a
+   * debugger confidently pointing at the wrong line. So a missing listing asks first, and says what
+   * the assumption is, rather than either silently rebuilding or dead-ending.
+   */
+  private async ensureAttachListing(asmFile: string, listingFile: string): Promise<boolean> {
+    if (fs.existsSync(listingFile)) return true;
+
+    const build = 'Build it now';
+    const choice = await vscode.window.showWarningMessage(
+      `${MESSAGE_PREFIX}no listing file at ${listingFile}. Attaching needs the listing from the build that produced the program you are attaching to — building one now only maps correctly if the source has not changed since.`,
+      { modal: true },
+      build,
+    );
+    if (choice !== build) return false;
+
+    const exitCode = await runBuildTask(asmFile, true);
+    if (exitCode !== 0) return false;
+    return waitForFile(listingFile);
   }
 
   async resolveDebugConfiguration(
@@ -94,12 +129,16 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       return undefined;
     }
 
+    const isAttach = config.request === 'attach';
+
     // VS Code resolves and runs preLaunchTask *before* calling this method at all — by the time
     // we're here, a broken task-label lookup has already failed the launch, so nothing set here
     // could fix it after the fact. Our generated configs never set preLaunchTask for exactly this
     // reason: build directly instead, ourselves, right now. A launch.json with a genuinely custom
     // preLaunchTask is left alone — that's an explicit user choice, resolved by VS Code as usual.
-    if (!config.preLaunchTask) {
+    //
+    // Attach never builds unprompted at all: see ensureAttachListing.
+    if (!config.preLaunchTask && !isAttach) {
       const exitCode = await runBuildTask(asmFile, true);
       if (exitCode !== 0) return undefined;
 
@@ -123,12 +162,16 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     // A terminal by default, not the Debug Console: assembly programs are console programs, and a
     // program blocked on a `read` syscall with no stdin to answer it looks exactly like a hung
     // debugger. Output-only programs are unaffected beyond which panel their output lands in.
+    // Attach has nothing to point anywhere: the program already has whatever terminal it was
+    // started with, and a core dump has no I/O at all.
     const CONSOLE_KINDS = ['integratedTerminal', 'externalTerminal', 'debugConsole'];
-    if (config.console === undefined) {
-      config.console = 'integratedTerminal';
-    } else if (!CONSOLE_KINDS.includes(config.console as string)) {
-      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}"console" in launch.json must be one of ${CONSOLE_KINDS.join(', ')}.`);
-      return undefined;
+    if (!isAttach) {
+      if (config.console === undefined) {
+        config.console = 'integratedTerminal';
+      } else if (!CONSOLE_KINDS.includes(config.console as string)) {
+        void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}"console" in launch.json must be one of ${CONSOLE_KINDS.join(', ')}.`);
+        return undefined;
+      }
     }
 
     const program = (config.program as string) ?? getDefaultOutputPath(asmFile);
@@ -139,6 +182,24 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       const configuredGdb = fasmConfig().get<string>('gdbPath');
       if (configuredGdb) config.gdbPath = configuredGdb;
     }
+
+    if (isAttach) {
+      if (config.processId === undefined && !config.coreFile) {
+        void vscode.window.showErrorMessage(
+          `${MESSAGE_PREFIX}an attach configuration needs "processId" (a running process) or "coreFile" (a core dump).`,
+        );
+        return undefined;
+      }
+      // The program itself has to exist to attach at all — gdb reads the binary for its code bytes,
+      // and the core references it. Checked here so the failure names the file rather than arriving
+      // as a gdb error about symbols.
+      if (!fs.existsSync(program)) {
+        void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no program to attach against at ${program}. Build it first, or set "program" in launch.json.`);
+        return undefined;
+      }
+      if (!(await this.ensureAttachListing(asmFile, config.listingFile as string))) return undefined;
+    }
+
     return config;
   }
 }

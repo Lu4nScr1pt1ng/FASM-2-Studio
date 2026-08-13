@@ -19,9 +19,10 @@
 //     View, for actually watching a macro's expansion execute one raw instruction at a time
 //     instead of having the whole thing (and the source line it collapses to) step silently past
 //     in one statement-granularity Step.
-import { ContinuedEvent, DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
+import { CapabilitiesEvent, ContinuedEvent, DebugSession, Handles, InitializedEvent, OutputEvent, Scope, Source, StackFrame, StoppedEvent, TerminatedEvent, Thread, Variable } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
+import { AttachTarget, parseTerminationSignal, resolveAttachTarget } from './attachTarget';
 import { readElfEntryPoint } from './elfEntry';
 import { GdbDriver } from './gdbDriver';
 import { ConsoleKind, handshakeFilePath, holderCommand, isTerminalConsole, releaseTerminal, runInTerminalKind, waitForTty } from './inferiorTerminal';
@@ -121,7 +122,9 @@ const EMPTY_REGISTER_GROUPS: RegisterGroups = { generalPurpose: [], pointers: []
  * `dt`) still resolves to an address, just not a single-number value (see formatSymbolValueDetailed). */
 const READABLE_VALUE_BITS: Record<number, RegisterBits> = { 1: 8, 2: 16, 4: 32, 8: 64 };
 
-interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
+/** What both launch and attach need to get a gdb up against the right binary with the right
+ * address-to-source map — see startTarget. */
+interface TargetArgs {
   /** Path to the assembled, executable binary. */
   program: string;
   /** Path to the original .asm entry source file (for listing correlation). */
@@ -130,12 +133,24 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
   listingFile: string;
   gdbPath?: string;
   cwd?: string;
-  stopOnEntry?: boolean;
-  /** Command-line arguments for the debugged program itself (not for gdb). */
+  /** Command-line arguments for the debugged program itself (not for gdb). Launch only: an
+   * already-running process was started with whatever arguments it was started with. */
   args?: string[];
   /** Extra environment variables for the debugged program. Merged over the adapter's own
    * environment, which gdb passes down to the inferior it starts. */
   env?: Record<string, string>;
+}
+
+interface AttachArgs extends DebugProtocol.AttachRequestArguments, TargetArgs {
+  /** Process to attach to. A string is accepted because that is what a `${command:...}` process
+   * picker substitution produces. */
+  processId?: number | string;
+  /** Core dump to open instead of a live process. */
+  coreFile?: string;
+}
+
+interface LaunchArgs extends DebugProtocol.LaunchRequestArguments, TargetArgs {
+  stopOnEntry?: boolean;
   /** Where the debugged program's own stdin/stdout live — the Debug Console (default, output only)
    * or a real terminal, which is the only one of the two that can be typed into. See
    * inferiorTerminal.ts. */
@@ -144,6 +159,16 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments {
 
 export class FasmDebugSession extends DebugSession {
   private gdb: GdbDriver | undefined;
+  /** Which request started this session. Almost everything is identical either way; what isn't is
+   * whether the program is ours to start (`-exec-run` on configurationDone, re-run on restart) and
+   * whether it is ours to kill when the session ends. */
+  private mode: 'launch' | 'attach' = 'launch';
+  /** What an attach session attached to, or undefined for a launch. A core dump is the one target
+   * here that can never be resumed, so the execution requests check it. */
+  private attachTarget: AttachTarget | undefined;
+  /** gdb's console stream so far. Kept because a couple of things gdb only ever says in prose have
+   * to be read back out of it — see parseTerminationSignal. */
+  private consoleLog = '';
   private addressMap: AddressLineMap | undefined;
   /** Every source-mapped address from addressMap, ascending — lets disassembleAround binary-search
    * for "the nearest known-good instruction boundary at or before X" in O(log n) instead of
@@ -234,66 +259,141 @@ export class FasmDebugSession extends DebugSession {
     this.sendEvent(new InitializedEvent());
   }
 
+  /**
+   * Everything launch and attach need identically: the listing-derived maps that turn addresses
+   * into source lines, and a gdb loaded with the same binary. What differs afterwards is only how
+   * the target starts existing — `-exec-run` for launch, `-target-attach`/`-target-select core`
+   * for attach — so that is all either request handler is left holding.
+   */
+  private startTarget(args: TargetArgs): void {
+    const { entries: listingEntries, ...addressMap } = buildAddressLineMap(args.listingFile, path.resolve(args.asmFile));
+    this.addressMap = addressMap;
+    this.sortedAddresses = [...this.addressMap.addressToLocation.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    this.symbolMap = buildSymbolAddressMap(listingEntries);
+    this.constantMap = buildConstantMap(listingEntries);
+
+    this.gdb = new GdbDriver();
+    this.gdb.on('console', (text) => {
+      this.consoleLog += text;
+      this.sendEvent(new OutputEvent(text, 'console'));
+    });
+    this.gdb.on('target-output', (text) => this.sendEvent(new OutputEvent(text, 'stdout')));
+    this.gdb.on('stopped', (data) => this.onStopped(data));
+    this.gdb.on('exit', () => this.sendEvent(new TerminatedEvent()));
+    this.gdb.on('error', (err) => this.sendEvent(new OutputEvent(`gdb error: ${err.message}\n`, 'stderr')));
+
+    // macOS ships no gdb at all (and Apple's lldb doesn't speak the MI protocol this adapter
+    // uses) — the MI-capable debugger there is lldb-mi, so that's the default worth probing for
+    // on darwin instead of a gdb that can't exist. See buildLaunchArgs for the invocation
+    // differences between the two.
+    this.gdb.start({
+      gdbPath: args.gdbPath || (process.platform === 'darwin' ? 'lldb-mi' : 'gdb'),
+      programPath: path.resolve(args.program),
+      // gdb's own --args form takes the program's arguments directly, and the inferior inherits
+      // gdb's environment — so both reach the debugged program without any extra MI commands.
+      programArgs: args.args ?? [],
+      env: args.env,
+      cwd: args.cwd ?? path.dirname(args.program),
+    });
+
+    // gdb already knows the *actual* register set of the loaded target the moment it's loaded
+    // (i386 gets eax/ebx/.../eflags/cs/ss/..., x86-64 gets rax/rbx/.../r15/rip/...) — asking
+    // once here and grouping whatever comes back (registers.ts) is what makes the Registers
+    // view correct for both 32-bit and 64-bit programs, instead of a hardcoded 64-bit guess that
+    // reads as "<unavailable>" across the board on a 32-bit target.
+    //
+    // Deliberately NOT awaited here: this used to block the 'launch' response on one extra gdb
+    // round-trip, which — real regression, found via a client (VS Code) integration test that
+    // drives 'continue' itself right after the first 'stopped' event — delayed 'launch' just
+    // enough that the debuggee (running independently of when our own DAP response goes out)
+    // could hit a stopOnEntry breakpoint and emit 'stopped' *before* the client had finished
+    // processing 'launch' and was ready to react to it, silently dropping that first stop. The
+    // Registers scope is only ever read after a stop, by which point this has long since
+    // resolved in the background — nothing actually needs to wait for it here.
+    void this.gdb.sendCommand('-data-list-register-names').then(
+      (namesResult) => {
+        const rawNames = miData(namesResult)?.['register-names'];
+        if (Array.isArray(rawNames)) this.registerGroups = resolveRegisterGroups(rawNames as string[]);
+      },
+      () => {
+        // Leave registerGroups empty — the Registers scope will just show nothing rather than
+        // fail the whole launch over a view that's secondary to actually running the program.
+      },
+    );
+
+    // FASM is Intel-syntax throughout; gdb's own disassembler defaults to AT&T on Linux, which
+    // would read as a different, unfamiliar language in the Disassembly View. lldb-mi has no
+    // equivalent MI-reachable setting, so this is best-effort and silently ignored there — worth
+    // doing for the common gdb case, not worth failing the whole launch over on the experimental
+    // macOS path.
+    void this.gdb.sendCommand('-gdb-set disassembly-flavor intel').catch(() => {});
+  }
+
+  /**
+   * Attaches to something that is already there: a running process, or the core dump of one that
+   * already died.
+   *
+   * The listing still does all the source mapping, exactly as it does for launch — which is also
+   * the one thing this cannot resolve for the user. The listing has to be the one produced by the
+   * build that made *this* binary; a rebuilt listing describes a different program that happens to
+   * share a name, so the extension refuses to build one here rather than quietly correlating
+   * addresses against source lines they never belonged to.
+   */
+  protected async attachRequest(response: DebugProtocol.AttachResponse, args: AttachArgs): Promise<void> {
+    const resolved = resolveAttachTarget(args);
+    if ('error' in resolved) {
+      this.sendErrorResponse(response, 2, resolved.error);
+      return;
+    }
+
+    try {
+      this.mode = 'attach';
+      this.attachTarget = resolved.target;
+      this.startTarget(args);
+
+      if (resolved.target.kind === 'process') {
+        // gdb stops the process as part of attaching and reports that stop as its own *stopped
+        // record, which onStopped turns into the StoppedEvent — nothing to synthesize here.
+        // Its failures are worth passing through verbatim: the overwhelmingly common one on Linux
+        // is a ptrace_scope refusal, and gdb's own message already names the sysctl and why.
+        await this.gdb!.sendCommand(`-target-attach ${resolved.target.processId}`);
+      } else {
+        this.consoleLog = '';
+        await this.gdb!.sendCommand(`-target-select core ${resolved.target.coreFile}`);
+        // A core is never "running", so gdb emits no *stopped record for it at all — without a
+        // synthesized one the session would sit at "attached" forever, showing no frame, no
+        // registers and no source line, which is the entire content of a post-mortem session.
+        this.reportCoreStop();
+      }
+
+      // Capabilities are answered at initialize, before anything knows whether this will be a
+      // launch or an attach — so the restart button is declared for every session and has to be
+      // withdrawn here, for the one kind of session where pressing it would act on the wrong
+      // process. A capabilities event is the protocol's own way of saying that after the fact.
+      this.sendEvent(new CapabilitiesEvent({ supportsRestartRequest: false }));
+
+      this.sendResponse(response);
+    } catch (err) {
+      this.sendErrorResponse(response, 2, `Failed to attach: ${(err as Error).message}`);
+    }
+  }
+
+  /** Turns a loaded core into the stop VS Code needs to render a frame, naming the signal that
+   * killed the program — see parseTerminationSignal for why that has to come out of prose. */
+  private reportCoreStop(): void {
+    const signal = parseTerminationSignal(this.consoleLog);
+    this.lastSignal = signal;
+    const stopped = new StoppedEvent(signal ? 'exception' : 'pause', MAIN_THREAD_ID);
+    const description = signal ? `${signal.name} (${signal.meaning})` : 'core dump';
+    (stopped.body as DebugProtocol.StoppedEvent['body']).description = description;
+    (stopped.body as DebugProtocol.StoppedEvent['body']).text = signal ? `${signal.name}: ${signal.meaning}` : 'Loaded from a core dump.';
+    this.sendEvent(stopped);
+  }
+
   protected async launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchArgs): Promise<void> {
     try {
-      const { entries: listingEntries, ...addressMap } = buildAddressLineMap(args.listingFile, path.resolve(args.asmFile));
-      this.addressMap = addressMap;
-      this.sortedAddresses = [...this.addressMap.addressToLocation.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-      this.symbolMap = buildSymbolAddressMap(listingEntries);
-      this.constantMap = buildConstantMap(listingEntries);
-
-      this.gdb = new GdbDriver();
-      this.gdb.on('console', (text) => this.sendEvent(new OutputEvent(text, 'console')));
-      this.gdb.on('target-output', (text) => this.sendEvent(new OutputEvent(text, 'stdout')));
-      this.gdb.on('stopped', (data) => this.onStopped(data));
-      this.gdb.on('exit', () => this.sendEvent(new TerminatedEvent()));
-      this.gdb.on('error', (err) => this.sendEvent(new OutputEvent(`gdb error: ${err.message}\n`, 'stderr')));
-
-      // macOS ships no gdb at all (and Apple's lldb doesn't speak the MI protocol this adapter
-      // uses) — the MI-capable debugger there is lldb-mi, so that's the default worth probing for
-      // on darwin instead of a gdb that can't exist. See buildLaunchArgs for the invocation
-      // differences between the two.
-      this.gdb.start({
-        gdbPath: args.gdbPath || (process.platform === 'darwin' ? 'lldb-mi' : 'gdb'),
-        programPath: path.resolve(args.program),
-        // gdb's own --args form takes the program's arguments directly, and the inferior inherits
-        // gdb's environment — so both reach the debugged program without any extra MI commands.
-        programArgs: args.args ?? [],
-        env: args.env,
-        cwd: args.cwd ?? path.dirname(args.program),
-      });
-
-      // gdb already knows the *actual* register set of the loaded target the moment it's loaded
-      // (i386 gets eax/ebx/.../eflags/cs/ss/..., x86-64 gets rax/rbx/.../r15/rip/...) — asking
-      // once here and grouping whatever comes back (registers.ts) is what makes the Registers
-      // view correct for both 32-bit and 64-bit programs, instead of a hardcoded 64-bit guess that
-      // reads as "<unavailable>" across the board on a 32-bit target.
-      //
-      // Deliberately NOT awaited here: this used to block the 'launch' response on one extra gdb
-      // round-trip, which — real regression, found via a client (VS Code) integration test that
-      // drives 'continue' itself right after the first 'stopped' event — delayed 'launch' just
-      // enough that the debuggee (running independently of when our own DAP response goes out)
-      // could hit a stopOnEntry breakpoint and emit 'stopped' *before* the client had finished
-      // processing 'launch' and was ready to react to it, silently dropping that first stop. The
-      // Registers scope is only ever read after a stop, by which point this has long since
-      // resolved in the background — nothing actually needs to wait for it here.
-      void this.gdb.sendCommand('-data-list-register-names').then(
-        (namesResult) => {
-          const rawNames = miData(namesResult)?.['register-names'];
-          if (Array.isArray(rawNames)) this.registerGroups = resolveRegisterGroups(rawNames as string[]);
-        },
-        () => {
-          // Leave registerGroups empty — the Registers scope will just show nothing rather than
-          // fail the whole launch over a view that's secondary to actually running the program.
-        },
-      );
-
-      // FASM is Intel-syntax throughout; gdb's own disassembler defaults to AT&T on Linux, which
-      // would read as a different, unfamiliar language in the Disassembly View. lldb-mi has no
-      // equivalent MI-reachable setting, so this is best-effort and silently ignored there — worth
-      // doing for the common gdb case, not worth failing the whole launch over on the experimental
-      // macOS path.
-      void this.gdb.sendCommand('-gdb-set disassembly-flavor intel').catch(() => {});
+      this.mode = 'launch';
+      this.startTarget(args);
 
       // Started here but deliberately *not* awaited here — configurationDone waits for it instead,
       // which is the last moment before the program actually starts and therefore the last moment
@@ -319,7 +419,7 @@ export class FasmDebugSession extends DebugSession {
         // address 0, which isn't a valid breakpoint location and made gdb reject the launch.
         const entryAddress = readElfEntryPoint(path.resolve(args.program));
         if (entryAddress !== undefined) {
-          await this.gdb.sendCommand(`-break-insert -t *0x${entryAddress.toString(16)}`);
+          await this.gdb!.sendCommand(`-break-insert -t *0x${entryAddress.toString(16)}`);
         } else {
           this.sendEvent(new OutputEvent('Could not determine the entry point (not a recognized ELF file) — stopOnEntry is disabled for this run.\n', 'stderr'));
         }
@@ -459,6 +559,10 @@ export class FasmDebugSession extends DebugSession {
 
   protected async configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse): Promise<void> {
     this.sendResponse(response);
+    // An attached target is already running (or already dead, for a core) — "-exec-run" here would
+    // start a *second*, unrelated copy of the program rather than continuing the one being
+    // debugged, which is as wrong as it sounds.
+    if (this.mode === 'attach') return;
     try {
       // The program's stdin/stdout have to be pointed at their terminal before it starts, not
       // after — a program that reads on its first instruction would otherwise race the handshake.
@@ -467,6 +571,24 @@ export class FasmDebugSession extends DebugSession {
     } catch (err) {
       this.sendEvent(new OutputEvent(`failed to start program: ${(err as Error).message}\n`, 'stderr'));
     }
+  }
+
+  /**
+   * Whether the target can be resumed or stepped at all. A core dump cannot: it is a snapshot of
+   * memory and registers, with no process behind it to run.
+   *
+   * Answered here rather than left to gdb because gdb's own reply ("The program is not being run")
+   * describes a program that failed to start, which is not what happened and sends you looking for
+   * a launch problem that doesn't exist.
+   */
+  private ensureResumable(response: DebugProtocol.Response): boolean {
+    if (this.attachTarget?.kind !== 'core') return true;
+    this.sendErrorResponse(
+      response,
+      15,
+      'This is a core dump — there is no running process to resume or step. Registers, memory, data labels and the faulting source line can all still be inspected.',
+    );
+    return false;
   }
 
   /**
@@ -1336,6 +1458,7 @@ export class FasmDebugSession extends DebugSession {
   private readonly gotoTargets = new Map<number, bigint>();
 
   protected async gotoRequest(response: DebugProtocol.GotoResponse, args: DebugProtocol.GotoArguments): Promise<void> {
+    if (!this.ensureResumable(response)) return;
     const address = this.gotoTargets.get(args.targetId);
     if (address === undefined || !this.gdb) {
       this.sendErrorResponse(response, 13, 'That location is not a known instruction address.');
@@ -1363,6 +1486,14 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 14, 'Debug session is not running');
       return;
     }
+    // "-exec-run" against an attached target starts a fresh copy of the binary and leaves the
+    // process you were actually debugging untouched — a restart that restarts the wrong thing.
+    // The capabilities event sent on attach withdraws the button, so this is the backstop for a
+    // client that asks anyway.
+    if (this.mode === 'attach') {
+      this.sendErrorResponse(response, 14, 'Restart is not available while attached — end the session and attach again.');
+      return;
+    }
     try {
       this.sendResponse(response);
       this.lastSignal = undefined;
@@ -1373,6 +1504,7 @@ export class FasmDebugSession extends DebugSession {
   }
 
   protected async continueRequest(response: DebugProtocol.ContinueResponse): Promise<void> {
+    if (!this.ensureResumable(response)) return;
     this.sendResponse(response);
     try {
       await this.gdb?.sendCommand('-exec-continue');
@@ -1382,6 +1514,7 @@ export class FasmDebugSession extends DebugSession {
   }
 
   protected async pauseRequest(response: DebugProtocol.PauseResponse): Promise<void> {
+    if (!this.ensureResumable(response)) return;
     this.sendResponse(response);
     try {
       await this.gdb?.sendCommand('-exec-interrupt');
@@ -1487,16 +1620,19 @@ export class FasmDebugSession extends DebugSession {
   }
 
   protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
+    if (!this.ensureResumable(response)) return;
     if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-next-instruction');
     else void this.stepToNextLine(response, '-exec-next-instruction');
   }
 
   protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments): void {
+    if (!this.ensureResumable(response)) return;
     if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-step-instruction');
     else void this.stepToNextLine(response, '-exec-step-instruction');
   }
 
   protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void {
+    if (!this.ensureResumable(response)) return;
     if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-step-instruction');
     else void this.stepToNextLine(response, '-exec-step-instruction');
   }
@@ -1715,17 +1851,48 @@ export class FasmDebugSession extends DebugSession {
     return formatted ?? parsed.toString();
   }
 
-  protected async disconnectRequest(response: DebugProtocol.DisconnectResponse): Promise<void> {
+  /**
+   * Ends the session, leaving an attached process running unless the client explicitly asked for
+   * it to be killed.
+   *
+   * That default is the protocol's, and it is the right one: you attached to a process you did not
+   * start, very possibly a long-running one, and ending a debugging session is not a request to
+   * end the program.
+   *
+   * Both directions need saying out loud, because gdb's own shutdown does neither on request:
+   * quitting gdb while attached *always* detaches and leaves the process running, so "terminate the
+   * debuggee" has to kill it explicitly, and the detach is sent first rather than left implicit so
+   * it happens in a defined order. Killing goes through the console `kill` command (with confirm
+   * off, since there is no one to answer a prompt) rather than an MI one: gdb has no MI command for
+   * it — "-exec-abort" answers "Undefined MI command" — which is the sort of thing only a real
+   * session tells you, and the attach end-to-end test is what pinned it down.
+   *
+   * Either command failing means the target is already gone, which is the outcome both were asking
+   * for anyway.
+   */
+  private async endSession(terminateDebuggee: boolean | undefined): Promise<void> {
     releaseTerminal(this.terminalHandshakeFile);
     this.terminalHandshakeFile = undefined;
+    if (this.attachTarget?.kind === 'process') {
+      if (terminateDebuggee === true) {
+        await this.gdb?.sendCommand('-gdb-set confirm off').catch(() => undefined);
+        await this.runConsoleCommand('kill').catch(() => undefined);
+      } else {
+        await this.gdb?.sendCommand('-target-detach').catch(() => undefined);
+      }
+    }
     await this.gdb?.dispose();
+  }
+
+  protected async disconnectRequest(response: DebugProtocol.DisconnectResponse, args?: DebugProtocol.DisconnectArguments): Promise<void> {
+    await this.endSession(args?.terminateDebuggee);
     this.sendResponse(response);
   }
 
   protected async terminateRequest(response: DebugProtocol.TerminateResponse): Promise<void> {
-    releaseTerminal(this.terminalHandshakeFile);
-    this.terminalHandshakeFile = undefined;
-    await this.gdb?.dispose();
+    // "terminate" means the debuggee, so an attached process is killed here even though a plain
+    // disconnect leaves it running — the client only sends this when that is what was asked for.
+    await this.endSession(true);
     this.sendResponse(response);
   }
 }

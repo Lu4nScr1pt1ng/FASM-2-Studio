@@ -12,6 +12,9 @@ drives your existing toolchain rather than bringing its own.
 
 ## Install this first
 
+Both assemblers come from the [flat assembler download page](https://flatassembler.net/download.php);
+nothing here is bundled with the extension.
+
 **Linux**
 - `fasm2` (fasmg) and/or `fasm1`, on your `PATH`.
 - `gdb`, if you want to debug — it's already installed on most distros; if not, `apt install gdb`,
@@ -32,7 +35,8 @@ drives your existing toolchain rather than bringing its own.
   Linux.
 
 If a compiler isn't on `PATH`, set `fasm2Studio.fasm2CompilerPath` / `fasm2Studio.fasm1CompilerPath`
-in your VS Code settings instead. Everything else — which dialect a project is, and where a fasmg
+in your VS Code settings instead — or run `FASM: Select Compiler`, which writes them for you and
+also offers a re-detect for the case where you installed the assembler after opening the window. Everything else — which dialect a project is, and where a fasmg
 project's instruction set comes from — is covered next.
 
 ## Setting up a project
@@ -208,7 +212,9 @@ inserts or rewrites a token, and it preserves your line endings.
 palette, the editor title bar, the editor context menu, or the explorer — and they are ordinary VS
 Code build tasks, so `Ctrl+Shift+B` reaches them too. The extension finds your compiler
 automatically; a status bar item shows which one it picked, and clicking it opens a menu for the
-dialect, the compiler, live error checking, the language server's log and a server restart. In
+dialect, the compiler, live error checking, the language server's log and a server restart. With no
+assembler installed at all, that path leads to where to get one and a re-detect rather than to a
+file dialog with nothing to find. In
 terminal output, fasm's own `file.asm [12]:` error headers are clickable. `FASM: Clean Build
 Output` removes the binary and listing a build wrote.
 
@@ -228,6 +234,16 @@ blocked in a `read` syscall is the normal case in assembly, and the Debug Consol
 answer it with. `"console"` in `launch.json` chooses between `integratedTerminal` (the default),
 `externalTerminal`, and `debugConsole` for output-only in the Debug Console. On Windows the program
 gets its own console window instead, since there is no pty to hand to gdb there.
+
+An `attach` configuration debugs a program this editor did not start: a running process (`processId`,
+defaulting to a picker, since a pid differs every run) or a core dump (`coreFile`). Attaching stops
+a live process where it stands and leaves it running when the session ends, unless the client asks
+for it to be terminated; a core is post-mortem, so registers, memory, data labels and the faulting
+line are readable, the signal that killed it is named up front, and anything that would resume it is
+refused in those terms rather than with gdb's "The program is not being run". Neither rebuilds the
+listing: it has to be the one from the build that produced that exact binary, so a missing one asks
+rather than silently regenerating a map onto source lines the addresses never belonged to. On Linux,
+attaching to a foreign process needs `/proc/sys/kernel/yama/ptrace_scope` set to `0`.
 
 On top of breakpoints, stepping and continue: conditional, hit-count and log points; function
 breakpoints on any label name; watchpoints on a data label; instruction breakpoints in the

@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -20,6 +20,7 @@
     "Programming Languages",
     "Snippets",
     "Linters",
+    "Formatters",
     "Debuggers"
   ],
   "keywords": [
@@ -38,6 +39,9 @@
     "onDebugResolve:fasm"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "contributes": {
     "languages": [
       {
@@ -224,6 +228,7 @@
       {
         "command": "fasm2Studio.newFile",
         "title": "New File",
+        "shortTitle": "FASM Assembly File",
         "category": "FASM"
       },
       {
@@ -274,6 +279,11 @@
       {
         "command": "fasm2Studio.statusBarMenu",
         "title": "Show Status Bar Menu",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.pickProcess",
+        "title": "Pick Process to Attach To",
         "category": "FASM"
       }
     ],
@@ -390,6 +400,46 @@
                 "default": {}
               }
             }
+          },
+          "attach": {
+            "required": [
+              "asmFile"
+            ],
+            "properties": {
+              "asmFile": {
+                "type": "string",
+                "description": "The .asm source file the program was built from. Its listing is what maps addresses back to source lines.",
+                "default": "${file}"
+              },
+              "processId": {
+                "type": [
+                  "string",
+                  "number"
+                ],
+                "description": "Process to attach to. Leave the default to pick one from a list. On Linux, attaching to a process this editor did not start requires /proc/sys/kernel/yama/ptrace_scope to be 0 — gdb says so plainly if it isn't.",
+                "default": "${command:fasm2Studio.pickProcess}"
+              },
+              "coreFile": {
+                "type": "string",
+                "description": "A core dump to open instead of attaching to a running process. Registers, memory and the faulting source line are all readable; nothing can be resumed or stepped."
+              },
+              "program": {
+                "type": "string",
+                "description": "Path to the assembled executable the process is running (or that produced the core). Defaults to the source file name with its extension stripped."
+              },
+              "listingFile": {
+                "type": "string",
+                "description": "Path to the .lst listing from the build that produced this exact binary. Defaults to \"<program>.lst\"."
+              },
+              "gdbPath": {
+                "type": "string",
+                "description": "Path to gdb (or lldb-mi on macOS). Leave unset to use \"gdb\" from PATH (\"lldb-mi\" on macOS)."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory for gdb itself."
+              }
+            }
           }
         },
         "initialConfigurations": [
@@ -412,11 +462,40 @@
               "asmFile": "^\"\\${file}\"",
               "stopOnEntry": true
             }
+          },
+          {
+            "label": "Attach to a running process",
+            "description": "Stop a program that is already running and inspect it where it stands.",
+            "body": {
+              "type": "fasm",
+              "request": "attach",
+              "name": "Attach to running FASM program",
+              "asmFile": "^\"\\${file}\"",
+              "processId": "^\"\\${command:fasm2Studio.pickProcess}\""
+            }
+          },
+          {
+            "label": "Open a core dump",
+            "description": "Post-mortem: read the registers, memory and faulting source line of a program that already crashed.",
+            "body": {
+              "type": "fasm",
+              "request": "attach",
+              "name": "Open FASM core dump",
+              "asmFile": "^\"\\${file}\"",
+              "coreFile": "^\"\\${workspaceFolder}/core\""
+            }
           }
         ]
       }
     ],
     "menus": {
+      "file/newFile": [
+        {
+          "command": "fasm2Studio.newFile",
+          "group": "file",
+          "order": 20
+        }
+      ],
       "commandPalette": [
         {
           "command": "fasm2Studio.build",
@@ -440,6 +519,10 @@
         },
         {
           "command": "fasm2Studio.statusBarMenu",
+          "when": "false"
+        },
+        {
+          "command": "fasm2Studio.pickProcess",
           "when": "false"
         }
       ],
@@ -509,7 +592,7 @@
           {
             "id": "installAssembler",
             "title": "Install an assembler",
-            "description": "FASM2 Studio needs `fasm2` (flat assembler g) and/or `fasm1` on your PATH.\n\nLinux/macOS: download from flatassembler.net and put the binary somewhere on PATH, such as `~/.local/bin`.\nWindows: the official fasm2 distribution ships a `fasm2.cmd` wrapper — add its folder to PATH.\n\nAlready installed somewhere unusual? Point at it directly instead.\n[Select Compiler](command:fasm2Studio.selectCompiler)",
+            "description": "FASM2 Studio needs `fasm2` (flat assembler g) and/or `fasm1` on your PATH.\n\nLinux/macOS: [download one from flatassembler.net](https://flatassembler.net/download.php) and put the binary somewhere on PATH, such as `~/.local/bin`.\nWindows: the official fasm2 distribution ships a `fasm2.cmd` wrapper — add its folder to PATH.\n\nAlready installed somewhere unusual? Point at it directly instead.\n[Select Compiler](command:fasm2Studio.selectCompiler)",
             "media": {
               "markdown": "walkthroughs/install-assembler.md",
               "altText": "Installing fasm2 or fasm1"
