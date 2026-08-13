@@ -15,16 +15,13 @@ describe('dynamic debug configurations', () => {
     await extension.activate();
   });
 
-  it('offers both a launch and an attach entry without a launch.json', async () => {
-    const configurations = await vscode.commands.executeCommand<{ type: string; request: string }[]>(
-      'debug.getDebugConfigurationsForType',
-      FASM_DEBUG_TYPE,
-    ).then(
-      (result) => result ?? [],
-      // Not a stable public command across versions; fall back to the provider itself, which is
-      // what that command reaches, so the assertion below still means something either way.
-      () => new FasmDynamicDebugConfigurationProvider().provideDebugConfigurations(),
-    );
+  // Asserted against the provider rather than through VS Code: there is no API — and no command
+  // in the test host, `debug.getDebugConfigurationsForType` does not exist — that enumerates the
+  // dynamic configurations registered for a type. What the dropdown shows is exactly what this
+  // returns, so the contract is covered here and the registration itself is covered by reading
+  // extension.ts. Keep that in mind before trusting this file to catch a dropped registration.
+  it('offers both a launch and an attach entry, which is what the dropdown lists', () => {
+    const configurations = new FasmDynamicDebugConfigurationProvider().provideDebugConfigurations();
 
     assert.ok(configurations.length > 0, 'no dynamic configurations were offered');
     for (const configuration of configurations) {
