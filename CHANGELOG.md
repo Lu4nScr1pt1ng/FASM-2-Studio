@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.14.0
+
+### Renaming a file no longer breaks every `include` that named it
+
+The editor's own rename gesture was the one operation that could silently break a project. Nothing
+in the source looks wrong afterwards — every `include` still reads as a plausible path — and the
+first sign of trouble is the assembler failing on a file that is not there. fasm has no module
+system to fall back on: a path in a string literal is the only thing tying two files together.
+
+`features/includeRename.ts` computes the edits from the include graph the server already holds, and
+treats both ends of an edge as one problem rather than two. Something else includes the moved file,
+so its path has to follow; and the moved file's own relative includes are now resolved from a
+different directory, so they have to change too. Formulating it as "for every include edge, where is
+each end going to be?" is also what makes a rename that moves *both* ends — dragging two files into
+a folder, or renaming the folder itself — come out with no edits at all, which handling the two
+directions separately would not.
+
+The client hooks `onWillRenameFiles`, not `onDidRenameFiles`, and both reasons are about asking
+while the question still has an answer. The index describes where the files are *now*; after the
+rename the watcher has begun retracting the old path, and "who includes this file?" starts coming
+back empty for the very file being moved. And an edit returned from `waitUntil` is applied *before*
+the rename, so a fragment carrying its own includes into a new directory is edited where it still is
+and then moved with the correction already in it — which is why the edits are keyed by each file's
+pre-rename uri.
+
+Three things are deliberately left alone. An include that does not resolve today: there is no way to
+tell which renamed file it was reaching for, and rewriting it would replace a broken line the user
+can recognize with one they cannot. An include that resolves through `fasm2Studio.includePath`, when
+its target is still under a search directory: those paths are written against that directory rather
+than against the including file, so neither end moving invalidates them, and a `../../..` rewrite
+would be a strictly worse line than the one already there. And the separator and quote character the
+author used, both of which are put back as written — fasmg accepts `'` and `"`, and either path
+separator on any host, so a Windows-authored `include 'api\kernel32.inc'` does not become the one
+line in that file spelled the other way round.
+
+A renamed *directory* arrives as a single rename of the folder, and no `include` resolves to a
+folder, so `expandDirectoryRename` stats the old path (which still exists at this point) and expands
+it into the fasm files inside via the same glob the workspace indexer uses.
+
+`IncludeDirective` gained a `quote` field. The parser had been discarding which quote character was
+used, and `range` covers the quotes as well as the path, so rewriting one meant re-emitting a quote
+it could only have guessed at.
+
+No workspace-trust gate: this reads the index and writes text into the user's own files. Nothing
+here spawns the assembler, which is what trust exists to withhold.
+
+`fasm2Studio.updateIncludesOnFileMove` picks between `prompt` (the default), `always` and `never`.
+The prompt names how many paths in how many files would change, because it is shown for the moment
+a rename is held open and is all the user has to judge an edit they are accepting sight unseen.
+
+### Someone with no assembler installed is told so, once
+
+Every other piece of extension state is reported in the status bar rather than in a popup, and for
+good reason: a standing condition that a notification would re-announce on every keystroke belongs
+somewhere it can be stated permanently and quietly. "There is no assembler on this machine at all"
+is the exception, and it was getting the same silent treatment as everything else.
+
+It is the first thing a new user hits and the only one they cannot act on from what they can see.
+The status bar says "compiler not found", which reads as a setting to correct — but for someone who
+has just installed this extension and has never installed flat assembler, nothing is misconfigured,
+there is no path to fix, and the answer is to go and download something. Without a word about it,
+the features that need a compiler simply do nothing, and the extension looks broken rather than
+unequipped.
+
+`missingCompilerNotice.ts` shows one notification, ever, offering the setup walkthrough and
+`FASM: Select Compiler`. It leads with what still works, since an unequipped install is a perfectly
+good reader of assembly and someone who only wanted highlighting should be able to dismiss it and
+carry on.
+
+It is raised from the status bar's own "compiler not found" branch rather than from activation, so
+it cannot fire on a hunch: that point is reached only with an open fasm file, a trusted workspace,
+and a finished search that found nothing. The flag is written to `globalState` *before* the user's
+answer is awaited — a notification that is ignored or dismissed has still been shown, and "once"
+must not quietly become "until you click something" — and it is latched synchronously per state
+store as well, because two status bar renders in one tick would otherwise each raise one.
+
+`globalState`, not workspace state: whether an assembler exists on `PATH` is a property of the
+machine, and someone who has been told once does not need telling again in the next folder they
+open.
+
 ## 1.13.0
 
 ### An unsaved buffer asked which project it belonged to

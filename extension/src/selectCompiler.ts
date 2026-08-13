@@ -135,7 +135,7 @@ async function rescan(): Promise<void> {
     `${MESSAGE_PREFIX}still no assembler found on PATH.`,
     openSetup,
   );
-  if (choice === openSetup) await openWalkthrough();
+  if (choice === openSetup) await openSetupWalkthrough();
 }
 
 let extensionId: string | undefined;
@@ -145,7 +145,7 @@ let extensionId: string | undefined;
  * for detection to find it, or that a bare fasmg needs the preload settings. Falls back to the
  * download page if the walkthrough can't be opened (an id mismatch, or a VS Code that has moved
  * the command), since ending on nothing is the failure this entry exists to remove. */
-async function openWalkthrough(): Promise<void> {
+export async function openSetupWalkthrough(): Promise<void> {
   try {
     if (!extensionId) throw new Error('extension id unknown');
     await vscode.commands.executeCommand('workbench.action.openWalkthrough', `${extensionId}#${WALKTHROUGH_ID}`, false);
@@ -192,7 +192,7 @@ export function registerSelectCompiler(context: vscode.ExtensionContext): void {
           await browseFor(picked.action.dialect, picked.label);
           return;
         case 'walkthrough':
-          await openWalkthrough();
+          await openSetupWalkthrough();
           return;
         case 'rescan':
           await rescan();

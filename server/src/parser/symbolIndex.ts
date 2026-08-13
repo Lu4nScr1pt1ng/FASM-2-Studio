@@ -406,7 +406,12 @@ export function parseDocument(uri: string, version: number, text: string, dialec
 
       // --- include 'path' ---
       if (kw0 === 'include' && tokens[1] && tokens[1].type === TokenType.String) {
-        includes.push({ path: unquoteString(tokens[1].text), range: tokenRange(tokens[1]), uri });
+        includes.push({
+          path: unquoteString(tokens[1].text),
+          quote: tokens[1].text[0],
+          range: tokenRange(tokens[1]),
+          uri,
+        });
         continue;
       }
 

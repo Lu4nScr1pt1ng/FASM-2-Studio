@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -180,6 +180,22 @@
           "default": "",
           "scope": "resource",
           "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
+        },
+        "fasm2Studio.updateIncludesOnFileMove": {
+          "type": "string",
+          "enum": [
+            "prompt",
+            "always",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Ask before rewriting anything, showing how many paths in how many files would change.",
+            "Rewrite the affected `include` paths without asking.",
+            "Leave `include` paths alone; renaming a file that others include will break their paths."
+          ],
+          "default": "prompt",
+          "scope": "window",
+          "description": "Keeps `include` paths pointing at the right file when you rename or move one in the explorer — both the paths that named the moved file and the moved file's own relative paths, which are now resolved from a different directory. fasm has no module system, so a path in a string literal is the only thing tying two files together, and nothing about a stale one looks wrong until the assembler fails on it."
         },
         "fasm2Studio.codeLens": {
           "type": "boolean",

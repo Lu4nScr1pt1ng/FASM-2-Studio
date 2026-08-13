@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.14.0
+
+### Renaming a file keeps its `include` paths correct
+
+Rename or move a `.inc` in the explorer and every `include` that named it follows. Move a file into
+another directory and its own relative includes — which are resolved from that new directory now —
+are fixed as well. Renaming a whole folder works too.
+
+fasm has no module system, so a path in a string literal is the only thing tying two files together,
+and a stale one looks perfectly fine until the assembler fails on it.
+
+It asks first, naming how many paths in how many files would change. `fasm2Studio.updateIncludesOnFileMove`
+switches that to doing it silently, or to leaving paths alone entirely.
+
+Two kinds of include are deliberately left as written: one that does not resolve today (there is no
+way to know which file it was reaching for), and one found through `fasm2Studio.includePath`, which
+is written against a search directory and so cannot be invalidated by either file moving. Your quote
+character and path separators are preserved.
+
+### If you have no assembler installed, you are now told
+
+Opening a fasm file with no `fasm2` or `fasm1` on your machine used to leave Build, Run, Debug and
+live error checking doing nothing at all, with only a "compiler not found" status bar item to
+explain it — which reads as a setting to fix when in fact there is nothing to fix and the answer is
+to install one.
+
+You now get one notification, once, with a link to the setup walkthrough and to
+`FASM: Select Compiler` for an assembler you already have somewhere. It leads with what still works
+without one: highlighting, navigation and completion are unaffected, so an install with no assembler
+is still a perfectly good reader of assembly.
+
+After that single showing, the status bar carries it as before.
+
 ## 1.13.0
 
 ### Run, Debug and Build, right above your `format` line

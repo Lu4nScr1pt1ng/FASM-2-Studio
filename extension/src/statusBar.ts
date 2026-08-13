@@ -14,6 +14,7 @@ import { isFasmDocument } from './activeEditor';
 import { dialectForDocument } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { CONFIG_SECTION } from './config';
+import { showMissingCompilerNoticeOnce } from './missingCompilerNotice';
 import { STATUS_BAR_MENU_COMMAND } from './statusBarMenu';
 import { isWorkspaceTrusted } from './workspaceTrust';
 
@@ -106,6 +107,11 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
         item.text = `$(warning) ${dialect}: compiler not found`;
         item.tooltip = 'FASM2 Studio — no compiler found on PATH. Click to configure one.';
         item.command = STATUS_BAR_MENU_COMMAND;
+        // Raised from here rather than from activation so it can never fire on a hunch: this is
+        // the exact point at which the extension has an open fasm file, a trusted workspace, and a
+        // finished search that found no assembler. It shows at most once per machine of its own
+        // accord (missingCompilerNotice.ts), so putting it on a path that runs often is safe.
+        void showMissingCompilerNoticeOnce(context.globalState);
       } else if (issue) {
         item.text = `$(warning) ${dialect}: diagnostics unavailable`;
         item.tooltip = `FASM2 Studio — using ${compiler.path}, but live error checking is not running: ${issue.reason}. Click for options.`;

@@ -16,6 +16,7 @@ import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider } fro
 import { FasmDynamicDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugConfigurations';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { invalidateDebuggerCache } from './gdbDiscovery';
+import { registerIncludeRename } from './includeRename';
 import { disposeInferiorTerminal } from './inferiorTerminal';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
@@ -229,6 +230,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerStatusBarMenu(context, activeDiagnosticsIssue, activeIndexingIssue);
   createStatusBarItem(context);
   registerTerminalLinks(context);
+  // Registered before the client exists on purpose: it reads `client` through the getter at the
+  // moment a rename happens, and a rename during startup is better answered by doing nothing than
+  // by a handler that isn't listening yet.
+  registerIncludeRename(context, () => client);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 
   const codeLens = registerCodeLens(context, () => client);

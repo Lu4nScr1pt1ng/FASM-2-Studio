@@ -97,6 +97,12 @@ export interface SymbolReference {
 export interface IncludeDirective {
   /** The literal path as written in the source, e.g. 'win64a.inc'. */
   path: string;
+  /**
+   * The quote character the path was written with. fasm accepts both `'` and `"`, and `range`
+   * covers the quotes as well as the path, so anything rewriting an include (see
+   * features/includeRename.ts) needs this to put back the one the author chose.
+   */
+  quote: string;
   range: Range;
   uri: string;
 }

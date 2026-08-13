@@ -36,8 +36,14 @@ nothing here is bundled with the extension.
 
 If a compiler isn't on `PATH`, set `fasm2Studio.fasm2CompilerPath` / `fasm2Studio.fasm1CompilerPath`
 in your VS Code settings instead — or run `FASM: Select Compiler`, which writes them for you and
-also offers a re-detect for the case where you installed the assembler after opening the window. Everything else — which dialect a project is, and where a fasmg
-project's instruction set comes from — is covered next.
+also offers a re-detect for the case where you installed the assembler after opening the window.
+
+If there is no assembler at all, you are told once — the first time you open a fasm file with none
+installed — and after that the status bar carries it silently. That single notification is the only
+thing this extension says unprompted, and it exists because "compiler not found" reads as a setting
+to correct when in fact nothing is misconfigured and the fix is to go and download something.
+Everything else — which dialect a project is, and where a fasmg project's instruction set comes
+from — is covered next.
 
 ## Setting up a project
 
@@ -216,6 +222,16 @@ symbol your includes reach). Neither is bound to a compiler diagnostic — those
 workspace and a working compiler, which is exactly when nothing else would point at the mistake
 either. A name wrong only in its capitalization is reported as that, because fasmg is case-sensitive
 where fasm1 is not.
+
+Renaming or moving a file rewrites the `include` paths that named it, and — for a file that moved to
+another directory — its own relative paths, which are resolved from that new directory now. A
+renamed folder is expanded into the files inside it, since no `include` names a directory. The edits
+are computed from the include graph *before* the rename happens, which is the only moment the
+question "who includes this file?" still has an answer, and are applied ahead of it, so a file that
+is both moved and corrected is corrected where it still is. An include that resolves through
+`fasm2Studio.includePath` is left as written: it is spelled against a search directory rather than
+against the including file, so neither end moving can invalidate it. `fasm2Studio.updateIncludesOnFileMove`
+picks between asking first (the default), doing it silently, and not doing it.
 
 The path inside `include '...'` completes too, against the same directories the assembler would
 search — the including file's own first, then `fasm2Studio.includePath` — so nothing is offered that

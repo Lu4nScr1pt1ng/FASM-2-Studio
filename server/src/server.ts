@@ -72,6 +72,7 @@ import { getFoldingRanges } from './features/foldingRange';
 import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
 import { getHover } from './features/hover';
 import { getIncludePathCompletions, includePathContext, stringContext } from './features/includePathCompletion';
+import { FileRename, includeRenameEdits, IncludeRenameEdits } from './features/includeRename';
 import { detectIsa } from './isa';
 import { buildLiveShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
@@ -294,6 +295,16 @@ connection.onRequest(
 connection.onRequest('fasm2Studio/listEntryPoints', (): { entryUris: string[] } => {
   return { entryUris: workspace.listEntryPoints() };
 });
+
+/**
+ * The include-path edits a set of file renames requires (see features/includeRename.ts). Asked by
+ * the client from vscode.workspace.onWillRenameFiles, i.e. while the include graph still describes
+ * where every file currently is — which is the only moment this question has a reliable answer.
+ */
+connection.onRequest(
+  'fasm2Studio/includeRenameEdits',
+  (params: { renames: FileRename[] }): IncludeRenameEdits => includeRenameEdits(workspace, params.renames ?? []),
+);
 
 // Standard LSP file-watcher notification, forwarded automatically by vscode-languageclient from
 // the client's vscode.workspace.createFileSystemWatcher (see clientOptions.synchronize.fileEvents

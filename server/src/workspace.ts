@@ -217,8 +217,16 @@ export class Workspace {
     return fsPath ? URI.file(fsPath).toString() : undefined;
   }
 
+  /** The include search directories currently in effect (fasm2Studio.includePath), for the one
+   * caller that has to reason about *how* an include resolved rather than only where to: an
+   * include found through one of these is location-independent, and rewriting it as a relative
+   * path when a file moves would be a downgrade (see features/includeRename.ts). */
+  includeSearchDirectories(): string[] {
+    return [...this.includeSearchPaths];
+  }
+
   /** Every document this Workspace currently has parsed state for, from any of its three layers. */
-  private allKnownDocuments(): ParsedDocument[] {
+  allKnownDocuments(): ParsedDocument[] {
     const docs: ParsedDocument[] = [...this.openDocuments.values()];
     for (const [uri, doc] of this.indexedDocuments) if (!this.openDocuments.has(uri)) docs.push(doc);
     for (const [uri, doc] of this.externalDiskCache) {

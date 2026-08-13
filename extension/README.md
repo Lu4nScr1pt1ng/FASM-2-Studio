@@ -36,6 +36,11 @@ that, a language server parses your project and gives you:
 - **Completion for the path inside `include '...'`**, resolved the way the assembler resolves it:
   next to your source first, then `fasm2Studio.includePath`. Pick a folder and it offers what's
   inside.
+- **Renaming or moving a file fixes the `include` paths that named it** — and, when the file lands
+  in another directory, its own relative paths, which are now resolved from somewhere else. Whole
+  folders too. fasm has no module system, so a path in a string literal is the only thing tying two
+  files together, and a stale one looks perfectly fine until the assembler fails on it. Asks first
+  by default (`fasm2Studio.updateIncludesOnFileMove`).
 - **Expand selection** (`Shift+Alt+Right`) grows by operand, instruction, line, enclosing
   `macro`/`if`/`while`, then file — rather than jumping from one word straight to the whole file.
 - **Call hierarchy** on a label: what reaches it, and what it reaches, as a tree. Tail calls written
@@ -194,6 +199,7 @@ To use the debugger:
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.codeLens` | Shows Run / Debug / Build above the `format` directive of a file that is a program in its own right. Included fragments get none — they build through whichever program includes them, which is not something a lens on the fragment could name. On by default. |
 | `fasm2Studio.inlayHints` | Annotates each line that produces machine code with its address and/or encoded size (`off`/`address`/`size`/`addressAndSize`) — what you would otherwise build and read a `.lst` to see. Rides on the background compile that live error checking already runs, so it needs `diagnosticsEnabled`, a trusted workspace and a fasm2/fasmg project. Off by default. |
+| `fasm2Studio.updateIncludesOnFileMove` | Keeps `include` paths correct when you rename or move a file in the explorer — both the paths that named it and, for a file that moved to another directory, its own relative paths (`prompt`/`always`/`never`). Prompts by default, naming how many paths in how many files would change. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |
 | `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |
