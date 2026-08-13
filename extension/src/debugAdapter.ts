@@ -2,18 +2,18 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
+import { activeFasmEditor, buildableFsPath, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
+import { fasmDebugConfigurations, FASM_DEBUG_TYPE } from './debugConfigurations';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { openInferiorTerminal } from './inferiorTerminal';
-import { PICK_PROCESS_COMMAND } from './pickProcess';
 import { runOutputBinary } from './runCommand';
 import { ensureDebuggerAvailable } from './selectDebugger';
 import { runBuildTask } from './taskProvider';
 import { ensureTrusted } from './workspaceTrust';
 
-export const FASM_DEBUG_TYPE = 'fasm';
+export { FASM_DEBUG_TYPE };
 
 /**
  * Waits for a file to appear, briefly. `vscode.tasks.onDidEndTaskProcess` firing (a build task
@@ -50,22 +50,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
   /** Index 0 is load-bearing: resolveDebugConfiguration falls back to it for "F5 with no
    * launch.json at all", which must be the launch config rather than one that asks for a pid. */
   provideDebugConfigurations(): vscode.DebugConfiguration[] {
-    return [
-      {
-        type: FASM_DEBUG_TYPE,
-        request: 'launch',
-        name: 'Debug FASM program',
-        asmFile: '${file}',
-        stopOnEntry: true,
-      },
-      {
-        type: FASM_DEBUG_TYPE,
-        request: 'attach',
-        name: 'Attach to running FASM program',
-        asmFile: '${file}',
-        processId: `\${command:${PICK_PROCESS_COMMAND}}`,
-      },
-    ];
+    return fasmDebugConfigurations();
   }
 
   /**
@@ -108,13 +93,25 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
         void vscode.window.showErrorMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
         return undefined;
       }
+      const file = await buildableFsPath(editor.document);
+      if (!file) return undefined;
       config = this.provideDebugConfigurations()[0];
-      config.asmFile = editor.document.uri.fsPath;
+      config.asmFile = file;
     }
 
     let asmFile = config.asmFile as string;
     if (!asmFile) {
       void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no source file specified (set "asmFile" in launch.json).`);
+      return undefined;
+    }
+
+    // Everything downstream — entry-point resolution, the build, gdb — assumes a real file. A
+    // launch.json whose "asmFile" is `${file}` while an unsaved buffer is focused substitutes the
+    // buffer's label rather than a path, and a hand-written relative path is resolved against the
+    // filesystem root rather than the workspace. Both used to reach the server as a path that
+    // resolves to nothing, which surfaced as the "which project is this for?" quick pick.
+    if (!fs.existsSync(asmFile)) {
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no such source file: ${asmFile}. "asmFile" must be an absolute path to a saved file.`);
       return undefined;
     }
 

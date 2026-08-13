@@ -59,7 +59,13 @@ happened.
 `FASM: Clean Build Output` removes what a build wrote.
 
 `FASM: Build`, `FASM: Build and Run`, `FASM: Run` and `FASM: Debug` are also on the editor title
-bar, the editor context menu, and the explorer's right-click menu for a `.asm` file.
+bar, the editor context menu, and the explorer's right-click menu for a `.asm` file — and, for a
+file that is a program in its own right, as Run/Debug/Build lenses above its `format` directive
+(`fasm2Studio.codeLens`). `Ctrl+Alt+R` builds and runs; `Ctrl+Alt+Shift+R` runs the last build
+without assembling first.
+
+Debug configurations are offered in the Run and Debug panel's dropdown without needing a
+`launch.json` — both a launch and an attach entry.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source is never
 modified) and launches it under gdb (or lldb-mi). fasm2 doesn't emit standard debug info by
@@ -186,6 +192,7 @@ To use the debugger:
 | `fasm2Studio.fasm2Preload` | Include file assembled before the source itself (fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source — how `fasm2` supplies x86, and how instruction-set ports commonly supply theirs. The language server follows it too, so those instructions get hover and completion. Use `fasm2.inc` (with `includePath` pointing at fasm2's `include` directory) to drive a bare `fasmg` binary as if it were `fasm2`. |
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
+| `fasm2Studio.codeLens` | Shows Run / Debug / Build above the `format` directive of a file that is a program in its own right. Included fragments get none — they build through whichever program includes them, which is not something a lens on the fragment could name. On by default. |
 | `fasm2Studio.inlayHints` | Annotates each line that produces machine code with its address and/or encoded size (`off`/`address`/`size`/`addressAndSize`) — what you would otherwise build and read a `.lst` to see. Rides on the background compile that live error checking already runs, so it needs `diagnosticsEnabled`, a trusted workspace and a fasm2/fasmg project. Off by default. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |

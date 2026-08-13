@@ -1,5 +1,91 @@
 # Changelog
 
+## 1.13.0
+
+### An unsaved buffer asked which project it belonged to
+
+`isFasmDocument` classifies by language id, deliberately, so that a scratch buffer with the language
+set to FASM still highlights and completes. Everything that spawns a compiler needs strictly more
+than that, and nothing checked for it: an untitled document's `uri.fsPath` is its *label*
+(`"Untitled-1"`), not a path.
+
+That label went into `resolveEntryPointFsPath` as if it were a file. The server found nothing named
+that, which is indistinguishable from a fragment no entry point reaches, so resolution fell through
+to its last resort — `listEntryPoints` — and the user was shown the "which project is this for?"
+quick pick, offering unrelated `.asm` files from elsewhere in the workspace as candidates for a
+buffer that had never been written anywhere. No error, no timeout: Build silently became a prompt
+about other people's files.
+
+`buildableFsPath` now gates every path from an editor to a compiler, and offers `Save As…` rather
+than only refusing. It uses `workspace.saveAs`, not `TextDocument.save()`, because saving an
+untitled buffer replaces it with a *different* document backed by the chosen path — the original
+stays untitled, and only the returned uri names where the contents actually landed.
+
+`resolveDebugConfiguration` gets the same guard plus an `existsSync` check on the final `asmFile`,
+which also catches the two ways a launch.json reaches the same state: `${file}` substituted while an
+unsaved buffer is focused, and a hand-written relative path, which `Uri.file` resolves against the
+filesystem root rather than the workspace.
+
+### Run, Debug and Build above the `format` directive
+
+The affordances for starting a build were a chord, a palette search, and a ▷ button that looks the
+same in every language — none of which say *what* they will act on. That gap is wider here than
+elsewhere: `include` graphs mean the file on screen is frequently not the file that gets assembled,
+and the extension resolves that silently.
+
+`codeLens.ts` anchors the three commands to the one line that identifies an entry point. Which files
+those are comes from the server (`fasm2Studio/listEntryPoints`), not from a local scan for `format`
+— a directive can arrive through an include, and a client-side regex would disagree with the entry
+point the commands actually build. Each lens passes its own document's uri as an argument, so a lens
+clicked in a split editor acts on the file it is drawn in rather than on whatever tab has focus.
+
+Fragments get nothing. They build fine, through whichever entry point includes them, but an `.inc`
+shared by four programs has no single answer to put in a label, and "Run" on a file that cannot run
+standalone would misdescribe what happens. `fasm2Studio.codeLens` turns the whole thing off.
+
+### The Run and Debug panel offers FASM without a launch.json
+
+`FasmDebugConfigurationProvider` was registered for the `Initial` trigger kind only, which means its
+two configurations existed solely as something to copy *into* a launch.json that had to be created
+first. A workspace without one saw "create a launch.json file" and nothing else.
+
+The pair now also registers for `Dynamic`, as `FasmDynamicDebugConfigurationProvider` — a separate,
+resolve-less object rather than the same instance registered twice. VS Code documents that the
+trigger kind applies only to `provideDebugConfigurations`, and that "registering a single provider
+with resolve methods for different trigger kinds results in the same resolve methods called multiple
+times". `resolveDebugConfiguration` is what assembles the program and opens the inferior terminal,
+so sharing one object would have built every launch twice and stranded a terminal. A test asserts
+the dynamic provider has no resolve methods, since that absence is the entire point.
+
+Both now come from `debugConfigurations.ts`, which imports no language client — the reason the
+dynamic provider can be exercised directly instead of only through a running extension host.
+
+### Ctrl+Alt+R builds before it runs
+
+`fasm2Studio.buildAndRun` is the ▷ button in the editor title bar and the first entry in the editor
+context menu; it is what "run this" means here, and it had no keybinding at all. `Ctrl+Alt+R` was
+bound to `fasm2Studio.run`, which executes the last build without assembling — the specialist of the
+two, holding the shorter chord.
+
+They swap: `Ctrl+Alt+R` builds and runs, `Ctrl+Alt+Shift+R` runs whatever was built last. **This
+changes an existing binding**; rebind either in Keyboard Shortcuts.
+
+### macOS integration tests were failing on a renamed binary, not on flaky extraction
+
+Every `package-matrix (macos-latest)` run failed three times over with
+`spawn .../Visual Studio Code.app/Contents/MacOS/Electron ENOENT`, which the workflow attributed to
+`@vscode/test-electron`'s zip extraction dropping files and wrapped in a three-attempt retry.
+
+The extraction was fine. VS Code 1.110 renamed the macOS bundle's main binary from `Electron` to the
+product name, and 1.133 removed the compatibility symlink that had kept the old name resolving:
+extracting the real 1.133.0 `darwin-arm64` archive yields a `Contents/MacOS/` holding exactly one
+file, `Code`, with `CFBundleExecutable` to match. `@vscode/test-electron` 3.0.0 hardcodes the old
+name, so every attempt spawned a path no current build ships and all three failed identically.
+
+3.1.0 reads the name from the bundle's `Info.plist`. The declared floor moves to `^3.1.0` — the
+range already permitted it, and `npm ci` was pinning 3.0.0 from the lockfile — and the retry loop is
+gone, since it only ever converted a deterministic failure into three of them.
+
 ## 1.12.0
 
 ### Path completion inside `include '...'`

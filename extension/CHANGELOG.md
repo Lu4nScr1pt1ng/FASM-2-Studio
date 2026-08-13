@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.13.0
+
+### Run, Debug and Build, right above your `format` line
+
+Files that are programs in their own right now carry three actions above their `format` directive.
+Clicking one acts on *that* file, not on whichever tab happens to be focused.
+
+Included fragments deliberately get none: an `.inc` shared by several programs has no single program
+to name, and it already builds through whichever one includes it. Turn the lenses off with
+`fasm2Studio.codeLens`.
+
+### Debugging without writing a launch.json first
+
+The Run and Debug panel now lists "Debug FASM program" and "Attach to running FASM program" straight
+in its dropdown. Previously a workspace with no `launch.json` was offered only the chance to create
+one, even though both configurations already existed.
+
+### Building an unsaved file explains itself
+
+Pressing Build in a buffer you had never saved used to pop up a list of unrelated `.asm` files from
+elsewhere in your workspace, asking which project it belonged to. It now says the file has not been
+saved and offers to save it.
+
+The same applies to Run, Build and Run, Clean and Debug, and to a `launch.json` whose `asmFile`
+points at a file that is not there — which now names the file it could not find instead of failing
+somewhere further down.
+
+### Ctrl+Alt+R now builds before it runs
+
+`Ctrl+Alt+R` was bound to Run, which launches the last build without assembling first. It is now
+bound to **Build and Run** — the ▷ button's action, and what most people mean by "run this".
+
+Run keeps a binding of its own at `Ctrl+Alt+Shift+R`. If you had the old one in your fingers, both
+are rebindable in Keyboard Shortcuts.
+
 ## 1.12.0
 
 ### Completion for include paths

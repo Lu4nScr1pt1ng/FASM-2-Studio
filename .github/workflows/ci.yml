@@ -67,24 +67,16 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test --workspace extension
 
+      # No retry wrapper. This step used to loop three times, on the theory that
+      # "spawn .../Contents/MacOS/Electron ENOENT" was @vscode/test-electron's zip extraction
+      # dropping files. It was not: VS Code 1.110 renamed the macOS bundle's main binary from
+      # `Electron` to the product name (`Code`), and 1.133 removed the compatibility symlink that
+      # had kept the old name resolving. Every attempt looked for a file that no current build
+      # ships, so all three failed identically. @vscode/test-electron 3.1.0 reads the real name
+      # from the bundle's Info.plist; the pinned floor for that is in extension/package.json.
       - name: Run extension integration tests (macOS/Windows)
         if: runner.os != 'Linux'
-        shell: bash
-        # @vscode/test-electron downloads and unzips VS Code itself before every run; on macOS/
-        # Windows this has a known, long-standing flaky failure mode where the extracted app
-        # bundle is missing files jszip failed to unpack correctly (e.g. "spawn .../Contents/
-        # MacOS/Electron ENOENT" right after a "successful" download -- see microsoft/vscode-test
-        # #308, the same symptom recurring across major versions of the tool). Nothing here is
-        # cached between attempts, so a plain retry gets a fresh, usually-clean download; clearing
-        # .vscode-test first guards against retrying against the same corrupted extraction were
-        # that ever not the case.
-        run: |
-          for attempt in 1 2 3; do
-            npm run test --workspace extension && exit 0
-            echo "::warning::extension integration tests failed (attempt $attempt/3), likely @vscode/test-electron's known macOS/Windows zip-extraction flakiness -- retrying with a clean download"
-            rm -rf extension/.vscode-test
-          done
-          exit 1
+        run: npm run test --workspace extension
 
       - name: Package VSIX
         run: npx vsce package --no-dependencies -o fasm2-studio-${{ matrix.os }}.vsix

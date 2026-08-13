@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
-import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
+import { activeFasmEditor, buildableFsPath, isFasmDocument, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
 import { cleanBuildOutput } from './clean';
 import { invalidateCompilerCache } from './compilerDiscovery';
@@ -11,7 +11,9 @@ import { registerNewFile } from './newFile';
 import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDebugger } from './selectDebugger';
 import { registerSelectDialect } from './selectDialect';
-import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
+import { registerCodeLens } from './codeLens';
+import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider } from './debugAdapter';
+import { FasmDynamicDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugConfigurations';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { invalidateDebuggerCache } from './gdbDiscovery';
 import { disposeInferiorTerminal } from './inferiorTerminal';
@@ -38,14 +40,14 @@ let client: LanguageClient | undefined;
  * that file and it silently building whatever tab happened to be focused. Palette and editor-title
  * invocations pass nothing, and fall back to the active editor as before.
  */
-function targetFasmFile(resource?: vscode.Uri): string | undefined {
+async function targetFasmFile(resource?: vscode.Uri): Promise<string | undefined> {
   if (resource) return resource.fsPath;
   const editor = activeFasmEditor();
   if (!editor) {
     void vscode.window.showWarningMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
     return undefined;
   }
-  return editor.document.uri.fsPath;
+  return buildableFsPath(editor.document);
 }
 
 /**
@@ -68,7 +70,7 @@ async function resolveActiveEntryFile(file: string): Promise<string | undefined>
  * ends in a spawned process. */
 async function resolveBuildTarget(action: string, resource?: vscode.Uri): Promise<string | undefined> {
   if (!(await ensureTrusted(action))) return undefined;
-  const file = targetFasmFile(resource);
+  const file = await targetFasmFile(resource);
   if (!file) return undefined;
   return resolveActiveEntryFile(file);
 }
@@ -140,7 +142,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('fasm2Studio.debug', async (resource?: vscode.Uri) => {
-      const file = targetFasmFile(resource);
+      const file = await targetFasmFile(resource);
       if (!file) return;
 
       // Deliberately not resolved/built here: passing the raw active file through with no
@@ -229,8 +231,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerTerminalLinks(context);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 
+  const codeLens = registerCodeLens(context, () => client);
+
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(context, () => client)),
+    // Separately registered, and deliberately a different object — see FasmDynamicDebugConfiguration-
+    // Provider. This is what puts FASM entries in the Run and Debug dropdown for a workspace with no
+    // launch.json, where the panel otherwise offers only "create a launch.json file".
+    vscode.debug.registerDebugConfigurationProvider(
+      FASM_DEBUG_TYPE,
+      new FasmDynamicDebugConfigurationProvider(),
+      vscode.DebugConfigurationProviderTriggerKind.Dynamic,
+    ),
     vscode.debug.registerDebugAdapterDescriptorFactory(FASM_DEBUG_TYPE, new FasmDebugAdapterDescriptorFactory(context)),
     vscode.languages.registerInlineValuesProvider({ language: 'fasm' }, new FasmInlineValuesProvider()),
     { dispose: disposeInferiorTerminal },
@@ -267,7 +279,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void client?.sendNotification('fasm2Studio/workspaceTrust', { isTrusted: true });
     refreshStatusBar();
   });
-  void runWorkspaceIndex(client);
+  // Whether a file is an entry point is a property of the *saved* include graph the server indexes,
+  // so the answer behind the code lenses changes on save rather than on keystroke — adding a
+  // `format` directive, or an `include` that pulls a fragment into a program, both land here.
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      if (isFasmDocument(document)) codeLens.refresh();
+    }),
+  );
+  await runWorkspaceIndex(client);
+  // The first scan is what populates the entry-point list at all: lenses computed before it
+  // finished would have found an empty one and rendered nothing until the next save.
+  codeLens.refresh();
 }
 
 export async function deactivate(): Promise<void> {

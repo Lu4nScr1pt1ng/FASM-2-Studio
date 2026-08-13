@@ -320,11 +320,23 @@ describe('extension manifest', () => {
       }
     });
 
-    it('binds each of the four things you do to a file, so none of them needs the palette', () => {
+    it('binds each of the things you do to a file, so none of them needs the palette', () => {
       const bound = new Set(manifest.contributes.keybindings.map((b) => b.command));
-      for (const command of ['fasm2Studio.build', 'fasm2Studio.run', 'fasm2Studio.debug', 'fasm2Studio.clean']) {
+      for (const command of ['fasm2Studio.build', 'fasm2Studio.buildAndRun', 'fasm2Studio.run', 'fasm2Studio.debug', 'fasm2Studio.clean']) {
         assert.ok(bound.has(command), `${command} has no keybinding`);
       }
+    });
+
+    // Build-and-run is the ▷ button in the editor title bar and the first entry in the editor
+    // context menu — it is what "run this" means here. Plain Run re-runs the last build without
+    // assembling, which is the specialist of the two and had the shorter chord until this test.
+    it('gives the unshifted chord to build-and-run, not to running a possibly-stale binary', () => {
+      const chordFor = (command: string) => manifest.contributes.keybindings.find((b) => b.command === command)?.key;
+      const buildAndRun = chordFor('fasm2Studio.buildAndRun');
+      const run = chordFor('fasm2Studio.run');
+      assert.ok(buildAndRun && run, 'both run commands need a binding for this comparison');
+      assert.ok(!buildAndRun.includes('shift'), `build-and-run is behind a shifted chord (${buildAndRun})`);
+      assert.ok(run.includes('shift'), `plain run holds an unshifted chord (${run})`);
     });
 
     it('gives every binding a mac chord, since ctrl is not the modifier there', () => {

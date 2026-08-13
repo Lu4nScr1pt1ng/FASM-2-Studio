@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -181,6 +181,12 @@
           "scope": "resource",
           "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
         },
+        "fasm2Studio.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Shows Run / Debug / Build actions above the `format` directive of a file that is a program in its own right. Only entry points get them: an included fragment builds through whichever program includes it, which is not something a lens on the fragment could name. Needs the language server, since which files are entry points is read from the same include graph that go-to-definition uses."
+        },
         "fasm2Studio.inlayHints": {
           "type": "string",
           "enum": [
@@ -325,9 +331,15 @@
         "when": "editorTextFocus && resourceLangId == fasm"
       },
       {
-        "command": "fasm2Studio.run",
+        "command": "fasm2Studio.buildAndRun",
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.run",
+        "key": "ctrl+alt+shift+r",
+        "mac": "cmd+alt+shift+r",
         "when": "editorTextFocus && resourceLangId == fasm"
       },
       {
@@ -725,7 +737,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.1",
     "@types/vscode": "^1.85.0",
-    "@vscode/test-electron": "^3.0.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.1",
     "mocha": "^11.7.6",
