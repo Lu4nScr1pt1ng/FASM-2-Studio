@@ -28,6 +28,7 @@ import { GdbDriver } from './gdbDriver';
 import { agentCommand, agentEnv, agentModulePath, ConsoleKind, endpointPath, isTerminalConsole, runInTerminalKind, TerminalHandshake } from './inferiorTerminal';
 import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from '@fasm2-studio/server/src/listing/listingMap';
 import { miData } from './miParser';
+import { OperandResolver, translateMemoryOperand } from './operandExpression';
 import {
   decodeEflags,
   formatRegisterValue,
@@ -1294,8 +1295,19 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
+  /** The listing-derived maps as the plain lookup pair operandExpression.ts asks for — the only
+   * symbol information a fasmg binary carries, since it emits no DWARF/CodeView for gdb to read. */
+  private operandResolver(): OperandResolver {
+    return {
+      symbolAddress: (name) => this.symbolMap.get(name)?.address,
+      constantValue: (name) => this.constantMap.get(name)?.value,
+    };
+  }
+
   /** Reads a single scalar of `bits` width at `addressHex`, the same unsigned-cast trick
-   * readRegisterBigInt uses for registers — shared by both formatSymbolValue* variants below. */
+   * readRegisterBigInt uses for registers — shared by both formatSymbolValue* variants below.
+   * `addressHex` is any expression gdb can evaluate to an address, not only a literal one (see
+   * operandExpression.ts, which hands it a register-relative one like `($rsp+8)`). */
   private async readScalarAt(addressHex: string, bits: RegisterBits): Promise<bigint | undefined> {
     if (!this.gdb) return undefined;
     try {
@@ -1890,7 +1902,27 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
 
-    // A compound expression like "*(dword*)$esp" — passed straight through to gdb's evaluator.
+    // A fasm memory operand as written in the source — "dword [rsp+8]", "[buffer+rcx*4]" — which
+    // is what the editor's EvaluatableExpressionProvider sends for a hover over one, and the
+    // natural thing to type into Watch while reading assembly. None of it is gdb syntax: the
+    // registers need "$", the labels have no symbol table to be found in, the literals are fasm's,
+    // and gdb has no "dword" type. See operandExpression.ts, which does all four substitutions.
+    const operand = translateMemoryOperand(trimmed, this.operandResolver());
+    if (operand) {
+      const value = await this.readScalarAt(operand.address, operand.bits);
+      if (value !== undefined) {
+        // Same hex/decimal/binary presentation the Registers scope uses, labelled with the operand
+        // as the user wrote it rather than with the gdb expression it was translated into.
+        response.body = { result: formatRegisterValue(operand.text, operand.bits, value), variablesReference: 0 };
+        this.sendResponse(response);
+        return;
+      }
+      // A translated operand that would not read (an address the process cannot touch) falls
+      // through, so gdb's own error text is what reaches the user instead of silence.
+    }
+
+    // A compound expression like "*(unsigned int*)$esp" — passed straight through to gdb's
+    // evaluator.
     try {
       // Quoted: MI's argument parser splits on whitespace, so an unquoted expression containing
       // one (e.g. "$eax + 1", or any real C-like expression beyond a single token) would be seen

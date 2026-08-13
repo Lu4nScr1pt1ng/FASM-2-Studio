@@ -293,4 +293,70 @@ describe('editor features (real VS Code host)', () => {
     const linked = links![0].target?.fsPath;
     assert.ok(linked && samePath(linked, targetPath), `expected the link to resolve to ${targetPath}, got ${linked}`);
   });
+
+  it('aligns the line Enter just finished, through the on-type formatting provider', async function () {
+    this.timeout(30000);
+    const onTypePath = path.join(dir, 'ontype.asm');
+    // Line 1 is the unaligned one Enter has just been pressed at the end of; line 2 is where the
+    // cursor now is, and is what the request reports as its position.
+    await fs.writeFile(onTypePath, ['format binary', 'mov eax, 1', ''].join('\n'), 'utf8');
+    const onTypeDoc = await vscode.workspace.openTextDocument(onTypePath);
+    await vscode.window.showTextDocument(onTypeDoc);
+
+    const edits = await eventually(
+      () =>
+        vscode.commands.executeCommand<vscode.TextEdit[]>(
+          'vscode.executeFormatOnTypeProvider',
+          onTypeDoc.uri,
+          new vscode.Position(2, 0),
+          '\n',
+          { tabSize: 4, insertSpaces: true },
+        ),
+      (e) => e.length > 0,
+    );
+
+    assert.ok(edits && edits.length > 0, 'expected an on-type edit for the completed line');
+    // The edit targets the line Enter just left, never the one the cursor is now on.
+    assert.ok(
+      edits!.every((e) => e.range.start.line === 1 && e.range.end.line === 1),
+      `expected every edit on line 1, got ${JSON.stringify(edits!.map((e) => [e.range.start.line, e.range.end.line]))}`,
+    );
+
+    // Applied rather than inspected directly, for the same reason the Format Document test above
+    // applies its edits: VS Code reduces a provider's edits to a minimal diff, so an individual
+    // edit is a fragment (here just the inserted indentation) rather than the formatted line.
+    const workspaceEdit = new vscode.WorkspaceEdit();
+    workspaceEdit.set(onTypeDoc.uri, edits!);
+    assert.ok(await vscode.workspace.applyEdit(workspaceEdit), 'expected the on-type edit to apply');
+
+    assert.strictEqual(onTypeDoc.lineAt(1).text, '        mov     eax, 1');
+    assert.strictEqual(onTypeDoc.lineAt(2).text, '', 'the line the cursor is on must be untouched');
+  });
+
+  it('offers to rewrite a numeric literal into another base', async function () {
+    this.timeout(30000);
+    const literalPath = path.join(dir, 'literal.asm');
+    await fs.writeFile(literalPath, ['format binary', 'mov eax, 255', ''].join('\n'), 'utf8');
+    const literalDoc = await vscode.workspace.openTextDocument(literalPath);
+    await vscode.window.showTextDocument(literalDoc);
+
+    const range = new vscode.Range(1, 9, 1, 9);
+    const actions = await eventually(
+      () => vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', literalDoc.uri, range),
+      (a) => a.length > 0,
+    );
+
+    const titles = (actions ?? []).map((a) => a.title);
+    assert.ok(
+      titles.includes("Convert '255' to hexadecimal (0xFF)"),
+      `expected a hex conversion, got ${JSON.stringify(titles)}`,
+    );
+    assert.ok(
+      titles.includes("Convert '255' to binary (1111_1111b)"),
+      `expected a binary conversion, got ${JSON.stringify(titles)}`,
+    );
+    // Advertised as a refactor rather than a fix: nothing about the literal is wrong.
+    const hex = actions!.find((a) => a.title.includes('hexadecimal'))!;
+    assert.strictEqual(hex.kind?.value, vscode.CodeActionKind.RefactorRewrite.value);
+  });
 });

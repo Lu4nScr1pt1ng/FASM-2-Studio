@@ -6,7 +6,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { MESSAGE_PREFIX } from './config';
+import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { quoteForShell } from './shellQuote';
 
 const TERMINAL_NAME = 'FASM';
@@ -70,7 +70,20 @@ export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(o
   terminal.show(true);
   // outputFsPath is always absolute (derived from the source file's own absolute path), so it
   // runs directly on every shell without needing a "./" prefix or PATH lookup.
-  terminal.sendText(quoteForShell(outputFsPath));
+  terminal.sendText([outputFsPath, ...runArgs(outputFsPath)].map(quoteForShell).join(' '));
+}
+
+/**
+ * `fasm2Studio.runArgs` — the command line to run the program with.
+ *
+ * The debugger has taken arguments since launch configurations existed (`"args"` in launch.json),
+ * so a program that reads argv could be debugged but not simply *run*, which is the more common of
+ * the two. Each element is quoted individually, so an argument containing a space stays one
+ * argument rather than being re-split by the shell.
+ */
+function runArgs(outputFsPath: string): string[] {
+  const configured = fasmConfig(vscode.Uri.file(outputFsPath)).get<string[]>('runArgs', []);
+  return Array.isArray(configured) ? configured.filter((arg): arg is string => typeof arg === 'string') : [];
 }
 
 async function exists(fsPath: string): Promise<boolean> {

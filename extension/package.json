@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -220,6 +220,15 @@
           "default": "off",
           "scope": "resource",
           "description": "Annotates each line that produces machine code with where it lands in memory and how large it is — the information you would otherwise have to build and read a .lst file to see. The data comes from the same background compile that live error checking already runs, so this needs fasm2Studio.diagnosticsEnabled, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
+        },
+        "fasm2Studio.runArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "Command-line arguments passed to your program by FASM: Run and FASM: Build and Run. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument rather than being split by the shell. The debugger has taken these since launch configurations existed (\"args\" in launch.json); this is the same thing for the two commands that run the program without one."
         },
         "fasm2Studio.gdbPath": {
           "type": "string",

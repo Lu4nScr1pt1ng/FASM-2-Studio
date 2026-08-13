@@ -23,6 +23,7 @@ import { detectIsa } from '../isa';
 import { Dialect, ParsedDocument } from '../types';
 import { Workspace } from '../workspace';
 import { staticKeywords } from './completion';
+import { literalConversions, NumericLiteral, parseNumericLiteral } from './numericLiteral';
 import { closestNames } from './spelling';
 
 /** Cap on how many alternative files are offered for one symbol. A name defined in a dozen places
@@ -78,6 +79,27 @@ export function includeInsertLine(doc: ParsedDocument, text: string): number {
   return afterHeader;
 }
 
+/**
+ * Rewrites a numeric literal into another base — the conversion hover.ts already *shows*, offered
+ * as an edit rather than as something to read off a tooltip and retype.
+ *
+ * Checked before anything symbol-oriented below, for the same reason hover.ts checks it before its
+ * own symbol lookups: a fasm identifier may not begin with a digit, so a literal can never also be
+ * a name, and letting one fall through to spellingActions meant a short literal like `255` could
+ * draw a lightbulb offering to "correct" it into whatever similarly-spelled symbol happened to be
+ * in scope.
+ */
+function literalActions(uri: string, literal: NumericLiteral, wordRange: Range): CodeAction[] {
+  return literalConversions(literal).map((conversion) => ({
+    title: `Convert '${literal.text}' to ${conversion.label} (${conversion.text})`,
+    // RefactorRewrite, not QuickFix: nothing here is wrong. A literal written in the "wrong" base
+    // still assembles to the same bytes, so this belongs in the refactor menu rather than among
+    // the fixes for a name that does not resolve.
+    kind: CodeActionKind.RefactorRewrite,
+    edit: { changes: { [uri]: [{ range: wordRange, newText: conversion.text }] } },
+  }));
+}
+
 export function getCodeActions(
   workspace: Workspace,
   uri: string,
@@ -86,6 +108,11 @@ export function getCodeActions(
   wordRange: Range | undefined,
   documentText: string,
 ): CodeAction[] {
+  // Unconditionally terminal for a literal, even when it yields no conversions: what matters is
+  // that a literal never reaches the symbol-oriented actions below, not that it produced an edit.
+  const literal = word ? parseNumericLiteral(word) : undefined;
+  if (literal) return wordRange ? literalActions(uri, literal, wordRange) : [];
+
   const doc = workspace.getDocument(uri);
   if (!doc || !word) return [];
 

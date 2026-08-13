@@ -119,8 +119,47 @@ export function characterReading(value: bigint): string | undefined {
 }
 
 /** Groups a binary string into nibbles (`1111_0000`), which is how bit patterns are actually read.
- * fasmg rejects `_` inside a literal, so this is display only and never round-trips as code. */
+ * The separator is part of the literal syntax rather than a display flourish — `db 1111_1111b`
+ * assembles to 255 under both fasm2/fasmg g.kp60 and fasm1 1.73.32 — so this round-trips as code
+ * and is what the "convert to binary" rewrite below emits. */
 export function groupBinary(bits: string): string {
   const padded = bits.padStart(Math.ceil(bits.length / 4) * 4, '0');
   return (padded.match(/.{4}/g) ?? [padded]).join('_');
+}
+
+/** One alternative spelling of a value, ready to replace the literal it came from. */
+export interface LiteralConversion {
+  /** Base name for the action title ("hexadecimal", "binary", ...). */
+  label: string;
+  /** The literal as it would be written in source. */
+  text: string;
+}
+
+/**
+ * Every other base the same value can be written in, as source text.
+ *
+ * Hex is emitted in the `0x` form rather than the `h`-suffixed one purely to sidestep that form's
+ * leading-zero trap: a hex literal beginning with a letter has to be written `0FFh`, because a
+ * token starting with a letter is a name (see parseDigits). `0x` needs no such guard, and both
+ * assemblers accept it.
+ *
+ * The base the literal is already written in is skipped — offering to rewrite `255` as `255` is
+ * not a choice — as is the character form for anything that isn't printable ASCII.
+ */
+export function literalConversions(literal: NumericLiteral): LiteralConversion[] {
+  const { value, base } = literal;
+  const conversions: LiteralConversion[] = [];
+
+  if (base !== 16) conversions.push({ label: 'hexadecimal', text: `0x${value.toString(16).toUpperCase()}` });
+  if (base !== 10) conversions.push({ label: 'decimal', text: value.toString(10) });
+  if (base !== 2) conversions.push({ label: 'binary', text: `${groupBinary(value.toString(2))}b` });
+  if (base !== 8) conversions.push({ label: 'octal', text: `${value.toString(8)}o` });
+
+  const char = characterReading(value);
+  if (char) conversions.push({ label: 'character', text: char });
+
+  // A rewrite that produces exactly what is already there is not a conversion — reachable when the
+  // literal is written in a form this only spells one way (e.g. `0x1F` is already the `0x` form, so
+  // its "hexadecimal" entry is skipped above, but a plain `7` is both decimal and octal-looking).
+  return conversions.filter((c) => c.text !== literal.text);
 }

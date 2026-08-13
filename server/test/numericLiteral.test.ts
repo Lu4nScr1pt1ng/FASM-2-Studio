@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { characterReading, groupBinary, parseNumericLiteral, signedReading } from '../src/features/numericLiteral';
+import { characterReading, groupBinary, literalConversions, parseNumericLiteral, signedReading } from '../src/features/numericLiteral';
 
 /** The integer a literal denotes, or undefined if it is not one. */
 function valueOf(text: string): bigint | undefined {
@@ -124,5 +124,52 @@ describe('groupBinary', () => {
     assert.strictEqual(groupBinary('1010'), '1010');
     assert.strictEqual(groupBinary('101'), '0101');
     assert.strictEqual(groupBinary('110101010'), '0001_1010_1010');
+  });
+});
+
+describe('literalConversions', () => {
+  const textFor = (word: string, label: string): string | undefined =>
+    literalConversions(parseNumericLiteral(word)!).find((c) => c.label === label)?.text;
+
+  it('offers every other base the same value can be written in', () => {
+    assert.deepStrictEqual(
+      literalConversions(parseNumericLiteral('255')!).map((c) => `${c.label}=${c.text}`),
+      ['hexadecimal=0xFF', 'binary=1111_1111b', 'octal=377o'],
+    );
+  });
+
+  it('never offers the base the literal is already written in', () => {
+    assert.strictEqual(textFor('0x1F', 'hexadecimal'), undefined);
+    assert.strictEqual(textFor('1010b', 'binary'), undefined);
+    assert.strictEqual(textFor('17o', 'octal'), undefined);
+    assert.strictEqual(textFor('99', 'decimal'), undefined);
+  });
+
+  it('reads the h-suffixed and $-prefixed hex forms as hex, so neither offers hex back', () => {
+    assert.strictEqual(textFor('0FFh', 'hexadecimal'), undefined);
+    assert.strictEqual(textFor('$FF', 'hexadecimal'), undefined);
+    assert.strictEqual(textFor('0FFh', 'decimal'), '255');
+  });
+
+  it('writes hex in the "0x" form, which needs no leading-zero guard', () => {
+    // The h-suffixed form of a value whose first digit is a letter has to be written "0FFh": a
+    // token starting with a letter is a name. "0x" sidesteps that entirely.
+    assert.strictEqual(textFor('255', 'hexadecimal'), '0xFF');
+  });
+
+  it('offers the character form only for printable ASCII', () => {
+    assert.strictEqual(textFor('65', 'character'), "'A'");
+    assert.strictEqual(textFor('10', 'character'), undefined);
+    assert.strictEqual(textFor('300', 'character'), undefined);
+  });
+
+  it('never offers a rewrite that produces exactly what is already there', () => {
+    for (const word of ['255', '0x1F', '1010b', '17o', '65', '7', '0']) {
+      const literal = parseNumericLiteral(word)!;
+      assert.ok(
+        literalConversions(literal).every((c) => c.text !== word),
+        `${word} offered itself back`,
+      );
+    }
   });
 });

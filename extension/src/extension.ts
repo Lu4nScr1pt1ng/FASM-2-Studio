@@ -18,6 +18,7 @@ import { resolveEntryPointFsPath } from './entryPointResolver';
 import { invalidateDebuggerCache } from './gdbDiscovery';
 import { registerIncludeRename } from './includeRename';
 import { disposeInferiorTerminal } from './inferiorTerminal';
+import { FasmEvaluatableExpressionProvider } from './evaluatableExpression';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
 import { registerReportIssue } from './reportIssue';
@@ -250,6 +251,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     vscode.debug.registerDebugAdapterDescriptorFactory(FASM_DEBUG_TYPE, new FasmDebugAdapterDescriptorFactory(context)),
     vscode.languages.registerInlineValuesProvider({ language: 'fasm' }, new FasmInlineValuesProvider()),
+    // Without this, debug hover falls back to the word under the cursor, which in assembly is never
+    // the memory operand you were pointing at — see evaluatableExpression.ts.
+    vscode.languages.registerEvaluatableExpressionProvider({ language: 'fasm' }, new FasmEvaluatableExpressionProvider()),
     { dispose: disposeInferiorTerminal },
   );
 

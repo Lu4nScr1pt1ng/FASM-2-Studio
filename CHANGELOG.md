@@ -1,5 +1,89 @@
 # Changelog
 
+## 1.15.0
+
+### Hovering a memory operand during a debug session now reads the memory
+
+With no `EvaluatableExpressionProvider` registered, VS Code falls back to the word under the cursor.
+For most languages a word is a variable and that guess is fine. For assembly it is the wrong unit
+almost every time you hover the thing you actually care about: in `mov eax, dword [rsp+8]` the word
+under `rsp` is `rsp`, so the editor asked the debugger about the register and never about the memory
+the instruction reads. The operand *is* the value at this level, and it was the one thing unreachable.
+
+The work splits along the line the two packages already draw. `extension/src/memoryOperand.ts`
+decides where the operand starts and stops — kept free of any `vscode` import, the way
+`statusBarMenuItems.ts` is, so the part with behaviour in it can be asserted without a running
+editor. `debug/src/operandExpression.ts` turns it into something gdb accepts, which has to happen
+there because that is where the listing's symbol addresses live.
+
+None of the operand is gdb syntax, and all four differences bite. Registers are spelled `$rsp`, and
+a bare `rsp` reaches gdb as a symbol name — in a binary fasmg produced, which has no symbol table,
+giving the misleading "No symbol table is loaded". Labels have the same problem with no fix
+available from gdb's side, since fasmg emits no DWARF/CodeView at all, so a label is substituted for
+its address out of the `.lst` before gdb sees the expression. `0FFh`, `1010b` and `$FF` are fasm
+literals, not C ones, and are re-emitted in decimal. And gdb has no `dword` type: verified against
+real gdb 16.3, `p *(dword*)$rsp` answers "No symbol table is loaded" — its error for an unknown type
+name — while `p *(unsigned int*)$rsp` reads the memory. The README had been advertising the `dword`
+form since debugging landed; it never worked, and now says `*(unsigned int*)$esp`.
+
+The width is the one piece neither side can read off the operand alone, because x86 takes it from
+the *other* operand: `mov eax, [x]` is a 4-byte read and `mov al, [x]` a 1-byte one, and reading
+either at the wrong width reports a number that is not the one the instruction uses. So the editor
+side, which can see the whole line, always spells the size out before sending it. Index registers
+inside the brackets are excluded from that inference — the `rcx` in `[buf+rcx*4]` is part of the
+address, not of the value's width.
+
+Anything that cannot be translated with certainty is declined rather than guessed, and the word
+fallback takes over unchanged — a bare register or label already resolved well through it, since the
+adapter special-cases both. That covers a name the listing never recorded, an operand with no width
+to be had (`cmp [x], 5`, which fasm rejects as ambiguous itself), and a size with no scalar to report
+(`dqword` and wider). An explicit non-scalar size is declined outright rather than falling through to
+inference, which would otherwise answer `mov eax, dqword [x]` with a 4-byte read and quietly overrule
+the width the source wrote.
+
+Typing `dword [rsp+8]` into the Watch panel now works too, which is the natural thing to write while
+reading assembly.
+
+### Converting a numeric literal between bases, as an edit
+
+Hover has shown a literal in every other base for some time. Acting on it meant reading the value
+off a tooltip and retyping it, so it is now offered as a refactor: hex, decimal, binary, octal, and
+the character form for printable ASCII, skipping whichever base the literal is already written in.
+
+`RefactorRewrite`, not `QuickFix` — nothing about a literal written in the "wrong" base is wrong; it
+assembles to the same bytes either way. The server advertises the new kind, since a client that
+filters by kind only offers what it was told about.
+
+Hex is emitted as `0x1F` rather than `1Fh` purely to sidestep that form's leading-zero trap: a hex
+literal beginning with a letter has to be written `0FFh`, because a token starting with a letter is a
+name. Binary is emitted grouped (`1111_1111b`). A comment in `numericLiteral.ts` had claimed fasmg
+rejects `_` inside a literal and that the grouping was display-only; assembling every generated form
+against fasm2/fasmg g.kp60 and fasm1 1.73.32 says otherwise — all 34 round-trip to the right value on
+both — so the comment was wrong and the grouping ships.
+
+A literal is now also terminal for code actions, which fixes a latent oddity: a short one like `255`
+could previously reach the misspelling quick fix and draw a lightbulb offering to "correct" it into
+whatever similarly-spelled symbol happened to be in scope.
+
+### Format on type, and arguments for Run
+
+`editor.formatOnType` (off by default, so this is opt-in) now aligns each line the moment Enter
+finishes it. Only ever the line just left, never the one being typed on — text moving under the
+cursor mid-word is what makes on-type formatting hostile elsewhere, and it is avoidable here because
+assembly is line-oriented. The whole document is still formatted to find that one line, for the same
+reason range formatting does it: a line's indent depth is decided by every block opened above it.
+
+`fasm2Studio.runArgs` gives `FASM: Run` and `FASM: Build and Run` the command line the debugger has
+taken all along as `"args"` in `launch.json` — a program that reads argv could be debugged but not
+simply run, which is the more common of the two.
+
+That turned up a real bug in `quoteForShell`, which quoted only on whitespace or an embedded quote.
+A path rarely contains anything else; an argument routinely does, and `*.txt` or `a;b` would have
+been expanded and split by the shell instead of reaching the program as written. It now quotes
+anything outside a conservative safe set, escapes what a POSIX shell still expands inside double
+quotes, and renders an empty argument as an explicit empty word rather than letting it vanish and
+shift every argument after it.
+
 ## 1.14.0
 
 ### Renaming a file no longer breaks every `include` that named it

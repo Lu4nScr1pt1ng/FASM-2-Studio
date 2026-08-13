@@ -22,6 +22,7 @@ import {
   DocumentHighlightParams,
   DocumentLink,
   DocumentLinkParams,
+  DocumentOnTypeFormattingParams,
   DocumentRangeFormattingParams,
   DocumentSymbolParams,
   FileChangeType,
@@ -168,9 +169,15 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       documentHighlightProvider: true,
       documentLinkProvider: { resolveProvider: false },
       foldingRangeProvider: true,
-      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      // RefactorRewrite alongside QuickFix: the numeric-base conversions are rewrites of code that
+      // is already correct, and a client that filters by kind (VS Code's own "Refactor…" command
+      // does) only ever offers what is advertised here.
+      codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix, CodeActionKind.RefactorRewrite] },
       documentFormattingProvider: true,
       documentRangeFormattingProvider: true,
+      // Newline only — see onDocumentOnTypeFormatting. Aligning a line the moment Enter completes
+      // it is the one trigger that never moves text the user is still in the middle of typing.
+      documentOnTypeFormattingProvider: { firstTriggerCharacter: '\n' },
       referencesProvider: true,
       renameProvider: { prepareProvider: true },
       workspaceSymbolProvider: true,
@@ -1023,6 +1030,45 @@ connection.onDocumentFormatting((params: DocumentFormattingParams): TextEdit[] =
     ];
   } catch (err) {
     logHandlerError('onDocumentFormatting', err);
+    return [];
+  }
+});
+
+/**
+ * Aligns the line Enter just finished, so the columns the formatter maintains appear as the file is
+ * written rather than only when Format Document is run over it afterwards.
+ *
+ * The line *above* the cursor is the one formatted, never the new empty one the cursor is now on:
+ * the only line whose content is known to be complete is the one that was just left. Formatting the
+ * line being typed is what makes on-type formatting hostile in other languages — text moves under
+ * the cursor mid-word — and it is avoidable here because assembly is line-oriented.
+ *
+ * Gated behind the client's own `editor.formatOnType`, which is off by default, so this is opt-in.
+ */
+connection.onDocumentOnTypeFormatting((params: DocumentOnTypeFormattingParams): TextEdit[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    const line = params.position.line - 1;
+    if (line < 0) return [];
+
+    const text = doc.getText();
+    const original = text.split(/\r\n|\r|\n/);
+    if (line >= original.length) return [];
+
+    // The whole document, for the same reason range formatting does it: a line's indent depth is
+    // decided by every block opened above it, which the line alone does not carry.
+    const formatted = formatLines(text, formatOptionsFor(params.textDocument.uri, params.options));
+    if (formatted[line] === original[line]) return [];
+
+    return [
+      {
+        range: { start: { line, character: 0 }, end: { line, character: original[line].length } },
+        newText: formatted[line],
+      },
+    ];
+  } catch (err) {
+    logHandlerError('onDocumentOnTypeFormatting', err);
     return [];
   }
 });

@@ -223,6 +223,14 @@ workspace and a working compiler, which is exactly when nothing else would point
 either. A name wrong only in its capitalization is reported as that, because fasmg is case-sensitive
 where fasm1 is not.
 
+A numeric literal offers to be rewritten in any other base — hex, decimal, binary, octal, and the
+character form where the value is printable ASCII — which is the reading hover has always shown,
+offered as an edit instead of something to read off a tooltip and retype. It is filed as a refactor
+rather than a fix, since a literal written in the "wrong" base assembles to exactly the same bytes.
+Binary comes out grouped (`1111_1111b`): the separator is part of the literal syntax rather than a
+display flourish, and every generated form was assembled against both fasm2/fasmg g.kp60 and fasm1
+1.73.32 to confirm it round-trips to the value it came from.
+
 Renaming or moving a file rewrites the `include` paths that named it, and — for a file that moved to
 another directory — its own relative paths, which are resolved from that new directory now. A
 renamed folder is expanded into the files inside it, since no `include` names a directory. The edits
@@ -266,7 +274,15 @@ dialect, the compiler, live error checking, the language server's log and a serv
 assembler installed at all, that path leads to where to get one and a re-detect rather than to a
 file dialog with nothing to find. In
 terminal output, fasm's own `file.asm [12]:` error headers are clickable. `FASM: Clean Build
-Output` removes the binary and listing a build wrote.
+Output` removes the binary and listing a build wrote. `fasm2Studio.runArgs` gives the two commands
+that run the program the command line the debugger has taken all along as `"args"` in `launch.json`;
+each entry is quoted as one argument, so a glob or a `;` reaches the program as written rather than
+being acted on by the shell.
+
+The formatter also runs as you type if you turn on VS Code's own `editor.formatOnType`, which is off
+by default. It aligns each line the moment Enter finishes it, and only ever the line you just left —
+text moving under the cursor mid-word is what makes on-type formatting unpleasant in other languages,
+and it is avoidable here because assembly is line-oriented.
 
 Starting from nothing, `FASM: New File` writes a hello world that already builds and runs — ELF64
 for Linux, PE64 for Windows — so the first thing you see is a working program rather than an empty
@@ -276,8 +292,20 @@ buffer and a `format` directive to look up.
 modified) and launches it under gdb (or lldb-mi). Since fasm2 doesn't emit DWARF/CodeView debug
 info, source-line mapping comes from that listing rather than a standard debug format, and there's
 no call-stack unwinding or typed variables — what you get instead is a live register view and
-gdb-expression evaluation (`$eax`, `*(dword*)$esp`, and so on), which is the right level of detail
+gdb-expression evaluation (`$eax`, `*(unsigned int*)$esp`, and so on), which is the right level of detail
 for raw assembly anyway.
+
+Hovering a memory operand reads the memory it names. Without that, the editor falls back to the word
+under the cursor, which in assembly is never the thing you were pointing at: in
+`mov eax, dword [rsp+8]` the word under `rsp` is `rsp`, so the question that reached the debugger was
+about the register rather than about what the instruction reads. Nothing in the operand is gdb
+syntax — its registers want a `$`, its labels have no symbol table to be found in (fasmg emits none,
+so they are substituted for their addresses out of the listing), its literals are fasm's, and gdb has
+no `dword` type — so all four are translated before it is asked. The width comes from the operand's
+own size specifier, or from the register it is paired with, since x86 takes it from the other operand
+and reading at the wrong one reports a number that is not the instruction's. Anything that cannot be
+translated with certainty is left to the word fallback rather than answered with a guess, and the
+same translation is what makes `dword [rsp+8]` work typed straight into the Watch panel.
 
 The program runs in a terminal of its own, so it can be typed into as well as read — a program
 blocked in a `read` syscall is the normal case in assembly, and the Debug Console has no stdin to

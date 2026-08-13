@@ -36,6 +36,9 @@ that, a language server parses your project and gives you:
 - **Completion for the path inside `include '...'`**, resolved the way the assembler resolves it:
   next to your source first, then `fasm2Studio.includePath`. Pick a folder and it offers what's
   inside.
+- **Converting a numeric literal between bases**, as a refactor on the literal: hex, decimal, binary
+  (grouped, `1111_1111b`), octal, and the character form for printable ASCII. The same reading hover
+  has always shown, as an edit rather than something to retype.
 - **Renaming or moving a file fixes the `include` paths that named it** — and, when the file lands
   in another directory, its own relative paths, which are now resolved from somewhere else. Whole
   folders too. fasm has no module system, so a path in a string literal is the only thing tying two
@@ -47,7 +50,9 @@ that, a language server parses your project and gives you:
   as `jmp` and jump-table entries count, because that's how the routine is actually reached.
 - **Format Document** aligns labels, mnemonics, operands and trailing comments into columns, and
   indents block bodies. It never reorders or rewrites a token, never touches string contents, and
-  leaves your line endings alone.
+  leaves your line endings alone. Turning on VS Code's own `editor.formatOnType` also aligns each
+  line the moment Enter finishes it — only ever the line you just left, never the one you are
+  still typing.
 
 `FASM: New File` writes a hello world that already builds and runs — Linux (ELF64) or Windows
 (PE64), with the `format` line, the entry point and the exit filled in — so there is something to
@@ -76,7 +81,7 @@ Debug configurations are offered in the Run and Debug panel's dropdown without n
 modified) and launches it under gdb (or lldb-mi). fasm2 doesn't emit standard debug info by
 default, so source-line mapping comes from that listing instead — which also means there's no
 call-stack unwinding or typed variables; register and memory inspection via gdb's own expression
-evaluator (`$eax`, `*(dword*)$esp`, ...) is the right level of detail for raw assembly anyway.
+evaluator (`$eax`, `*(unsigned int*)$esp`, ...) is the right level of detail for raw assembly anyway.
 Currently fasm2/fasmg sources only. You get:
 
 - Source breakpoints, plus **conditional** (`$ebx == 4`), **hit-count** and **log points**
@@ -84,6 +89,10 @@ Currently fasm2/fasmg sources only. You get:
 - **Watchpoints** — break when a data label is read or written
 - **Instruction breakpoints** in the disassembly view, with instruction-level stepping
 - Registers grouped by kind with decoded flags, and data labels with string/array previews
+- **Hovering a memory operand reads the memory** — `dword [rsp+8]`, `[buffer+rcx*4]`, `byte [msg]`.
+  The registers, labels and fasm literals inside it are all translated into something gdb can
+  evaluate, and the width comes from the operand's own size specifier or from the register it is
+  paired with. Typing one into the Watch panel works the same way
 - **Raw memory** read/write, so "View Binary Data" opens a data label in the hex editor
 - **Set next statement**, to move the program counter to another line
 - **Restart** in place, keeping every breakpoint and watchpoint
@@ -202,6 +211,7 @@ To use the debugger:
 | `fasm2Studio.updateIncludesOnFileMove` | Keeps `include` paths correct when you rename or move a file in the explorer — both the paths that named it and, for a file that moved to another directory, its own relative paths (`prompt`/`always`/`never`). Prompts by default, naming how many paths in how many files would change. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |
+| `fasm2Studio.runArgs` | Command-line arguments `FASM: Run` and `FASM: Build and Run` pass to your program. Each entry is one argument and is quoted as written, so a value containing a space stays one argument. The debug side has taken these all along as `"args"` in `launch.json`. |
 | `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |
 | `fasm2Studio.format.operandColumn` | Column Format Document aligns operands to, measured from the current indent. `0` leaves one space after the mnemonic. |
 | `fasm2Studio.format.commentColumn` | Absolute column Format Document aligns trailing `;` comments to. `0` leaves them one space after the code. |
