@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { hasX86Preload, ILLEGAL_INSTRUCTION_RE } from '../compilerDiscovery';
+import { ListingEntry, parseListingFile } from '../listing/listingMap';
 import { Dialect } from '../types';
 
 export interface CompileResult {
@@ -25,6 +26,13 @@ export interface CompileResult {
   foreignDiagnostics?: Map<string, Diagnostic[]>;
   /** Set when the compiler could not be run at all (missing binary, spawn failure, timeout). */
   toolError?: string;
+  /**
+   * The listing this compile produced, when `listingInclude` asked for one. Carried back on the
+   * same CompileResult rather than fetched by a second compile: the listing is a by-product of the
+   * build that just ran, so producing it costs one extra `-i` flag and one file read, where a
+   * separate pass would double the assembler load on every keystroke.
+   */
+  listing?: ListingEntry[];
 }
 
 const HEADER_RE = /^(.+) \[(\d+)\]:$/;
@@ -84,6 +92,15 @@ export interface RunCompilerOptions {
    * callers that compile a positional copy rather than the project itself (see liveShadow.ts).
    * Returning undefined means "not one of mine", and the path is used as-is. */
   toRealPath?: (fsPath: string) => string | undefined;
+  /**
+   * Path to the bundled listing macro (debug-support/listing.inc). Set to also produce a listing
+   * from this same compile, returned as CompileResult.listing.
+   *
+   * fasm2/fasmg only, exactly as the debug build is: the macro is written in fasmg's
+   * `calminstruction` language, and fasm1's own `-s` listing is a different format nothing here
+   * parses. Callers must not set it for a fasm1 compile.
+   */
+  listingInclude?: string;
   /** Directories (absolute paths) whose files may carry diagnostics of their own — the open
    * workspace folders. Errors located outside them are summarized rather than marked up; see
    * placeForeignErrors. Leave unset to accept any file that exists. */
@@ -128,7 +145,13 @@ function looksLikeMissingInstructionSet(diagnostics: Diagnostic[]): boolean {
 }
 
 export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileResult> {
-  const tmpOut = path.join(os.tmpdir(), `fasm2-studio-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.out`);
+  const tmpStem = path.join(os.tmpdir(), `fasm2-studio-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const tmpOut = `${tmpStem}.out`;
+  // The listing macro writes with `virtual as 'lst'`, which *replaces* the output file's extension
+  // rather than appending to it — "foo.out" produces "foo.lst", not "foo.out.lst". (The debug
+  // build's own getListingPath appends, and is right to: the output it names has no extension at
+  // all, so replacing and appending coincide there. Here they do not.)
+  const tmpListing = `${tmpStem}.lst`;
 
   try {
     // fasm1 accepts none of these: its whole option set is -m/-p/-d/-s (flat assembler 1.73.32),
@@ -138,7 +161,15 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     const fasm2OnlyArgs =
       (opts.dialect ?? 'fasm2') === 'fasm1'
         ? []
-        : ['-e', String(MAX_REPORTED_ERRORS), ...(opts.preload ? ['-i', `include '${opts.preload}'`] : [])];
+        : [
+            '-e',
+            String(MAX_REPORTED_ERRORS),
+            ...(opts.preload ? ['-i', `include '${opts.preload}'`] : []),
+            // After the preload, never before: the listing macro is ordinary fasmg source and the
+            // preload is what defines the instruction set it is assembled alongside. Same ordering
+            // the build task uses for a debug build.
+            ...(opts.listingInclude ? ['-i', `include '${opts.listingInclude}'`] : []),
+          ];
     const { stdout, timedOut, spawnError } = await execCompiler(
       opts.compilerPath,
       [opts.sourceFsPath, tmpOut, ...fasm2OnlyArgs],
@@ -153,6 +184,11 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     if (timedOut) {
       return { diagnostics: [], toolError: 'Compiler timed out' };
     }
+
+    // Read before any of the early returns below: a listing is produced by the *assembly*, so a
+    // compile that also raised warnings (or errors elsewhere in the project) still wrote a usable
+    // one for the parts that did assemble.
+    const listing = opts.listingInclude ? await readListing(tmpListing) : undefined;
 
     const { diagnostics, foreignErrors } = parseOutput(stdout, opts.reportForFsPath ?? opts.sourceFsPath);
     // Two independent signals must agree before blaming the compiler. The flood on its own is
@@ -183,9 +219,22 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
         toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}`,
       };
     }
-    return { diagnostics, foreignDiagnostics };
+    return { diagnostics, foreignDiagnostics, listing };
   } finally {
     fs.promises.unlink(tmpOut).catch(() => undefined);
+    // The listing is the second artifact the same compile can leave behind in the temp directory.
+    if (opts.listingInclude) fs.promises.unlink(tmpListing).catch(() => undefined);
+  }
+}
+
+/** The listing this compile wrote, or undefined if it wrote none. A missing file is an ordinary
+ * outcome, not an error: a compile that failed before emitting anything never reaches the macro's
+ * `postpone` block, and the caller simply keeps whatever map it already had. */
+async function readListing(listingFsPath: string): Promise<ListingEntry[] | undefined> {
+  try {
+    return parseListingFile(await fs.promises.readFile(listingFsPath, 'utf8'));
+  } catch {
+    return undefined;
   }
 }
 

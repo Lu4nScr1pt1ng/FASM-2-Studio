@@ -9,9 +9,12 @@ import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
 import { registerNewFile } from './newFile';
 import { registerSelectCompiler } from './selectCompiler';
+import { registerSelectDebugger } from './selectDebugger';
 import { registerSelectDialect } from './selectDialect';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugAdapter';
 import { resolveEntryPointFsPath } from './entryPointResolver';
+import { invalidateDebuggerCache } from './gdbDiscovery';
+import { disposeInferiorTerminal } from './inferiorTerminal';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
 import { runOutputBinary } from './runCommand';
@@ -191,6 +194,7 @@ function startLanguageClient(context: vscode.ExtensionContext): LanguageClient {
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   registerCommands(context);
   registerSelectCompiler(context);
+  registerSelectDebugger(context);
   registerSelectDialect(context);
   registerNewFile(context);
   registerPickProcess(context);
@@ -200,9 +204,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
 
   context.subscriptions.push(
-    vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(() => client)),
+    vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(context, () => client)),
     vscode.debug.registerDebugAdapterDescriptorFactory(FASM_DEBUG_TYPE, new FasmDebugAdapterDescriptorFactory(context)),
     vscode.languages.registerInlineValuesProvider({ language: 'fasm' }, new FasmInlineValuesProvider()),
+    { dispose: disposeInferiorTerminal },
   );
 
   context.subscriptions.push(
@@ -210,6 +215,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (Object.values(COMPILER_PATH_SETTING).some((key) => e.affectsConfiguration(`${CONFIG_SECTION}.${key}`))) {
         invalidateCompilerCache();
       }
+      // Both caches are keyed on a resolved path, so a setting that names a different binary makes
+      // the cached answer describe a tool that is no longer the one in use.
+      if (e.affectsConfiguration(`${CONFIG_SECTION}.gdbPath`)) invalidateDebuggerCache();
     }),
   );
 

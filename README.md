@@ -199,6 +199,12 @@ works for unsaved buffers too. When the compiler can't be run at all — a bad p
 that times out on a large project — the status bar says so, rather than leaving an empty Problems
 panel that looks exactly like success.
 
+`fasm2Studio.inlayHints` puts the machine-level answer directly in the editor: each line that
+produces code is annotated with the address it lands at and how many bytes it encodes to — the
+thing you would otherwise build and read a `.lst` file to find out. It rides on the same background
+compile the error checking already runs, so it costs one extra flag rather than a second pass, and
+with it off nothing is added to that compile at all. Off by default, fasm2/fasmg only.
+
 You also get occurrence highlighting, structural folding (matched `macro`/`if`/`while` pairs
 rather than line-local marker guesses, plus `;region`), clickable `include` paths, a quick fix that
 writes a missing `include` for a symbol defined elsewhere in the workspace, and Format Document.
@@ -235,6 +241,11 @@ answer it with. `"console"` in `launch.json` chooses between `integratedTerminal
 `externalTerminal`, and `debugConsole` for output-only in the Debug Console. On Windows the program
 gets its own console window instead, since there is no pty to hand to gdb there.
 
+That terminal runs a small agent (the debug adapter's own binary, started with `--terminal-agent`)
+whose only job is to report which tty it landed on and to hold the terminal open until the session
+ends. It is a program rather than a shell script on purpose: the integrated terminal is opened
+directly on the agent, so nothing has to be quoted for — or typed into — whichever shell you use.
+
 An `attach` configuration debugs a program this editor did not start: a running process (`processId`,
 defaulting to a picker, since a pid differs every run) or a core dump (`coreFile`). Attaching stops
 a live process where it stands and leaves it running when the session ends, unless the client asks
@@ -244,6 +255,18 @@ refused in those terms rather than with gdb's "The program is not being run". Ne
 listing: it has to be the one from the build that produced that exact binary, so a missing one asks
 rather than silently regenerating a map onto source lines the addresses never belonged to. On Linux,
 attaching to a foreign process needs `/proc/sys/kernel/yama/ptrace_scope` set to `0`.
+
+Since the debugger is one you install yourself, a missing one is now caught before the launch does
+any work — before the build, the listing and the terminal — and answered with what to install for
+your platform and a button to point at a copy you already have, rather than with `spawn gdb ENOENT`
+in the Debug Console. `FASM: Select Debugger` reaches the same place on demand.
+
+`"reverseDebugging": true` records the run so you can step *backwards* — the answer to "what was in
+that register before I clobbered it", which a forward-only debugger cannot give you at all. It is
+opt-in because `record full` makes gdb single-step and journal every write, and it implies
+`stopOnEntry`, since recording has to start before the code it records. gdb only; the Step Back
+button appears only once gdb has actually accepted the command, so a debugger that cannot record
+degrades to a message rather than a button that fails.
 
 On top of breakpoints, stepping and continue: conditional, hit-count and log points; function
 breakpoints on any label name; watchpoints on a data label; instruction breakpoints in the

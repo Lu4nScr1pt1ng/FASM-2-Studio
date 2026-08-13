@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.11.0
+
+### Step backwards through your program
+
+Set `"reverseDebugging": true` in a launch configuration and the debugger records the run, so you can
+step *back*. You overwrite a register, notice a few instructions later that the old value mattered,
+and you can go and look at it — instead of restarting and trying to stop earlier.
+
+It is off by default because recording is slow: gdb single-steps the program and journals every write.
+Turn it on for the run where you need it. Requires gdb (macOS's lldb-mi cannot record), and the run
+stops at the entry point so recording can start before your code does.
+
+### It now tells you when gdb isn't installed
+
+Debugging needs gdb, which this extension doesn't bundle. If you didn't have it, pressing F5 built
+your program, opened a terminal, and then failed with `spawn gdb ENOENT` in a corner of the Debug
+Console — a message that doesn't say gdb is a separate install, let alone where to get it.
+
+Now it's checked before anything is built, and says what's missing and how to install it on your
+platform, with a button to point at a copy you already have. `FASM: Select Debugger` does the same
+thing on demand.
+
+### See the address and size of every instruction, as you type
+
+`fasm2Studio.inlayHints` annotates each line that produces machine code with where it lands in memory
+and how many bytes it encodes to — the thing you would otherwise build and open the `.lst` file to
+find out. Set it to `address`, `size`, or `addressAndSize`.
+
+It comes from the same background compile that already checks your code for errors, so it needs live
+error checking on and a fasm2/fasmg project. Off by default.
+
+### Keyboard shortcuts for build and run
+
+`Ctrl+Alt+B` builds the current file and `Ctrl+Alt+R` runs it (`Cmd+Alt+…` on macOS), while a fasm
+file is focused. `Ctrl+F5` and `Ctrl+Shift+B` already worked and are unchanged.
+
+### Fixed: the debugged program's terminal opened but did nothing
+
+Starting a debug session opened a terminal, printed a long backslash-escaped `/bin/sh -c …` line into
+it, and then sat there — while the program's output went to the Debug Console instead, where it
+cannot be typed into.
+
+The terminal was being driven by asking VS Code to *type* a shell script into whichever shell you
+use. Shells escape that differently from one another, and a shell still loading its own config
+throws away anything typed at it before it is ready — so the command was displayed and never run.
+That was likeliest with a shell whose prompt takes a moment to appear (fish or zsh with a git-aware
+prompt, for instance).
+
+The terminal now runs the debugger's own small helper program directly, with no shell involved: no
+escaping, nothing to race, and the same behavior whatever shell and terminal profile you have
+configured. When the session ends, the terminal stays until you press Enter, so a program that
+printed its result and exited does not take the result with it.
+
 ## 1.10.0
 
 ### Errors now appear in the file that actually has them

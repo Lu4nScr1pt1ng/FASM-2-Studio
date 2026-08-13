@@ -1,5 +1,116 @@
 # Changelog
 
+## 1.11.0
+
+### A missing debugger is now found before the launch, not from inside it
+
+The assembler and the debugger were held to very different standards. A missing assembler gets a
+status bar warning, a "Find a compiler" quick pick and a walkthrough step. A missing debugger got
+`gdb error: spawn gdb ENOENT` written to the Debug Console — after a successful build, in a panel
+that may not be focused, with nothing anywhere saying gdb is a separate install this extension
+deliberately does not bundle.
+
+`extension/src/gdbDiscovery.ts` resolves what a launch will actually spawn (the config's `gdbPath`,
+the setting, then the platform default — `lldb-mi` on macOS) and checks it can be run at all. The
+check runs in `resolveDebugConfiguration` *before* the build, so a missing debugger costs no compile,
+no listing and no terminal. `FASM: Select Debugger` is the recovery path, shaped like the compiler's.
+
+Presence is what's probed, not identity. `compilerDiscovery.ts` matches on a banner because `fasm2`
+and `fasmg` are byte-identical and differ only in behaviour; nothing here has to tell two debuggers
+apart, and a banner check would be actively *wrong* — the shell's own "gdb: command not found"
+contains the very name a name-matching probe would search for. An explicit path is answered from the
+filesystem; a bare name is spawned without a shell, where Node's ENOENT is the same PATH lookup the
+adapter's own spawn performs. A probe that times out reports *present*: a slow filesystem is not
+evidence of a missing debugger, and a spurious modal in front of a working setup is worse than the
+silence it replaces.
+
+### Reverse debugging
+
+`supportsStepBack` — which is the one capability gating both Step Back and Reverse Continue — backed
+by gdb's execution recording. You clobber a register, notice three instructions later, and step back
+to see what it held. In assembly this answers a question a forward-only debugger cannot answer at all.
+
+- **Opt-in** (`"reverseDebugging": true`). `record full` makes gdb single-step the program and
+  journal every register and memory write; that is a fine trade for one investigation and a bad one
+  for every other launch.
+- **Announced by a `CapabilitiesEvent`, not in `initialize`.** Whether it works is not known that
+  early: the launch arguments have not arrived, and lldb-mi has no execution recording at all. The
+  Step Back button appears only once gdb has actually accepted the command, and a failure degrades to
+  a message — the session still runs forwards, which is what every other feature needs.
+- **Implies `stopOnEntry`.** Recording can only start while stopped, and it has to start before the
+  code being investigated runs, which leaves the entry point as the only place it can begin.
+- **The stop is subscribed to before `-exec-run`, not after.** gdb's `^running` and the `*stopped`
+  that follows can arrive in a single read from the stream, so subscribing after the await can miss
+  the very stop being waited for and leave recording permanently off. Restart re-establishes it the
+  same way, since a restart takes the recorded history with the process.
+
+Verified end to end against real gdb (`debug/test/reverse.e2e.test.ts`): stepping back over
+`mov eax, 222` restores `eax` to 111.
+
+### Inlay hints: the address and encoded size of every instruction
+
+`fasm2Studio.inlayHints` annotates each line that produces machine code with where it lands and how
+many bytes it encodes to — what you would otherwise build and read a `.lst` file to see by eye.
+
+The data is a by-product of the compile live error checking already runs: one extra `-i` flag and one
+file read, rather than a second pass. With hints off, nothing is added to the compile at all.
+
+- `listingMap.ts` moved from `debug/` to `server/src/listing/` — it already imported the server's
+  tokenizer, so the dependency direction was preserved and the server can now reach it.
+- `parseListingFile` kept the byte dump it previously discarded. **A statement whose dump wraps has
+  its continuation lines folded in:** a `format ELF64 executable` emits a 120-byte ELF header spread
+  over sixteen listing lines, and counting only the first reported it as 8 — a wrong number, worse
+  than none. Caught by the end-to-end test, not by inspection.
+- **The listing lands at `<stem>.lst`, not `<output>.lst`.** `virtual as 'lst'` *replaces* the output
+  file's extension. The debug build's `getListingPath` appends and is right to — the output it names
+  has no extension, so the two coincide there. For a temp `foo.out` they do not, and the file was
+  simply never found until a real compile proved it.
+- Correlated against the tree actually compiled (the live shadow, when there is one), with candidates
+  translated back to real paths so the map is keyed by paths the editor knows.
+
+### Keybindings
+
+`ctrl+alt+b` builds and `ctrl+alt+r` runs, scoped to a focused fasm editor. Deliberately only these
+two: `Ctrl+F5` already reaches Build and Run through the `noDebug` branch, and `Ctrl+Shift+B` already
+reaches the build task because it carries `TaskGroup.Build` — binding either again would have added a
+second way to do what already worked.
+
+### The program's terminal opened, showed an escaped shell script, and ran nothing
+
+`holderCommand` handed the client a `/bin/sh -c 'tty > …; while [ -e … ]; do sleep 1; done'` to run
+in the terminal. DAP's `runInTerminal` does not run a command vector: VS Code opens a terminal on the
+user's own shell and *types* the vector into it, escaped for that shell. Two things go wrong with a
+shell script in that position, and both were reported at once — a fish terminal showing a wall of
+backslashes, and a program whose output never arrived:
+
+- **A shell busy starting up discards what was typed at it.** readline and fish both switch the
+  terminal to raw mode with `TCSAFLUSH`, which throws away input received before they were ready — so
+  the command sits echoed on screen, never run, and the launch waits out its handshake timeout and
+  falls back to the Debug Console. Reproduced by typing the command at a freshly spawned `fish -i`
+  under a pty: echoed in full, never executed.
+- **Every shell escapes it differently**, and the escaping is the client's, not ours.
+
+The command run in the terminal is now the adapter's own binary, re-invoked as `--terminal-agent
+<endpoint>` (`debug/src/terminalAgent.ts`): an argv of a path, a flag and an endpoint, with no
+character in it any shell needs to quote. It reports the tty (`/proc/self/fd/0`, or `tty(1)` where
+there is no `/proc`) and holds the terminal until the session ends.
+
+- **The extension opens the terminal itself** (`extension/src/inferiorTerminal.ts`), with
+  `createTerminal({ shellPath, shellArgs })` naming the agent directly — no shell is started at all,
+  so there is nothing to escape for and nothing to race. The endpoint is passed to the session as a
+  new `terminalEndpoint` launch attribute; `runInTerminal` remains for other DAP clients and for
+  `externalTerminal`.
+- **The handshake is a socket, not a temp file.** A unix socket (named pipe on Windows) carries
+  liveness the file never did: the agent's connection drops when the adapter exits *for any reason*,
+  including a crash, so `HOLDER_MAX_SECONDS`' 12-hour cap on an orphaned `sleep` loop is gone. A
+  terminal closed under a waiting launch now ends the wait immediately instead of timing out.
+- **The agent waits for a keypress before exiting**, because an extension-owned terminal closes with
+  its process, and a program that printed its answer and finished deserves better than the answer
+  vanishing. It never reads stdin while the session is live — the program is reading that same tty.
+
+Covered by an e2e test per route (real `adapter.js`, real gdb, real pty) and a real-VS-Code test that
+launches a session and asserts the fallback to the Debug Console never fires.
+
 ## 1.10.0
 
 ### Errors are reported in the file that holds them

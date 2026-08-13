@@ -70,7 +70,9 @@ Currently fasm2/fasmg sources only. You get:
 - Faults named properly: a SIGSEGV reads as `SIGSEGV (Segmentation fault)`, not "exception"
 - `args` and `env` in `launch.json` for the debugged program
 - **A terminal of its own**, so a program that reads stdin can be typed at — `"console"` picks
-  between `integratedTerminal` (default), `externalTerminal` and `debugConsole`
+  between `integratedTerminal` (default), `externalTerminal` and `debugConsole`. The terminal is
+  opened directly on a small agent process, with no shell in between, so it works the same whatever
+  your shell and terminal profile are
 
 ### Attaching to something you didn't start
 
@@ -175,6 +177,7 @@ To use the debugger:
 | `fasm2Studio.fasm2Preload` | Include file assembled before the source itself (fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source — how `fasm2` supplies x86, and how instruction-set ports commonly supply theirs. The language server follows it too, so those instructions get hover and completion. Use `fasm2.inc` (with `includePath` pointing at fasm2's `include` directory) to drive a bare `fasmg` binary as if it were `fasm2`. |
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
+| `fasm2Studio.inlayHints` | Annotates each line that produces machine code with its address and/or encoded size (`off`/`address`/`size`/`addressAndSize`) — what you would otherwise build and read a `.lst` to see. Rides on the background compile that live error checking already runs, so it needs `diagnosticsEnabled`, a trusted workspace and a fasm2/fasmg project. Off by default. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |
 | `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |

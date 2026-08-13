@@ -25,8 +25,8 @@ import * as path from 'path';
 import { AttachTarget, parseTerminationSignal, resolveAttachTarget } from './attachTarget';
 import { readElfEntryPoint } from './elfEntry';
 import { GdbDriver } from './gdbDriver';
-import { ConsoleKind, handshakeFilePath, holderCommand, isTerminalConsole, releaseTerminal, runInTerminalKind, waitForTty } from './inferiorTerminal';
-import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from './listingMap';
+import { agentCommand, agentEnv, agentModulePath, ConsoleKind, endpointPath, isTerminalConsole, runInTerminalKind, TerminalHandshake } from './inferiorTerminal';
+import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from '@fasm2-studio/server/src/listing/listingMap';
 import { miData } from './miParser';
 import {
   decodeEflags,
@@ -88,7 +88,14 @@ const RUN_IN_TERMINAL_TIMEOUT_MS = 15_000;
  * returns", so Step Out falls back to the same single-instruction-into behavior as Step Into, same
  * as before this distinction existed). Both are ISA-level gdb primitives that already know how to
  * recognize a `call` without any symbol table — nothing macro-specific. */
-type StepMiCommand = '-exec-step-instruction' | '-exec-next-instruction';
+type StepMiCommand =
+  | '-exec-step-instruction'
+  | '-exec-next-instruction'
+  /* The same two primitives run backwards against gdb's execution recording — see enableRecording.
+   * Reverse stepping is exactly the forward algorithm with the direction flipped, so both step
+   * helpers below take these without any further special-casing. */
+  | '-exec-step-instruction --reverse'
+  | '-exec-next-instruction --reverse';
 
 /** Matches a single bare word — a macro invocation, an instruction mnemonic, or any other stray
  * FASM-source identifier — but not a compound expression ("$eax + 1"), a bracketed/cast expression
@@ -155,6 +162,13 @@ interface LaunchArgs extends DebugProtocol.LaunchRequestArguments, TargetArgs {
    * or a real terminal, which is the only one of the two that can be typed into. See
    * inferiorTerminal.ts. */
   console?: ConsoleKind;
+  /** Set by the extension when it opened the program's terminal itself: the address the agent
+   * running in that terminal is trying to reach. Absent for any other DAP client, which gets asked
+   * to open a terminal instead. See inferiorTerminal.ts. */
+  terminalEndpoint?: string;
+  /** Records execution so the program can be stepped *backwards* — see enableRecording for why
+   * this is opt-in rather than simply always on. */
+  reverseDebugging?: boolean;
 }
 
 export class FasmDebugSession extends DebugSession {
@@ -163,6 +177,12 @@ export class FasmDebugSession extends DebugSession {
    * whether the program is ours to start (`-exec-run` on configurationDone, re-run on restart) and
    * whether it is ours to kill when the session ends. */
   private mode: 'launch' | 'attach' = 'launch';
+  /** Whether this launch asked for reverse debugging, and whether gdb actually granted it. The two
+   * are separate because the request can fail on a debugger that has no execution recording at all
+   * (lldb-mi), and every reverse request has to refuse clearly rather than hand gdb a command it
+   * will reject with prose about a target that "does not support this command". */
+  private reverseDebugging = false;
+  private recording = false;
   /** What an attach session attached to, or undefined for a launch. A core dump is the one target
    * here that can never be resumed, so the execution requests check it. */
   private attachTarget: AttachTarget | undefined;
@@ -210,8 +230,8 @@ export class FasmDebugSession extends DebugSession {
     // ordinary shutdown path clean rather than leaky.
     const shutdown = () => {
       // Same reason the gdb child is disposed here: this path skips disconnect/terminate entirely,
-      // and the terminal holder would keep an otherwise finished terminal waiting.
-      releaseTerminal(this.terminalHandshakeFile);
+      // and the terminal agent would keep an otherwise finished terminal waiting.
+      this.terminalHandshake?.release();
       void this.gdb?.dispose().finally(() => process.exit(0));
     };
     process.on('SIGTERM', shutdown);
@@ -221,8 +241,9 @@ export class FasmDebugSession extends DebugSession {
   /** Whether the client can open a terminal for us on request — a "console" launch attribute
    * asking for one is only answerable if it can. */
   private clientSupportsRunInTerminal = false;
-  /** The file this session's terminal holder is waiting on; deleting it releases the terminal. */
-  private terminalHandshakeFile: string | undefined;
+  /** This session's connection to the agent running in the program's terminal; closing it releases
+   * the terminal. */
+  private terminalHandshake: TerminalHandshake | undefined;
   /** In-flight terminal handshake, started during launch and awaited before the program runs. */
   private terminalSetup: Promise<void> | undefined;
 
@@ -409,14 +430,27 @@ export class FasmDebugSession extends DebugSession {
       // caught here by the extension's own real-VS-Code debug tests.
       if (isTerminalConsole(args.console)) {
         const cwd = args.cwd ?? path.dirname(args.program);
-        this.terminalSetup = this.attachInferiorTerminal(args.console!, cwd).catch((err: Error) => {
+        this.terminalSetup = this.attachInferiorTerminal(args.console!, cwd, args.terminalEndpoint).catch((err: Error) => {
           // Nothing in the session may be left waiting on this promise: a rejection here means the
           // program keeps its output in the Debug Console, not that it fails to run.
           this.sendEvent(new OutputEvent(`could not attach a terminal (${err.message}) — the program keeps its output here.\n`, 'stderr'));
         });
       }
 
-      if (args.stopOnEntry) {
+      this.reverseDebugging = args.reverseDebugging === true;
+
+      // Recording can only be switched on while the program is stopped, and it has to be on before
+      // any of the code the user means to step back through has run — which leaves the entry point
+      // as the only place it can start. So a launch that asked for reverse debugging stops there
+      // whether or not it asked to, rather than coming up with an empty history and a Step Back
+      // button that does nothing.
+      const stopAtEntry = args.stopOnEntry === true || this.reverseDebugging;
+      if (stopAtEntry) {
+        if (this.reverseDebugging && !args.stopOnEntry) {
+          this.sendEvent(
+            new OutputEvent('Reverse debugging records execution from the entry point, so this launch stops there first.\n', 'console'),
+          );
+        }
         // gdb's own `start` command needs a symbol table to resolve "main", which these binaries
         // don't have — read the entry point straight out of the ELF header instead (stable,
         // well-known layout, no symbols required). The "lowest address in the listing" isn't a
@@ -443,7 +477,7 @@ export class FasmDebugSession extends DebugSession {
    * the program still runs, it just cannot be interacted with — and the one thing worse than that
    * is a program that silently ignores what you asked for.
    */
-  private async attachInferiorTerminal(kind: ConsoleKind, cwd: string): Promise<void> {
+  private async attachInferiorTerminal(kind: ConsoleKind, cwd: string, providedEndpoint: string | undefined): Promise<void> {
     if (!this.gdb) return;
 
     // Windows has no pty for gdb to be pointed at, and -inferior-tty-set is a no-op there. gdb's
@@ -460,40 +494,60 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
 
-    if (!this.clientSupportsRunInTerminal) {
+    // A terminal the extension opened itself, before this process even started: it tells us where
+    // to listen and the agent is already out there trying to connect. Preferred over asking the
+    // client, because opening it that way puts no shell between us and the agent — see
+    // inferiorTerminal.ts on why a shell in that position is the fragile part of this.
+    const clientOpensTerminal = providedEndpoint === undefined;
+    if (clientOpensTerminal && !this.clientSupportsRunInTerminal) {
       this.sendEvent(
         new OutputEvent('This client cannot open a terminal on request, so the program keeps its output here and has no stdin.\n', 'stderr'),
       );
       return;
     }
 
-    const handshakeFile = handshakeFilePath();
-    const opened = await new Promise<DebugProtocol.RunInTerminalResponse | undefined>((resolve) => {
-      this.runInTerminalRequest(
-        { kind: runInTerminalKind(kind), title: 'FASM program', cwd, args: holderCommand(handshakeFile) },
-        RUN_IN_TERMINAL_TIMEOUT_MS,
-        (response) => resolve(response),
-      );
-    });
-
-    if (!opened?.success) {
-      releaseTerminal(handshakeFile);
-      this.sendEvent(new OutputEvent(`The client did not open a terminal (${opened?.message ?? 'no response'}) — the program keeps its output here.\n`, 'stderr'));
+    const handshake = new TerminalHandshake(providedEndpoint ?? endpointPath());
+    try {
+      await handshake.listen();
+    } catch (err) {
+      this.sendEvent(new OutputEvent(`could not open a channel to the terminal (${(err as Error).message}) — the program keeps its output here.\n`, 'stderr'));
       return;
     }
 
-    const tty = await waitForTty(handshakeFile);
+    if (clientOpensTerminal) {
+      const opened = await new Promise<DebugProtocol.RunInTerminalResponse | undefined>((resolve) => {
+        this.runInTerminalRequest(
+          {
+            kind: runInTerminalKind(kind),
+            title: 'FASM program',
+            cwd,
+            args: agentCommand(agentModulePath(), handshake.endpoint),
+            env: agentEnv(),
+          },
+          RUN_IN_TERMINAL_TIMEOUT_MS,
+          (response) => resolve(response),
+        );
+      });
+
+      if (!opened?.success) {
+        handshake.release();
+        this.sendEvent(new OutputEvent(`The client did not open a terminal (${opened?.message ?? 'no response'}) — the program keeps its output here.\n`, 'stderr'));
+        return;
+      }
+    }
+
+    const tty = await handshake.waitForTty();
     if (!tty) {
-      releaseTerminal(handshakeFile);
-      this.sendEvent(new OutputEvent('The terminal opened but never reported a tty — the program keeps its output here.\n', 'stderr'));
+      handshake.release();
+      this.sendEvent(new OutputEvent('The terminal never reported a tty — the program keeps its output here, where it has no stdin to read.\n', 'stderr'));
       return;
     }
 
     try {
       await this.gdb.sendCommand(`-inferior-tty-set ${tty}`);
-      this.terminalHandshakeFile = handshakeFile;
+      this.terminalHandshake = handshake;
     } catch (err) {
-      releaseTerminal(handshakeFile);
+      handshake.release();
       this.sendEvent(new OutputEvent(`gdb refused the terminal (${(err as Error).message}) — the program keeps its output here.\n`, 'stderr'));
     }
   }
@@ -572,7 +626,13 @@ export class FasmDebugSession extends DebugSession {
       // The program's stdin/stdout have to be pointed at their terminal before it starts, not
       // after — a program that reads on its first instruction would otherwise race the handshake.
       await this.terminalSetup;
+      // Registered *before* -exec-run, not after: waitForNextStop subscribes synchronously, and
+      // gdb's "^running" acknowledgement and the "*stopped" that follows it can arrive in the same
+      // read from the stream — so subscribing after the await can miss the very stop being waited
+      // for, leaving recording permanently off on a launch that asked for it.
+      const firstStop = this.reverseDebugging ? this.waitForNextStop() : undefined;
       await this.gdb?.sendCommand('-exec-run');
+      if (firstStop) void firstStop.then((stopped) => (stopped ? this.enableRecording() : undefined));
     } catch (err) {
       this.sendEvent(new OutputEvent(`failed to start program: ${(err as Error).message}\n`, 'stderr'));
     }
@@ -1502,7 +1562,13 @@ export class FasmDebugSession extends DebugSession {
     try {
       this.sendResponse(response);
       this.lastSignal = undefined;
+      // A restart kills the process the recording described, taking the history with it — so the
+      // recording has to be re-established against the new one, exactly as configurationDone does
+      // for the first run (including subscribing before -exec-run, for the same reason).
+      const firstStop = this.reverseDebugging ? this.waitForNextStop() : undefined;
+      this.recording = false;
       await this.gdb.sendCommand('-exec-run');
+      if (firstStop) void firstStop.then((stopped) => (stopped ? this.enableRecording() : undefined));
     } catch (err) {
       this.sendEvent(new OutputEvent(`restart failed: ${(err as Error).message}\n`, 'stderr'));
     }
@@ -1515,6 +1581,74 @@ export class FasmDebugSession extends DebugSession {
       await this.gdb?.sendCommand('-exec-continue');
     } catch (err) {
       this.sendEvent(new OutputEvent(`continue failed: ${(err as Error).message}\n`, 'stderr'));
+    }
+  }
+
+  /**
+   * Turns on gdb's execution recording, which is what makes stepping backwards possible at all.
+   *
+   * Opt-in rather than always on, because `record full` is genuinely expensive: gdb single-steps
+   * the program and journals every register and memory write, which slows execution by orders of
+   * magnitude and grows a buffer for the whole run. That is a fine trade for "why is eax wrong
+   * here", and a bad one for every other launch.
+   *
+   * Announced to the client with a CapabilitiesEvent rather than in initializeRequest, because
+   * whether this works is not known that early: the launch arguments haven't arrived yet, and
+   * lldb-mi has no execution recording at all, so the Step Back button must only appear once gdb
+   * has actually accepted the command. `record` has no MI form — it is a console command, reached
+   * through -interpreter-exec.
+   */
+  private async enableRecording(): Promise<void> {
+    try {
+      await this.gdb?.sendCommand('-interpreter-exec console "record full"');
+      this.recording = true;
+      this.sendEvent(new CapabilitiesEvent({ supportsStepBack: true }));
+      this.sendEvent(
+        new OutputEvent('Reverse debugging is on: execution is being recorded, so Step Back and Reverse Continue are available.\n', 'console'),
+      );
+    } catch (err) {
+      // Not fatal to the launch — the program runs perfectly well forwards, which is what every
+      // other feature here needs. Only the backwards half is unavailable, and saying so plainly is
+      // better than a Step Back button that fails on every press.
+      this.sendEvent(
+        new OutputEvent(
+          `Reverse debugging is unavailable: ${(err as Error).message}. ` +
+            'Execution recording is a gdb feature; lldb-mi does not have it. Everything else in this session is unaffected.\n',
+          'stderr',
+        ),
+      );
+    }
+  }
+
+  /** Guards the reverse requests. They can only be reached at all once the CapabilitiesEvent above
+   * has been sent, but a client that asks anyway gets a straight answer instead of gdb's own. */
+  private ensureRecording(response: DebugProtocol.Response): boolean {
+    if (this.recording) return true;
+    this.sendErrorResponse(
+      response,
+      16,
+      'Nothing has been recorded, so there is no execution history to step back through. Set "reverseDebugging": true in this launch configuration to record the next run.',
+    );
+    return false;
+  }
+
+  protected stepBackRequest(response: DebugProtocol.StepBackResponse, args: DebugProtocol.StepBackArguments): void {
+    if (!this.ensureResumable(response)) return;
+    if (!this.ensureRecording(response)) return;
+    // Mirrors nextRequest/stepInRequest: the Disassembly View asks for instruction granularity and
+    // means exactly one instruction, everything else means "back to the previous source line".
+    if (args.granularity === 'instruction') void this.stepOneInstruction(response, '-exec-step-instruction --reverse');
+    else void this.stepToNextLine(response, '-exec-step-instruction --reverse');
+  }
+
+  protected async reverseContinueRequest(response: DebugProtocol.ReverseContinueResponse): Promise<void> {
+    if (!this.ensureResumable(response)) return;
+    if (!this.ensureRecording(response)) return;
+    this.sendResponse(response);
+    try {
+      await this.gdb?.sendCommand('-exec-continue --reverse');
+    } catch (err) {
+      this.sendEvent(new OutputEvent(`reverse continue failed: ${(err as Error).message}\n`, 'stderr'));
     }
   }
 
@@ -1912,8 +2046,8 @@ export class FasmDebugSession extends DebugSession {
    * for anyway.
    */
   private async endSession(terminateDebuggee: boolean | undefined): Promise<void> {
-    releaseTerminal(this.terminalHandshakeFile);
-    this.terminalHandshakeFile = undefined;
+    this.terminalHandshake?.release();
+    this.terminalHandshake = undefined;
     if (this.attachTarget?.kind === 'process') {
       if (terminateDebuggee === true) {
         await this.gdb?.sendCommand('-gdb-set confirm off').catch(() => undefined);

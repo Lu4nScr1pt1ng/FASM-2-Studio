@@ -16,6 +16,7 @@
 // which is exactly the behaviour this module replaces — never worse than it.
 
 import { Connection } from 'vscode-languageserver/node';
+import { InlayHintMode } from './features/inlayHints';
 import { Dialect } from './types';
 
 export interface FasmSettings {
@@ -26,6 +27,9 @@ export interface FasmSettings {
   diagnosticsDebounceMs: number;
   includePath: string;
   fasm2Preload: string;
+  /** See features/inlayHints.ts. Typed as the plain string union the client sends; anything
+   * unrecognized is treated as "off" at the point of use rather than validated here. */
+  inlayHints: InlayHintMode;
   formatMnemonicColumn: number;
   formatOperandColumn: number;
   formatCommentColumn: number;
@@ -39,6 +43,7 @@ export const DEFAULT_SETTINGS: FasmSettings = {
   diagnosticsDebounceMs: 400,
   includePath: '',
   fasm2Preload: '',
+  inlayHints: 'off',
   formatMnemonicColumn: 8,
   formatOperandColumn: 16,
   formatCommentColumn: 0,

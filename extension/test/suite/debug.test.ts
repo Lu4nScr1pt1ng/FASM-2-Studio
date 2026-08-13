@@ -173,4 +173,57 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('gives the program a real terminal of its own, in the terminal VS Code actually opens', async function () {
+    if (!isAvailable('gdb') || !isAvailable('fasm2') || os.platform() !== 'linux') {
+      this.skip();
+      return;
+    }
+    this.timeout(40000);
+
+    // Regression test for a debug session that opened a terminal, showed an escaped shell script in
+    // it, and ran nothing: the command was typed into the user's interactive shell, which discards
+    // typed-ahead input while it is still starting up. Nothing about that failure was visible from
+    // the extension side — the session just quietly fell back to the Debug Console — so this test
+    // watches for the fallback rather than for the symptom.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-ext-tty-test-'));
+    const asmPath = path.join(dir, 'prog.asm');
+    fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
+
+    const consoleOutput: string[] = [];
+    const tracker = vscode.debug.registerDebugAdapterTrackerFactory('fasm', {
+      createDebugAdapterTracker: () => ({
+        onDidSendMessage: (m: unknown) => {
+          const msg = m as { type?: string; event?: string; body?: { output?: string } };
+          if (msg.type === 'event' && msg.event === 'output' && msg.body?.output) consoleOutput.push(msg.body.output);
+        },
+      }),
+    });
+
+    try {
+      const doc = await vscode.workspace.openTextDocument(asmPath);
+      await vscode.window.showTextDocument(doc);
+
+      await runDebugSessionAndCollectStops(doc.uri, 8, () =>
+        vscode.debug.startDebugging(vscode.workspace.getWorkspaceFolder(doc.uri), {
+          type: 'fasm',
+          request: 'launch',
+          name: 'Debug FASM program',
+          asmFile: asmPath,
+          console: 'integratedTerminal',
+          stopOnEntry: true,
+        }),
+      );
+
+      assert.ok(
+        vscode.window.terminals.some((t) => t.name === 'FASM program'),
+        `no terminal was opened for the program; terminals: ${vscode.window.terminals.map((t) => t.name).join(', ')}`,
+      );
+      const fellBack = consoleOutput.filter((line) => /keeps its output here|never reported a tty/.test(line));
+      assert.deepStrictEqual(fellBack, [], 'the session could not use the terminal it opened and fell back to the Debug Console');
+    } finally {
+      tracker.dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -6,8 +6,10 @@ import { activeFasmEditor, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { dialectFor, getDefaultOutputPath, getListingPath } from './buildPaths';
 import { fasmConfig, MESSAGE_PREFIX } from './config';
 import { resolveEntryPointFsPath } from './entryPointResolver';
+import { openInferiorTerminal } from './inferiorTerminal';
 import { PICK_PROCESS_COMMAND } from './pickProcess';
 import { runOutputBinary } from './runCommand';
+import { ensureDebuggerAvailable } from './selectDebugger';
 import { runBuildTask } from './taskProvider';
 import { ensureTrusted } from './workspaceTrust';
 
@@ -40,7 +42,10 @@ export class FasmDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
 export class FasmDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
   /** A getter, not the client itself: the language client isn't started yet when this provider
    * is constructed during activation, so the current value has to be looked up at call time. */
-  constructor(private readonly getClient: () => LanguageClient | undefined) {}
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly getClient: () => LanguageClient | undefined,
+  ) {}
 
   /** Index 0 is load-bearing: resolveDebugConfiguration falls back to it for "F5 with no
    * launch.json at all", which must be the launch config rather than one that asks for a pid. */
@@ -143,6 +148,13 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
 
     const isAttach = config.request === 'attach';
 
+    // Before anything is built, opened or spawned: is there a debugger to drive at all? Placed
+    // this early because everything below it is wasted work if there is not — a build runs, a
+    // listing is produced, a terminal is opened, and only then does the adapter fail with an
+    // ENOENT from deep inside gdbDriver.start(), which reaches the user as the bare text
+    // "gdb error: spawn gdb ENOENT" in the Debug Console. See gdbDiscovery.ts.
+    if (!(await ensureDebuggerAvailable(config.gdbPath as string | undefined))) return undefined;
+
     // VS Code resolves and runs preLaunchTask *before* calling this method at all — by the time
     // we're here, a broken task-label lookup has already failed the launch, so nothing set here
     // could fix it after the fact. Our generated configs never set preLaunchTask for exactly this
@@ -210,6 +222,12 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
         return undefined;
       }
       if (!(await this.ensureAttachListing(asmFile, config.listingFile as string))) return undefined;
+    }
+
+    // Last, so that nothing after this can abandon a terminal it opened: every way this method can
+    // still decline the launch has already been taken.
+    if (!isAttach) {
+      config.terminalEndpoint = openInferiorTerminal(this.context, config.console as string | undefined, config.cwd as string);
     }
 
     return config;

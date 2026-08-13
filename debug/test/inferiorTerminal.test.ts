@@ -1,12 +1,20 @@
-// The pure half of the terminal handshake: what the holder command says, and how its answer is
-// read back. The end-to-end proof that this actually reaches a program's stdin lives in
+// The pure half of the terminal handshake: what the terminal is asked to run, and how its answer
+// is read back. The end-to-end proof that this actually reaches a program's stdin lives in
 // inferiorTerminal.e2e.test.ts; these are the pieces that are easier to pin down exactly.
 import * as assert from 'assert';
-import { spawn, spawnSync } from 'child_process';
-import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { handshakeFilePath, holderCommand, isTerminalConsole, parseTtyPath, releaseTerminal, runInTerminalKind, waitForTty } from '../src/inferiorTerminal';
+import {
+  agentCommand,
+  agentEnv,
+  endpointPath,
+  isTerminalConsole,
+  parseTtyPath,
+  runInTerminalKind,
+  TERMINAL_AGENT_FLAG,
+  TerminalHandshake,
+} from '../src/inferiorTerminal';
 
 describe('inferior terminal handshake', () => {
   it('only treats the terminal consoles as terminals', () => {
@@ -21,52 +29,44 @@ describe('inferior terminal handshake', () => {
     assert.strictEqual(runInTerminalKind('externalTerminal'), 'external');
   });
 
-  it('gives every session its own handshake file, outside the workspace', () => {
-    const first = handshakeFilePath();
+  it('gives every session its own endpoint, outside the workspace', () => {
+    const first = endpointPath();
     assert.strictEqual(path.dirname(first), os.tmpdir());
-    // Two sessions of the same adapter process must not collide on one file.
-    assert.notStrictEqual(first, handshakeFilePath());
+    // Two sessions of the same adapter process must not collide on one endpoint.
+    assert.notStrictEqual(first, endpointPath());
   });
 
-  describe('holderCommand', () => {
-    it('is a plain /bin/sh command vector, which is all the client is asked to run', () => {
-      const [shell, flag] = holderCommand('/tmp/handshake');
-      assert.strictEqual(shell, '/bin/sh');
-      assert.strictEqual(flag, '-c');
+  describe('agentCommand', () => {
+    it('starts this adapter as the agent, with the endpoint to report to', () => {
+      assert.deepStrictEqual(agentCommand('/opt/ext/dist/adapter.js', '/tmp/endpoint.sock', '/usr/bin/node'), [
+        '/usr/bin/node',
+        '/opt/ext/dist/adapter.js',
+        TERMINAL_AGENT_FLAG,
+        '/tmp/endpoint.sock',
+      ]);
     });
 
-    it('survives a path with a quote in it rather than breaking out of the script', () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fasm2-quote'test-"));
+    it('has nothing in it for a shell to mangle', () => {
+      // The point of the agent. A client that honors runInTerminal by *typing this into a shell*
+      // (which is what VS Code does) has to escape it first, per shell — and the shell script this
+      // replaced arrived at fish as a wall of backslashes, and at a shell still busy starting up as
+      // nothing at all. Only characters that appear in ordinary paths are allowed here.
+      for (const arg of agentCommand('/opt/ext/dist/adapter.js', endpointPath(), process.execPath)) {
+        assert.match(arg, /^[A-Za-z0-9_@%+=:,./-]+$/, `${arg} needs shell quoting, which is the failure mode this design exists to avoid`);
+      }
+    });
+
+    it('carries the one variable an Electron binary needs to behave as node', () => {
+      const previous = process.env.ELECTRON_RUN_AS_NODE;
       try {
-        const file = path.join(dir, 'handshake');
-        const [, , script] = holderCommand(file);
-        // Only the redirect is run, not the wait loop that follows it. `tty` exits non-zero when
-        // stdin is not a terminal (it is a pipe here), which says nothing about the quoting — where
-        // the redirect landed is the whole question.
-        spawnSync('/bin/sh', ['-c', script.split(';')[0]], { stdio: 'ignore', timeout: 5000 });
-        assert.ok(fs.existsSync(file), 'the tty redirect did not land on the intended path');
+        delete process.env.ELECTRON_RUN_AS_NODE;
+        assert.deepStrictEqual(agentEnv(), {});
+        process.env.ELECTRON_RUN_AS_NODE = '1';
+        assert.deepStrictEqual(agentEnv(), { ELECTRON_RUN_AS_NODE: '1' });
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        if (previous === undefined) delete process.env.ELECTRON_RUN_AS_NODE;
+        else process.env.ELECTRON_RUN_AS_NODE = previous;
       }
-    });
-
-    it('exits on its own once the handshake file is removed', async function () {
-      if (os.platform() === 'win32') {
-        this.skip();
-        return;
-      }
-      this.timeout(10000);
-      const file = handshakeFilePath();
-      const [shell, flag, script] = holderCommand(file);
-      const holder = spawn(shell, [flag, script], { stdio: 'ignore' });
-      const exited = new Promise<number | null>((resolve) => holder.on('exit', (code) => resolve(code)));
-
-      // Without a tty attached, `tty` writes "not a tty" — the file still exists, which is what the
-      // wait loop keys off, so this is a fair test of the release path.
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      releaseTerminal(file);
-      const code = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000))]);
-      assert.notStrictEqual(code, 'timeout', 'the holder kept the terminal open after the session ended');
     });
   });
 
@@ -81,11 +81,103 @@ describe('inferior terminal handshake', () => {
     });
   });
 
-  it('gives up waiting rather than hanging the launch when no tty is ever reported', async function () {
-    this.timeout(5000);
-    const started = Date.now();
-    const tty = await waitForTty(path.join(os.tmpdir(), 'fasm2-studio-nonexistent-handshake'), 200, 20);
-    assert.strictEqual(tty, undefined);
-    assert.ok(Date.now() - started < 2000, 'waitForTty did not respect its own timeout');
+  describe('TerminalHandshake', () => {
+    const open: TerminalHandshake[] = [];
+    const clients: net.Socket[] = [];
+
+    function handshake(): TerminalHandshake {
+      const shake = new TerminalHandshake(endpointPath());
+      open.push(shake);
+      return shake;
+    }
+
+    afterEach(() => {
+      for (const shake of open.splice(0)) shake.release();
+      for (const client of clients.splice(0)) client.destroy();
+    });
+
+    it('learns the tty from whatever connects to it', async function () {
+      if (os.platform() === 'win32') {
+        this.skip();
+        return;
+      }
+      const shake = handshake();
+      await shake.listen();
+
+      const client = net.connect(shake.endpoint);
+      clients.push(client);
+      await new Promise((resolve) => client.once('connect', resolve));
+      client.write('/dev/pts/9\n');
+
+      assert.strictEqual(await shake.waitForTty(5000), '/dev/pts/9');
+    });
+
+    it('reports no tty when the terminal says it has none, rather than handing gdb a non-path', async function () {
+      if (os.platform() === 'win32') {
+        this.skip();
+        return;
+      }
+      const shake = handshake();
+      await shake.listen();
+
+      const client = net.connect(shake.endpoint);
+      clients.push(client);
+      await new Promise((resolve) => client.once('connect', resolve));
+      client.write('not a tty\n');
+
+      assert.strictEqual(await shake.waitForTty(5000), undefined);
+    });
+
+    it('gives up waiting rather than hanging the launch when nothing ever connects', async function () {
+      if (os.platform() === 'win32') {
+        this.skip();
+        return;
+      }
+      this.timeout(5000);
+      const shake = handshake();
+      await shake.listen();
+
+      const started = Date.now();
+      assert.strictEqual(await shake.waitForTty(200), undefined);
+      assert.ok(Date.now() - started < 2000, 'waitForTty did not respect its own timeout');
+    });
+
+    it('drops the connection on release, which is how the agent knows the session is over', async function () {
+      if (os.platform() === 'win32') {
+        this.skip();
+        return;
+      }
+      this.timeout(5000);
+      const shake = handshake();
+      await shake.listen();
+
+      const client = net.connect(shake.endpoint);
+      clients.push(client);
+      await new Promise((resolve) => client.once('connect', resolve));
+      const closed = new Promise((resolve) => client.once('close', resolve));
+
+      shake.release();
+      await closed;
+    });
+
+    it('stops a launch that is still waiting when the terminal is closed under it', async function () {
+      if (os.platform() === 'win32') {
+        this.skip();
+        return;
+      }
+      this.timeout(5000);
+      const shake = handshake();
+      await shake.listen();
+
+      const client = net.connect(shake.endpoint);
+      clients.push(client);
+      await new Promise((resolve) => client.once('connect', resolve));
+
+      const waiting = shake.waitForTty(30_000);
+      client.destroy();
+      // Resolves on the connection dropping, not on the 30s timeout — a closed terminal is an
+      // answer, and the launch should fall back to the Debug Console immediately.
+      assert.strictEqual(await waiting, undefined);
+    });
   });
 });

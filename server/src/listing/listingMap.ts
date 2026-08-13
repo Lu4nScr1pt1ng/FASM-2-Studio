@@ -10,7 +10,7 @@
 // everything after it — one page of a book gone missing doesn't stop you from finding the rest.
 import * as fs from 'fs';
 import * as path from 'path';
-import { TokenType, Token, tokenizeDocument, unquoteString } from '@fasm2-studio/server/src/parser/tokenizer';
+import { TokenType, Token, tokenizeDocument, unquoteString } from '../parser/tokenizer';
 
 // Bounds the forward search in correlateListing: without it, an entry with no real match would
 // scan all the way to the end of the candidate list, and every subsequent miss would redo that
@@ -25,6 +25,11 @@ export const MAX_LOOKAHEAD = 5000;
 export interface ListingEntry {
   address: bigint;
   text: string;
+  /** How many machine-code bytes this statement assembled to, when the listing showed them.
+   * Absent for a statement the assembler emitted no bytes for at all (a label on its own line, an
+   * `org`, a macro definition) — which is exactly the distinction the inlay hints rely on to stay
+   * off lines that produced no code. */
+  byteLength?: number;
 }
 
 export interface SourceLocation {
@@ -37,6 +42,10 @@ export interface AddressLineMap {
   addressToLocation: Map<bigint, SourceLocation>;
   /** Keyed by `${fsPath}:${line}` for O(1) breakpoint resolution. */
   locationToAddress: Map<string, bigint>;
+  /** Per `${fsPath}:${line}`, how many machine-code bytes that line assembled to. Same keying as
+   * locationToAddress, and populated only for lines the listing showed bytes for — see
+   * ListingEntry.byteLength. Read by the inlay hints (server/src/features/inlayHints.ts). */
+  sizeByLocation: Map<string, number>;
   /** Per source file, the ascending list of lines that actually produced machine code. The
    * complement of this — blank lines, comments, `include`s, bare labels, macro definition bodies,
    * everything in a data section — is most of a typical asm file, and is exactly where a user
@@ -74,12 +83,38 @@ const HEADER_RE = /^\[([0-9A-Fa-f]+)\]\s?(.*)$/;
 // that happens to start with hex-digit-like letters (e.g. "add..." — 'a' and 'd' are valid hex).
 const OFFSET_AND_BYTES_RE = /^([0-9A-Fa-f]+):((?:\s[0-9A-Fa-f]{2})+)\s\s+(.*)$/;
 
+/**
+ * Folds a byte-dump continuation line into the entry it belongs to.
+ *
+ * A continuation carries hex byte pairs and nothing else — no address header, no source text,
+ * since the macro emits the statement's text only once. Requiring *every* token to be a two-digit
+ * pair is what keeps this from mistaking any other stray line for one, in which case the bytes are
+ * simply not counted rather than a wrong total being reported.
+ */
+function addContinuationBytes(entry: ListingEntry | undefined, rawLine: string): void {
+  if (!entry) return;
+  const trimmed = rawLine.trim();
+  if (trimmed.length === 0) return;
+
+  const parts = trimmed.split(/\s+/);
+  if (!parts.every((part) => /^[0-9A-Fa-f]{2}$/.test(part))) return;
+  entry.byteLength = (entry.byteLength ?? 0) + parts.length;
+}
+
 export function parseListingFile(content: string): ListingEntry[] {
   const entries: ListingEntry[] = [];
 
   for (const rawLine of content.split(/\r\n|\r|\n/)) {
     const header = HEADER_RE.exec(rawLine);
-    if (!header) continue; // byte-dump continuation line, or trailing blank — not a new entry
+    if (!header) {
+      // Not a new entry — but a statement whose byte dump was too long for one line continues on
+      // the following lines, which carry bytes and nothing else. Those bytes belong to the entry
+      // above, and folding them in is what makes byteLength the statement's real size: an ELF
+      // header emitted by a `format` directive is 120 bytes spread over sixteen lines, and
+      // counting only the first would report it as 8.
+      addContinuationBytes(entries[entries.length - 1], rawLine);
+      continue;
+    }
 
     const address = BigInt(`0x${header[1]}`);
     const rest = header[2];
@@ -87,7 +122,11 @@ export function parseListingFile(content: string): ListingEntry[] {
     const text = (withBytes ? withBytes[3] : rest).trim();
     if (text.length === 0) continue;
 
-    entries.push({ address, text });
+    // The byte dump is a run of " XX" pairs, so its length in bytes is how many matched here plus
+    // whatever the continuation lines above add to it.
+    const byteLength = withBytes ? withBytes[2].trim().split(/\s+/).length : undefined;
+
+    entries.push({ address, text, byteLength });
   }
 
   return entries;
@@ -116,7 +155,7 @@ function reconstructLine(tokens: Token[]): string {
  * package deliberately kept separate from the language server's own richer parser, since all
  * this needs is "what would this line's listing text look like", not a full symbol index).
  */
-export function buildCandidateSequence(entryFsPath: string, maxFiles = 500): Candidate[] {
+export function buildCandidateSequence(entryFsPath: string, maxFiles = 500, toRealPath?: (fsPath: string) => string | undefined): Candidate[] {
   const result: Candidate[] = [];
   const visited = new Set<string>();
   const stack: string[] = [entryFsPath];
@@ -125,6 +164,13 @@ export function buildCandidateSequence(entryFsPath: string, maxFiles = 500): Can
     const resolved = path.resolve(fsPath);
     if (visited.has(resolved) || visited.size >= maxFiles) return;
     visited.add(resolved);
+
+    // What the *caller* knows this file as. The language server compiles a positional copy of any
+    // document with unsaved edits (see liveShadow.ts), so the tree walked here can be a shadow
+    // directory whose paths mean nothing to the editor — every candidate has to come back out
+    // under the real file's path or nothing will match a document URI later. Files that aren't
+    // shadows (and every caller that has no shadows at all) map to themselves.
+    const reported = toRealPath?.(resolved) ?? resolved;
 
     let text: string;
     try {
@@ -144,7 +190,7 @@ export function buildCandidateSequence(entryFsPath: string, maxFiles = 500): Can
         continue;
       }
 
-      result.push({ fsPath: resolved, line: i + 1, text: reconstructLine(tokens) });
+      result.push({ fsPath: reported, line: i + 1, text: reconstructLine(tokens) });
     }
   }
 
@@ -157,6 +203,7 @@ export function buildCandidateSequence(entryFsPath: string, maxFiles = 500): Can
 export function correlateListing(entries: ListingEntry[], candidates: Candidate[]): AddressLineMap {
   const addressToLocation = new Map<bigint, SourceLocation>();
   const locationToAddress = new Map<string, bigint>();
+  const sizeByLocation = new Map<string, number>();
   const mappedLinesByFile = new Map<string, number[]>();
 
   let cursor = 0;
@@ -176,6 +223,10 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
     const key = `${loc.fsPath}:${loc.line}`;
     if (!locationToAddress.has(key)) {
       locationToAddress.set(key, entry.address);
+      // Same first-wins rule as the address above, and for the same reason: one source line can be
+      // reached by more than one listing entry (a macro invoked twice), and the first is the one
+      // whose address the rest of the map already describes.
+      if (entry.byteLength !== undefined) sizeByLocation.set(key, entry.byteLength);
       const lines = mappedLinesByFile.get(loc.fsPath);
       if (lines) lines.push(loc.line);
       else mappedLinesByFile.set(loc.fsPath, [loc.line]);
@@ -189,7 +240,7 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
   // one sorted sweep.
   for (const lines of mappedLinesByFile.values()) lines.sort((a, b) => a - b);
 
-  return { addressToLocation, locationToAddress, mappedLinesByFile };
+  return { addressToLocation, locationToAddress, sizeByLocation, mappedLinesByFile };
 }
 
 export interface BuiltAddressLineMap extends AddressLineMap {

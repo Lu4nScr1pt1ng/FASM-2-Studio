@@ -136,10 +136,14 @@ describe('console: integratedTerminal (real adapter.js, real gdb, real pty)', fu
         stopOnEntry: false,
       });
 
+      // Not necessarily sent by the time the launch response lands: the terminal is set up
+      // alongside the launch and only has to be settled by configurationDone, which is the last
+      // moment before the program starts.
+      await waitFor(() => client.reverseRequests.length > 0, 5000, 'the adapter to ask the client for a terminal');
       assert.deepStrictEqual(
         client.reverseRequests.map((r) => r.command),
         ['runInTerminal'],
-        'the adapter never asked the client for a terminal',
+        'the adapter asked the client for something other than a terminal',
       );
       assert.ok(terminal, 'no terminal was started');
 
@@ -157,13 +161,71 @@ describe('console: integratedTerminal (real adapter.js, real gdb, real pty)', fu
 
       await client.sendRequest('disconnect');
 
-      // Ending the session releases the terminal holder, so the terminal is not left with a stray
-      // shell sleeping in it forever.
-      await waitFor(() => terminal!.exitCode !== null || terminal!.signalCode !== null, 10000, 'the terminal holder to exit');
+      // Ending the session drops the agent's connection, and the agent stops holding the terminal
+      // open — after offering the keypress that keeps the program's last output on screen, which
+      // is what this test answers with.
+      await waitFor(() => /press Enter/.test(terminalOutput), 10000, 'the agent to offer to close the terminal');
+      terminal!.stdin!.write('\n');
+      await waitFor(() => terminal!.exitCode !== null || terminal!.signalCode !== null, 10000, 'the terminal agent to exit');
     } catch (err) {
       throw new Error(`${(err as Error).message}\n--- terminal ---\n${terminalOutput}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       terminal?.kill();
+      proc.kill();
+    }
+  });
+
+  it('uses a terminal opened before the session started, which is how the extension does it', async function () {
+    this.timeout(40000);
+
+    // The extension's route (extension/src/inferiorTerminal.ts): it opens the terminal itself, with
+    // the agent as the terminal's own process, and tells the session where to listen. Nothing asks
+    // the client to run anything, so no shell is anywhere near this — the agent is simply already
+    // out there, reconnecting until the adapter is listening.
+    const endpoint = path.join(dir, 'endpoint.sock');
+    const agentArgv = `'${process.execPath}' '${path.join(__dirname, '..', 'dist', 'adapter.js')}' --terminal-agent '${endpoint}'`;
+    const terminal = spawn('script', ['-q', '-c', agentArgv, '/dev/null'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
+    let terminalOutput = '';
+    terminal.stdout?.on('data', (c: Buffer) => (terminalOutput += c.toString('utf8')));
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+
+    try {
+      await client.sendRequest('initialize', {
+        adapterID: 'fasm2',
+        linesStartAt1: true,
+        columnsStartAt1: true,
+        pathFormat: 'path',
+        supportsRunInTerminalRequest: true,
+      });
+      await client.waitForEvent('initialized');
+
+      await client.sendRequest('launch', {
+        program: programPath,
+        asmFile: asmPath,
+        listingFile: listingPath,
+        cwd: dir,
+        console: 'integratedTerminal',
+        terminalEndpoint: endpoint,
+        stopOnEntry: false,
+      });
+
+      assert.deepStrictEqual(client.reverseRequests, [], 'the client was asked to open a terminal even though one was handed to the session');
+
+      await client.sendRequest('configurationDone');
+      terminal.stdin!.write(`${TYPED_LINE}\n`);
+
+      await waitFor(() => terminalOutput.includes(`got: ${TYPED_LINE}`), 15000, 'the program to answer on the terminal');
+      await client.waitForEvent('terminated');
+      assert.ok(!client.output().includes(`got: ${TYPED_LINE}`), `the program's output also reached the Debug Console:\n${client.output()}`);
+
+      await client.sendRequest('disconnect');
+      await waitFor(() => /press Enter/.test(terminalOutput), 10000, 'the agent to offer to close the terminal');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- terminal ---\n${terminalOutput}`);
+    } finally {
+      terminal.kill();
       proc.kill();
     }
   });

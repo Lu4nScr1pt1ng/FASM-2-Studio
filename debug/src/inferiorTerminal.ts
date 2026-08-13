@@ -7,16 +7,27 @@
 // assembly.
 //
 // The fix is the one every real debugger uses: run the program on a terminal, and tell gdb about
-// it. DAP's runInTerminal request asks the *client* to open a terminal (VS Code's integrated one,
-// or an external window) and run a command in it; that command reports which tty it landed on, and
-// gdb's `-inferior-tty-set` points the inferior's stdin/stdout/stderr at that same tty. From then
-// on the program talks to the terminal directly and this adapter is not in the middle of it at all.
+// it. Something has to run *in* that terminal to report which tty it landed on and to keep the
+// terminal open for as long as the session lasts; gdb's `-inferior-tty-set` then points the
+// inferior's stdin/stdout/stderr at that tty, and from then on the program talks to the terminal
+// directly with this adapter not in the middle of it at all.
 //
-// The holder process stays alive so the terminal keeps its pty open, and exits on its own when the
-// adapter deletes the handshake file at the end of the session — rather than being killed, which
-// for an integrated terminal would close the panel and take the program's output with it.
+// That "something" is this adapter's own binary, re-invoked as `--terminal-agent` (terminalAgent.ts)
+// — deliberately not a shell script. A shell script has to survive being *quoted for* and *typed
+// into* whichever interactive shell the user happens to run, and that is not a battle worth
+// fighting: a `while [ -e '...' ] && [ $i -lt 43200 ]; do sleep 1; done` reaches fish as a
+// backslash-escaped wall of text, reaches cmd.exe as something else again, and a shell still busy
+// with its own startup discards typed-ahead input outright (readline and fish both switch the
+// terminal to raw mode with TCSAFLUSH, which drops whatever was typed before they were ready) —
+// leaving the command echoed on screen, never run, and the launch waiting on a handshake that will
+// never arrive. An argv of nothing but a path, a flag and an endpoint has no metacharacters for any
+// shell to mangle, and the extension avoids the shell entirely (extension/src/inferiorTerminal.ts).
+//
+// The handshake is a socket rather than a file so it also carries liveness: the agent's connection
+// drops when the adapter exits for any reason, including a crash, so the agent never outlives the
+// session that started it and no terminal is left with something sleeping in it.
 
-import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -32,70 +43,144 @@ export function runInTerminalKind(kind: ConsoleKind): 'integrated' | 'external' 
   return kind === 'externalTerminal' ? 'external' : 'integrated';
 }
 
-/** Distinguishes handshakes started within the same millisecond, which a timestamp alone does not —
+/** The flag that turns this adapter binary into the thing that runs inside the terminal. */
+export const TERMINAL_AGENT_FLAG = '--terminal-agent';
+
+/** Distinguishes endpoints created within the same millisecond, which a timestamp alone does not —
  * uniqueness here must not depend on how fast the clock happens to tick. */
-let handshakeCounter = 0;
-
-/** A private path for one session's tty handshake. Not in the workspace: this is adapter
- * bookkeeping, and a stray file appearing next to someone's source would be a bug report. */
-export function handshakeFilePath(): string {
-  return path.join(os.tmpdir(), `fasm2-studio-tty-${process.pid}-${Date.now().toString(36)}-${handshakeCounter++}`);
-}
-
-/** How long the holder keeps a terminal alive after the handshake file disappears, at the outside —
- * a session that crashes hard never gets to delete the file, and an `sh` sleeping until the machine
- * is rebooted would be a poor way to find that out. */
-const HOLDER_MAX_SECONDS = 12 * 60 * 60;
+let endpointCounter = 0;
 
 /**
- * The command the client is asked to run in the terminal: report this terminal's tty, then hold
- * the terminal open until the session is over.
+ * A private address for one session's handshake: a named pipe on Windows, a unix socket elsewhere.
  *
- * `tty` names the terminal attached to stdin, which in a client-opened terminal is the pty we are
- * after. The wait loop is a poll on the handshake file rather than anything cleverer because this
- * has to be portable /bin/sh — no bashisms, no coreutils beyond `tty` and `sleep`.
+ * Not in the workspace, and not a TCP port: a loopback listener is a second thing on the machine
+ * that can be connected to, and on Windows it is also a firewall prompt. Both forms here are
+ * reachable only through the filesystem namespace.
  */
-export function holderCommand(handshakeFile: string): string[] {
-  const quoted = `'${handshakeFile.replace(/'/g, `'\\''`)}'`;
-  const script = [
-    `tty > ${quoted}`,
-    'i=0',
-    `while [ -e ${quoted} ] && [ $i -lt ${HOLDER_MAX_SECONDS} ]; do sleep 1; i=$((i+1)); done`,
-  ].join('; ');
-  return ['/bin/sh', '-c', script];
+export function endpointPath(): string {
+  const name = `fasm2-studio-tty-${process.pid}-${Date.now().toString(36)}-${endpointCounter++}`;
+  return process.platform === 'win32' ? `\\\\.\\pipe\\${name}` : path.join(os.tmpdir(), `${name}.sock`);
 }
 
-/** A tty path the holder wrote, or undefined if it never got that far. `tty` prints "not a tty"
- * when the client ran the command somewhere without one, which is not a path and not usable. */
+/**
+ * The command the terminal is asked to run: this adapter's own binary, as the agent.
+ *
+ * `execPath` is the Node (or Electron-as-Node) binary already running this adapter, so the agent
+ * needs no Node on PATH — and `env` carries the one variable that makes an Electron binary behave
+ * as Node, since the terminal starts with the user's environment rather than this process's.
+ */
+export function agentCommand(agentModule: string, endpoint: string, execPath: string = process.execPath): string[] {
+  return [execPath, agentModule, TERMINAL_AGENT_FLAG, endpoint];
+}
+
+/** The file to start the agent from: this adapter's own bundle, which is what argv[1] names in the
+ * process the extension spawned. */
+export function agentModulePath(): string {
+  return process.argv[1];
+}
+
+/** The environment the agent has to be started with, on top of whatever the terminal already has. */
+export function agentEnv(): Record<string, string> {
+  return process.env.ELECTRON_RUN_AS_NODE ? { ELECTRON_RUN_AS_NODE: '1' } : {};
+}
+
+/** A tty path the agent reported, or undefined if what arrived is not one. The agent says
+ * "not a tty" when the client ran it somewhere without one, which is not a path and not usable. */
 export function parseTtyPath(contents: string): string | undefined {
   const line = contents.trim();
   if (!line.startsWith('/dev/')) return undefined;
   return line;
 }
 
-/** Waits for the holder to report its tty. Polled because the handshake is a file the client's
- * terminal writes on its own schedule — there is no event to wait on. */
-export async function waitForTty(handshakeFile: string, timeoutMs = 5000, pollMs = 50): Promise<string | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const tty = parseTtyPath(fs.readFileSync(handshakeFile, 'utf8'));
-      if (tty) return tty;
-    } catch {
-      // Not written yet — the terminal may still be starting up.
-    }
-    if (Date.now() >= deadline) return undefined;
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
-}
+/**
+ * The adapter's side of the handshake: listens for the agent, learns the tty, and holds the
+ * connection open for the rest of the session because that connection is what keeps the agent —
+ * and so the terminal — alive.
+ */
+export class TerminalHandshake {
+  private server: net.Server | undefined;
+  private connection: net.Socket | undefined;
+  private received = '';
+  private tty: string | undefined;
+  private waiters: Array<(tty: string | undefined) => void> = [];
+  private closed = false;
 
-/** Ends the holder's wait loop, which closes out the terminal without closing the terminal panel
- * the program's output is still sitting in. */
-export function releaseTerminal(handshakeFile: string | undefined): void {
-  if (!handshakeFile) return;
-  try {
-    fs.unlinkSync(handshakeFile);
-  } catch {
-    // Already gone (the holder never started, or the session is being torn down twice).
+  constructor(readonly endpoint: string) {}
+
+  /** Starts listening. Resolves once the endpoint is actually accepting connections, so a caller
+   * can only ask the client to start the agent after there is something for it to connect to. */
+  listen(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const server = net.createServer((socket) => this.onConnection(socket));
+      server.on('error', reject);
+      server.listen(this.endpoint, () => {
+        this.server = server;
+        server.removeListener('error', reject);
+        // A later listener error (the socket file being removed underneath us, say) must not take
+        // the adapter process down with it — the handshake failing is a fallback, not a crash.
+        server.on('error', () => undefined);
+        resolve();
+      });
+    });
+  }
+
+  private onConnection(socket: net.Socket): void {
+    // One agent per session. A second connection is not something that happens in normal use, and
+    // accepting it would mean two terminals both believing they own the program's I/O.
+    if (this.connection) {
+      socket.destroy();
+      return;
+    }
+    this.connection = socket;
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      if (this.tty) return;
+      this.received += chunk;
+      const newline = this.received.indexOf('\n');
+      if (newline < 0) return;
+      this.tty = parseTtyPath(this.received.slice(0, newline));
+      this.settle(this.tty);
+    });
+    // The terminal being closed by the user drops the connection. Nothing to do about the program's
+    // I/O at that point, but a launch still waiting on the handshake should stop waiting.
+    socket.on('close', () => this.settle(this.tty));
+    socket.on('error', () => this.settle(this.tty));
+  }
+
+  private settle(tty: string | undefined): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const waiter of waiters) waiter(tty);
+  }
+
+  /** Waits for the agent to report its tty. Bounded: a terminal that never starts the agent, or
+   * starts one that cannot connect back, must not hang the launch. */
+  waitForTty(timeoutMs = 10_000): Promise<string | undefined> {
+    if (this.tty) return Promise.resolve(this.tty);
+    if (this.closed) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        resolve(undefined);
+      }, timeoutMs);
+      const waiter = (tty: string | undefined): void => {
+        clearTimeout(timer);
+        resolve(tty);
+      };
+      this.waiters.push(waiter);
+    });
+  }
+
+  /** Ends the session's hold on the terminal. The agent notices the connection closing and stops
+   * holding the terminal open on its own, rather than being killed — which for an integrated
+   * terminal would close the panel and take the program's output with it. */
+  release(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.settle(this.tty);
+    this.connection?.end();
+    this.connection = undefined;
+    this.server?.close();
+    this.server = undefined;
   }
 }

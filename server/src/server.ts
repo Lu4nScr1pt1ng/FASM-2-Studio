@@ -25,6 +25,8 @@ import {
   HoverParams,
   InitializeParams,
   InitializeResult,
+  InlayHint,
+  InlayHintParams,
   Location,
   Position,
   PrepareRenameParams,
@@ -58,6 +60,7 @@ import { getDocumentSymbols } from './features/documentSymbols';
 import { runDiagnostics } from './features/diagnostics';
 import { detectEol, FormatOptions, formatLines } from './features/format';
 import { getFoldingRanges } from './features/foldingRange';
+import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
 import { getHover } from './features/hover';
 import { detectIsa } from './isa';
 import { buildLiveShadowRoot } from './features/liveShadow';
@@ -66,6 +69,7 @@ import { getRenameEdit, isRenameable } from './features/rename';
 import { getSemanticTokens, SEMANTIC_TOKENS_LEGEND } from './features/semanticTokens';
 import { getSignatureHelp } from './features/signatureHelp';
 import { getWorkspaceSymbols } from './features/workspaceSymbols';
+import { buildCandidateSequence, correlateListing } from './listing/listingMap';
 import { FasmSettings, SettingsStore } from './settings';
 import { Dialect } from './types';
 import { Workspace } from './workspace';
@@ -159,6 +163,11 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       // Full-document only: these are cheap to recompute (one tokenizer pass plus a set lookup per
       // identifier) and a delta protocol would add real bookkeeping for no measurable gain.
       semanticTokensProvider: { legend: SEMANTIC_TOKENS_LEGEND, full: true },
+      // resolveProvider: the whole hint is one short string built from data already in hand, so
+      // there is nothing worth deferring to a second round trip. Advertised unconditionally even
+      // though the feature defaults to off — the setting is resource-scoped, so one folder in a
+      // workspace can enable it while another does not, and a capability cannot be per-folder.
+      inlayHintProvider: { resolveProvider: false },
       workspace: {
         // Needed for per-folder settings to mean anything: without folder awareness every
         // resource-scoped setting collapses back to one window-wide value (see settings.ts).
@@ -406,6 +415,10 @@ async function suggestDialectIfMisconfigured(
  */
 const diagnosticsUnavailableReason = new Map<string, string | undefined>();
 
+/** Correlated listings, per entry point — the data behind the inlay hints. Populated as a
+ * by-product of the diagnostics compile below; see features/inlayHints.ts. */
+const listingMaps = new ListingMapStore();
+
 /**
  * Tells the client whether live error checking is actually running for `uri`.
  *
@@ -518,6 +531,9 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   let cwd = fsPath ? path.dirname(fsPath) : undefined;
   let reportForFsPath: string | undefined;
   let toRealPath: ((p: string) => string | undefined) | undefined;
+  /** The real (non-shadow) path of the program actually being compiled — the key the listing map
+   * is stored under, since a listing describes an entry point rather than any one of its files. */
+  let entryFsPath: string | undefined;
 
   // This file may be a fragment with no `format` of its own (an .inc/.asm meant only to be
   // `include`d into a real program) — compiling it standalone is meaningless and its real errors
@@ -548,6 +564,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       }
     }
     reportForFsPath = fsPath;
+    entryFsPath = targetFsPath;
 
     // Compile the live buffer, not whatever's last saved to disk: build a shadow directory shaped
     // like the target's, with every sibling symlinked back to the real file except this document's
@@ -573,6 +590,12 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     }
   }
 
+  // Only when hints are actually switched on, and only for fasm2: the macro is fasmg source, and
+  // fasm1 would reject both it and the -i flag carrying it. Costs one extra flag on a compile that
+  // is happening regardless, so a workspace with hints off pays nothing at all for this feature.
+  const wantsListing = settings.inlayHints !== 'off' && dialect === 'fasm2' && entryFsPath !== undefined;
+  const listingInclude = wantsListing ? bundledListingIncPath() : undefined;
+
   try {
     const result = await runDiagnostics({
       compilerPath,
@@ -583,6 +606,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       // fasm1 has its own built-in instruction set and no -i flag, so a preload is meaningless
       // (and would be rejected) there.
       preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
+      listingInclude,
       dialect,
       toRealPath,
       workspaceFolders: workspaceFolderPaths(),
@@ -592,6 +616,18 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     // this stale result instead of overwriting fresher-but-not-yet-ready diagnostics with old ones.
     if (diagnosticGenerations.get(uri) !== generation) return;
     if (!documents.get(uri)) return;
+
+    // Correlated against the tree that was actually compiled (the shadow, when there is one), with
+    // every candidate translated back to its real path so the map is keyed by paths the editor
+    // knows. Done here rather than inside runDiagnostics because it needs the source walk, which
+    // is the language server's side of the job, not the compiler runner's.
+    if (result.listing && entryFsPath) {
+      const candidates = buildCandidateSequence(compileFsPath!, undefined, toRealPath);
+      listingMaps.set(entryFsPath, correlateListing(result.listing, candidates));
+      // The hints the client is currently showing were built from the previous compile, so it has
+      // to be told to ask again — nothing else would prompt it.
+      void connection.languages.inlayHint.refresh().catch(() => undefined);
+    }
 
     // Published before the toolError branch below returns: a build that failed entirely inside an
     // include still located that error precisely, and that is the case this exists for.
@@ -926,6 +962,25 @@ connection.languages.semanticTokens.on((params: SemanticTokensParams): SemanticT
     // An empty set leaves the TextMate grammar's own colouring in place, which is the right
     // fallback: worse than ISA-aware highlighting, but never worse than having no highlighting.
     return { data: [] };
+  }
+});
+
+connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+  try {
+    const doc = documents.get(params.textDocument.uri);
+    if (!doc) return [];
+    // The synchronous read, not resolve(): this is an interactive, per-viewport request that
+    // re-fires on every scroll, and the folder's own value is already warm by the time any listing
+    // exists to serve from (a compile had to run first, and that path resolves settings).
+    const mode = settingsStore.get(params.textDocument.uri).inlayHints;
+    if (mode === 'off') return [];
+
+    const fsPath = uriToFsPath(params.textDocument.uri);
+    if (!fsPath) return [];
+    return getInlayHints(doc, params.range, listingMaps.get(fsPath), mode);
+  } catch (err) {
+    logHandlerError('onInlayHint', err);
+    return [];
   }
 });
 

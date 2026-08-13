@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -180,6 +180,24 @@
           "scope": "resource",
           "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
         },
+        "fasm2Studio.inlayHints": {
+          "type": "string",
+          "enum": [
+            "off",
+            "address",
+            "size",
+            "addressAndSize"
+          ],
+          "enumDescriptions": [
+            "No inline annotations.",
+            "The address each instruction is assembled at.",
+            "How many bytes each instruction encodes to.",
+            "Both, as \"0x00401000 · 5 bytes\"."
+          ],
+          "default": "off",
+          "scope": "resource",
+          "description": "Annotates each line that produces machine code with where it lands in memory and how large it is — the information you would otherwise have to build and read a .lst file to see. The data comes from the same background compile that live error checking already runs, so this needs fasm2Studio.diagnosticsEnabled, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
+        },
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",
@@ -268,6 +286,11 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.selectDebugger",
+        "title": "Select Debugger",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.showOutput",
         "title": "Show Language Server Log",
         "category": "FASM"
@@ -286,6 +309,20 @@
         "command": "fasm2Studio.pickProcess",
         "title": "Pick Process to Attach To",
         "category": "FASM"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "fasm2Studio.build",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.run",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus && resourceLangId == fasm"
       }
     ],
     "taskDefinitions": [
@@ -368,6 +405,11 @@
                 "type": "boolean",
                 "description": "Stop at the program's first instruction.",
                 "default": true
+              },
+              "reverseDebugging": {
+                "type": "boolean",
+                "description": "Record execution so the program can be stepped backwards — Step Back and Reverse Continue, for answering \"what was in that register before I clobbered it\" without restarting. Costs a lot of speed: gdb single-steps the program and journals every register and memory write, so leave it off for ordinary runs. Requires gdb (lldb-mi on macOS has no execution recording), and implies stopOnEntry, since recording has to begin before your code runs.",
+                "default": false
               },
               "args": {
                 "type": "array",

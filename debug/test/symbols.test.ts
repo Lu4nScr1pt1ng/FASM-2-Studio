@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { ListingEntry } from '../src/listingMap';
+import { ListingEntry } from '@fasm2-studio/server/src/listing/listingMap';
 import { buildConstantMap, buildSymbolAddressMap, formatConstantCompact, formatConstantDetailed } from '../src/symbols';
 
 function entry(address: number, text: string): ListingEntry {

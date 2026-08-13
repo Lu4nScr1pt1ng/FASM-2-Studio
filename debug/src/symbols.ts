@@ -16,7 +16,7 @@
 // far more than it would help (see session.ts's use of this for exactly that "show the value, but
 // only when we're sure what it is" distinction).
 import { Token, TokenType, tokenizeLine, unquoteString } from '@fasm2-studio/server/src/parser/tokenizer';
-import { ListingEntry } from './listingMap';
+import { ListingEntry } from '@fasm2-studio/server/src/listing/listingMap';
 
 export interface DebugSymbol {
   name: string;

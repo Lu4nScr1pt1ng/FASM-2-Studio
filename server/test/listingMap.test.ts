@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, nextMappedLineAtOrAfter, parseListingFile } from '../src/listingMap';
+import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, nextMappedLineAtOrAfter, parseListingFile } from '../src/listing/listingMap';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
