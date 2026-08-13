@@ -84,6 +84,14 @@ export interface RunCompilerOptions {
    * fasm2 one is expected, by supplying the very preload the fasm2 wrapper script hardcodes.
    * Never set implicitly: see the comment on preloadMissingError. */
   preload?: string;
+  /**
+   * fasm2Studio.compilerArgs — the user's own flags, passed to both assemblers.
+   *
+   * Not restricted to fasm2 the way the flags above are: fasm1's option set is different but it
+   * has one, and a fasm1 project needing `-d SYMBOL=value` to assemble is exactly as stuck without
+   * this as a fasmg project needing a raised `-p`.
+   */
+  extraArgs?: readonly string[];
   /** Which assembler `compilerPath` is. The two take genuinely different command lines — fasm1
    * rejects every flag fasmg takes — so getting this wrong silently disables diagnostics. Defaults
    * to fasm2, the dialect this extension is primarily built around. */
@@ -158,21 +166,20 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     // so passing fasmg's flags to it makes it print its usage banner and exit without ever
     // assembling anything — which parsed as zero diagnostics, silently disabling error reporting
     // for every fasm1 file. It also stops at the first error on its own, so it needs no -e.
-    const fasm2OnlyArgs =
-      (opts.dialect ?? 'fasm2') === 'fasm1'
-        ? []
-        : [
-            '-e',
-            String(MAX_REPORTED_ERRORS),
-            ...(opts.preload ? ['-i', `include '${opts.preload}'`] : []),
-            // After the preload, never before: the listing macro is ordinary fasmg source and the
-            // preload is what defines the instruction set it is assembled alongside. Same ordering
-            // the build task uses for a debug build.
-            ...(opts.listingInclude ? ['-i', `include '${opts.listingInclude}'`] : []),
-          ];
+    const isFasm1 = (opts.dialect ?? 'fasm2') === 'fasm1';
+    const fasm2OnlyArgs = isFasm1 ? [] : ['-e', String(MAX_REPORTED_ERRORS), ...(opts.preload ? ['-i', `include '${opts.preload}'`] : [])];
+    // After the preload, never before: the listing macro is ordinary fasmg source and the preload
+    // is what defines the instruction set it is assembled alongside. Same ordering the build task
+    // uses for a debug build.
+    const listingArgs = isFasm1 || !opts.listingInclude ? [] : ['-i', `include '${opts.listingInclude}'`];
     const { stdout, timedOut, spawnError } = await execCompiler(
       opts.compilerPath,
-      [opts.sourceFsPath, tmpOut, ...fasm2OnlyArgs],
+      // The user's flags sit between the preload and the listing macro, matching the build task
+      // exactly — a compile whose arguments differ from the build's is a compile whose errors are
+      // not the build's errors. Their position also lets a repeated flag override the one set
+      // here, since fasmg takes the last occurrence: `["-e", "5"]` really does cap the reported
+      // errors at five rather than being quietly outranked by the `-e 200` above.
+      [opts.sourceFsPath, tmpOut, ...fasm2OnlyArgs, ...(opts.extraArgs ?? []), ...listingArgs],
       opts.cwd,
       opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       opts.includePath,

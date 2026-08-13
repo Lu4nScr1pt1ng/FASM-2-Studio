@@ -5,9 +5,9 @@
 // direct test — those only surfaced via slower, indirect integration tests.
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { hasX86Preload, invalidateCompilerCache, resolveCompilerOnPath } from '../src/compilerDiscovery';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () => {
   let tmpDir: string;
@@ -15,7 +15,7 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
   let originalHome: string | undefined;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-compiler-discovery-'));
+    tmpDir = makeTempDir('fasm2-studio-compiler-discovery-');
     originalPath = process.env.PATH;
     originalHome = process.env.HOME;
     // Replace, not prepend: this dev machine has a real fasm2 installed, and prepending would
@@ -33,7 +33,7 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
     process.env.PATH = originalPath;
     process.env.HOME = originalHome;
     invalidateCompilerCache();
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await removeTempDir(tmpDir);
   });
 
   async function writeFakeTool(name: string, script: string): Promise<void> {
@@ -115,7 +115,7 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
     beforeEach(async () => {
       // PATH points somewhere that genuinely has nothing in it, simulating a GUI-launched process
       // whose PATH lacks the ~/.local/bin an interactive shell's rc file would normally add.
-      emptyPathDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-compiler-discovery-emptypath-'));
+      emptyPathDir = makeTempDir('fasm2-studio-compiler-discovery-emptypath-');
       process.env.PATH = emptyPathDir;
       originalHome = process.env.HOME;
       process.env.HOME = tmpDir;
@@ -123,7 +123,7 @@ describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () =
 
     afterEach(async () => {
       process.env.HOME = originalHome;
-      await fs.rm(emptyPathDir, { recursive: true, force: true });
+      await removeTempDir(emptyPathDir);
     });
 
     it('finds a tool in ~/.local/bin even when PATH does not include it', async () => {
@@ -159,13 +159,13 @@ describe('hasX86Preload (against fake tools that do or do not know an instructio
   let tmpDir: string;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-preload-test-'));
+    tmpDir = makeTempDir('fasm2-studio-preload-test-');
     invalidateCompilerCache();
   });
 
   afterEach(async () => {
     invalidateCompilerCache();
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await removeTempDir(tmpDir);
   });
 
   async function writeFakeTool(name: string, script: string): Promise<string> {

@@ -27,6 +27,11 @@ export interface FasmSettings {
   diagnosticsDebounceMs: number;
   includePath: string;
   fasm2Preload: string;
+  /** fasm2Studio.compilerArgs — extra flags for every invocation of the assembler, including the
+   * background compile behind live error checking. A project needing one to assemble at all (a
+   * raised `-p` pass limit, an `-i` build-time definition) otherwise reports errors across code
+   * that is entirely correct, with no setting that could reach the compile to fix it. */
+  compilerArgs: string[];
   /** See features/inlayHints.ts. Typed as the plain string union the client sends; anything
    * unrecognized is treated as "off" at the point of use rather than validated here. */
   inlayHints: InlayHintMode;
@@ -43,11 +48,26 @@ export const DEFAULT_SETTINGS: FasmSettings = {
   diagnosticsDebounceMs: 400,
   includePath: '',
   fasm2Preload: '',
+  compilerArgs: [],
   inlayHints: 'off',
   formatMnemonicColumn: 8,
   formatOperandColumn: 16,
   formatCommentColumn: 0,
 };
+
+/**
+ * `fasm2Studio.compilerArgs` as something safe to spread into a command line.
+ *
+ * The value arrives from the client as whatever is written in settings.json — VS Code marks a
+ * wrong-shaped one with a schema warning but still sends it — and it is about to become the
+ * arguments of a spawned process. A bare string would spread into one argument per character;
+ * a blank entry would reach the assembler as a second positional parameter, i.e. as an output
+ * file named "", failing a build for a reason invisible in the settings that caused it.
+ */
+export function normalizeCompilerArgs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((arg): arg is string => typeof arg === 'string' && arg.trim().length > 0);
+}
 
 /**
  * The nested `fasm2Studio.format.*` settings arrive from the client as a nested object
@@ -56,10 +76,11 @@ export const DEFAULT_SETTINGS: FasmSettings = {
  */
 export function flattenIncoming(incoming: Partial<FasmSettings> & { format?: Record<string, unknown> }): Partial<FasmSettings> {
   const { format, ...rest } = incoming;
-  if (!format) return rest;
+  const flattened: Partial<FasmSettings> = { ...rest, compilerArgs: normalizeCompilerArgs(rest.compilerArgs) };
+  if (!format) return flattened;
   const number = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback);
   return {
-    ...rest,
+    ...flattened,
     formatMnemonicColumn: number(format.mnemonicColumn, DEFAULT_SETTINGS.formatMnemonicColumn),
     formatOperandColumn: number(format.operandColumn, DEFAULT_SETTINGS.formatOperandColumn),
     formatCommentColumn: number(format.commentColumn, DEFAULT_SETTINGS.formatCommentColumn),

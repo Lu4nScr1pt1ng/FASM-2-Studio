@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.16.0
+
+### Arguments for the assembler
+
+Some projects don't assemble without a flag: fasmg gives up after 100 passes, which a macro-heavy
+project genuinely exceeds, and a build-time definition is written `-i "define TARGET_LINUX 1"`,
+since fasmg has no `-d` the way fasm1 does. The only place to put one was a hand-written
+`tasks.json`, which Build, Run and Debug don't go through — and live error checking couldn't be
+given one at all, so a project like that reported an error on every keystroke, on a line that isn't
+wrong, with nothing in the settings able to fix it.
+
+`fasm2Studio.compilerArgs` reaches every invocation of the assembler: the three commands, the debug
+build, and the background compile behind diagnostics and inlay hints. Each entry is one argument
+and is quoted as written, so `["-i", "define TARGET_LINUX 1"]` arrives as two arguments rather than
+four. Per-folder, like the rest.
+
+They are passed after `fasm2Studio.fasm2Preload` — a `-i` line of yours may use the instruction set
+the preload defines — and before the listing macro a debug build injects. fasmg takes the last
+occurrence of a repeated flag, so a flag you set here overrides the same flag set by this extension.
+
+## 1.15.0
+
+### Hovering a memory operand during a debug session reads the memory
+
+In `mov eax, dword [rsp+8]`, the word under `rsp` is `rsp` — so hovering the memory the instruction
+reads asked the debugger about the register instead. The operand is the value at this level, and it
+was the one thing you couldn't point at. Now the whole operand is read, at the width the instruction
+actually uses (x86 takes it from the other operand, so `mov eax, [x]` is a 4-byte read and
+`mov al, [x]` a 1-byte one). Typing `dword [rsp+8]` into the Watch panel works too.
+
+Nothing in an operand is gdb syntax — its registers want a `$`, its labels have no symbol table to
+be found in, its literals are fasm's, and gdb has no `dword` type — so all of it is translated
+first. Anything that can't be translated with certainty falls back to the old behaviour rather than
+being answered with a guess. The README had advertised `*(dword*)$esp` since debugging landed; that
+form never worked, and it now says `*(unsigned int*)$esp`.
+
+### Converting a numeric literal between bases, as an edit
+
+Hover has shown a literal in every other base for a while; acting on it meant reading the value off
+a tooltip and retyping it. It's now offered as a refactor — hex, decimal, binary, octal, and the
+character form for printable ASCII — filed as a refactor rather than a fix, since a literal written
+in the "wrong" base assembles to exactly the same bytes. Binary comes out grouped (`1111_1111b`).
+
+### Format on type, and arguments for Run
+
+`editor.formatOnType` (off by default) now aligns each line the moment Enter finishes it, and only
+the line you just left. `fasm2Studio.runArgs` gives `FASM: Run` and `FASM: Build and Run` the
+command line the debugger has taken all along as `"args"` in `launch.json`.
+
 ## 1.14.0
 
 ### Renaming a file keeps its `include` paths correct

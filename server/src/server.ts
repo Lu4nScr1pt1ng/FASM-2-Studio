@@ -448,6 +448,13 @@ async function suggestDialectIfMisconfigured(
     reportForFsPath: opts.reportForFsPath,
     includePath: settings.includePath || undefined,
     preload: (other === 'fasm2' && settings.fasm2Preload) || undefined,
+    // Deliberately without fasm2Studio.compilerArgs, which the real compile above does pass. Those
+    // flags were written for the dialect the project actually is, and the two assemblers share
+    // almost no option set — handing fasmg's `-e 200` to fasm1 makes it print its usage banner and
+    // exit, which parses as zero diagnostics and reads here as "it assembles cleanly as fasm1".
+    // That is this function's entire evidence for suggesting a dialect, so passing them could turn
+    // a correct fasm2 project into a prompt to switch it to fasm1. A project whose build needs
+    // flags simply gets no unsolicited suggestion, which is the harmless direction to be wrong in.
     dialect: other,
   });
   if (asOther.toolError || asOther.diagnostics.length > 0) return;
@@ -654,6 +661,7 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       // fasm1 has its own built-in instruction set and no -i flag, so a preload is meaningless
       // (and would be rejected) there.
       preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
+      extraArgs: settings.compilerArgs,
       listingInclude,
       dialect,
       toRealPath,

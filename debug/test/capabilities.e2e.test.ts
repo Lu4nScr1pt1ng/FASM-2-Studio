@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DapClient, isAvailable } from './dapClient';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 /** Counts to 5 in ebx, then writes a value to a data label and exits. Chosen so a conditional
  * breakpoint, a hit-count breakpoint and a watchpoint all have something real to observe. */
@@ -62,7 +63,7 @@ interface Fixture {
 }
 
 function build(name: string, source: string): Fixture {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `fasm2-studio-cap-${name}-`));
+  const dir = makeTempDir(`fasm2-studio-cap-${name}-`);
   const asmPath = path.join(dir, `${name}.asm`);
   const programPath = path.join(dir, name);
   const listingPath = path.join(dir, `${name}.lst`);
@@ -87,9 +88,9 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
     crash = build('crash', CRASH_SRC);
   });
 
-  after(() => {
+  after(async () => {
     for (const fixture of [loop, crash]) {
-      if (fixture) fs.rmSync(fixture.dir, { recursive: true, force: true });
+      await removeTempDir(fixture.dir);
     }
   });
 

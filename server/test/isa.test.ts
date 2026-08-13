@@ -5,7 +5,6 @@
 
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import instructionsData from '../src/data/instructions.json';
@@ -13,6 +12,7 @@ import { classifyIsa, detectIsa, invalidateIsaCache } from '../src/isa';
 import { parseDocument } from '../src/parser/symbolIndex';
 import { InstructionEntry, ParsedDocument } from '../src/types';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const x86Mnemonics = (instructionsData as InstructionEntry[]).map((i) => i.mnemonic);
 
@@ -113,12 +113,12 @@ describe('detectIsa (through a real include graph)', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-isa-test-'));
+    tmpDir = makeTempDir('fasm2-studio-isa-test-');
     invalidateIsaCache();
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await removeTempDir(tmpDir);
     invalidateIsaCache();
   });
 

@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { activeFasmEditor } from './activeEditor';
 import { dialectFor, getDefaultOutputPath } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
-import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX } from './config';
+import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX, stringArraySetting } from './config';
 import { errorMessage } from './errorMessage';
 import { validateTaskDefinition } from './taskValidation';
 import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
@@ -35,6 +35,23 @@ export interface FasmTaskDefinition extends vscode.TaskDefinition {
 function configuredIncludePathEnv(sourceFsPath: string): { [key: string]: string } | undefined {
   const configured = fasmConfig(vscode.Uri.file(sourceFsPath)).get<string>('includePath', '').trim();
   return configured ? { INCLUDE: configured } : undefined;
+}
+
+/**
+ * `fasm2Studio.compilerArgs` — extra flags for every invocation of the assembler.
+ *
+ * A project can require them to assemble at all: fasmg's `-p` raises a pass limit that a
+ * macro-heavy project genuinely exceeds, and `-i` is how a build-time definition is supplied,
+ * since fasmg (unlike fasm1) has no `-d`. Without a setting, the only way to pass one was a
+ * hand-written tasks.json, which Build, Run and Debug do not go through.
+ *
+ * Blank entries are dropped. An empty argument means nothing to either assembler — it would be
+ * read as a second positional parameter, i.e. as an output file named "" — so it can only be a
+ * leftover from editing the list, and passing it on would fail the build for a reason the user
+ * cannot see in their own settings.
+ */
+function configuredCompilerArgs(sourceFsPath: string): string[] {
+  return stringArraySetting('compilerArgs', vscode.Uri.file(sourceFsPath)).filter((arg) => arg.trim().length > 0);
 }
 
 /** Path to the listing.inc macro bundled with the extension (see extension/esbuild.js's
@@ -80,7 +97,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
     // Best-effort: if this fails, the compiler invocation below will surface its own clear error.
   }
 
-  const args: (string | vscode.ShellQuotedString)[] = [sourceFsPath, outputFsPath, ...(def.extraArgs ?? [])];
+  const args: (string | vscode.ShellQuotedString)[] = [sourceFsPath, outputFsPath];
   // fasm2Studio.fasm2Preload — supplies the x86 package to a bare `fasmg` binary the same way the
   // official fasm2 wrapper script does. Added before the listing include below so that a debug
   // build still gets both, in the order the preload expects (instruction set first). fasm1 has its
@@ -89,6 +106,14 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   if (preload) {
     args.push('-i', { value: `include "${preload.replace(/"/g, '""')}"`, quoting: vscode.ShellQuoting.Strong });
   }
+  // The user's own flags sit between the preload and the listing include, and that position is the
+  // whole of what the ordering rule has to say: a `-i` line of theirs may use the instruction set
+  // the preload defines, and nothing the preload does can depend on theirs. Being last among the
+  // flags that carry a value also means a repeated one wins — fasmg takes the final occurrence, so
+  // `["-e", "5"]` genuinely replaces the `-e 200` a diagnostics compile passes, rather than being
+  // silently ignored. Each entry is one argument and is quoted as written, so a value containing a
+  // space (`-i` and `define X 1`) stays a single argument rather than being re-split by the shell.
+  args.push(...(def.extraArgs ?? []), ...configuredCompilerArgs(sourceFsPath));
   if (def.debugBuild) {
     // vscode.ShellQuoting.Strong wraps this whole value in single quotes on POSIX shells but
     // does not escape single quotes *within* the value — so the fasm-level string must use

@@ -1,10 +1,10 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { includeRenameEdits } from '../src/features/includeRename';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -12,11 +12,11 @@ describe('include rewriting on file rename', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-rename-test-'));
+    tmpDir = makeTempDir('fasm2-studio-rename-test-');
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await removeTempDir(tmpDir);
   });
 
   /** Writes a file (creating its directories) and returns its uri. */

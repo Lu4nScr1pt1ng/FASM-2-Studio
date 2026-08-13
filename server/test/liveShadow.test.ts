@@ -1,18 +1,18 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { buildLiveShadowRoot } from '../src/features/liveShadow';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('buildLiveShadowRoot', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-shadow-test-'));
+    dir = makeTempDir('fasm2-studio-shadow-test-');
   });
 
-  afterEach(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+  afterEach(async () => {
+    await removeTempDir(dir);
   });
 
   it('overrides the live document itself when it is the compile target', async () => {

@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.15.0",
+  "version": "1.16.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -180,6 +180,15 @@
           "default": "",
           "scope": "resource",
           "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
+        },
+        "fasm2Studio.compilerArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "Extra command-line arguments for the assembler, used by everything that runs it: Build, Run, Debug, and the background compile behind live error checking. Some projects do not assemble without one — fasmg gives up after 100 passes, which a macro-heavy project genuinely exceeds ([\"-p\", \"300\"]), and a build-time definition is supplied as [\"-i\", \"define TARGET_LINUX 1\"], since fasmg has no -d the way fasm1 does. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument. They are passed after fasm2Studio.fasm2Preload and before the listing macro a debug build injects, and fasmg takes the last occurrence of a repeated flag, so a flag set here overrides the same flag set by this extension."
         },
         "fasm2Studio.updateIncludesOnFileMove": {
           "type": "string",
@@ -780,9 +789,10 @@
         "fasm2Studio.fasm1CompilerPath",
         "fasm2Studio.gdbPath",
         "fasm2Studio.fasm2Preload",
-        "fasm2Studio.includePath"
+        "fasm2Studio.includePath",
+        "fasm2Studio.compilerArgs"
       ],
-      "description": "Reading code is safe here and stays fully enabled: syntax highlighting, hover, completion, navigation, folding and formatting all work, since none of them run anything. What is withheld is everything that starts a process — live error checking, Build, Run and Debug — because those would execute an assembler (and gdb) against source the workspace controls. The five settings listed above are ignored while the workspace is untrusted, so a cloned repo cannot point them at a binary of its own choosing; trusting the folder restores both them and the disabled features."
+      "description": "Reading code is safe here and stays fully enabled: syntax highlighting, hover, completion, navigation, folding and formatting all work, since none of them run anything. What is withheld is everything that starts a process — live error checking, Build, Run and Debug — because those would execute an assembler (and gdb) against source the workspace controls. The six settings listed above are ignored while the workspace is untrusted, so a cloned repo cannot choose the binary that runs or the arguments it runs with; trusting the folder restores both them and the disabled features."
     },
     "virtualWorkspaces": {
       "supported": false,

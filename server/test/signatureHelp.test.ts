@@ -1,10 +1,10 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { getSignatureHelp } from '../src/features/signatureHelp';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -124,7 +124,7 @@ describe('signatureHelp', () => {
     // Regression test for the same underlying bug fixed in workspace.ts's walkIncludeGraph: cc.asm
     // includes both callsite.asm and macros.inc, but callsite.asm doesn't include macros.inc
     // itself — signature help while typing a call in callsite.asm must still find the macro.
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-sighelp-test-'));
+    const tmpDir = makeTempDir('fasm2-studio-sighelp-test-');
     try {
       const writeFile = async (name: string, content: string): Promise<string> => {
         const fsPath = path.join(tmpDir, name);
@@ -143,7 +143,7 @@ describe('signatureHelp', () => {
       assert.ok(help, 'expected signature help for "point", reachable via the shared entry point cc.asm');
       assert.strictEqual(help!.activeParameter, 1);
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     }
   });
 });

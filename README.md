@@ -279,6 +279,16 @@ that run the program the command line the debugger has taken all along as `"args
 each entry is quoted as one argument, so a glob or a `;` reaches the program as written rather than
 being acted on by the shell.
 
+`fasm2Studio.compilerArgs` is the same idea for the assembler rather than for your program, and some
+projects need it to assemble at all: fasmg gives up after 100 passes, which a macro-heavy project
+genuinely exceeds, and a build-time definition is written `-i "define TARGET_LINUX 1"`, since fasmg
+has no `-d` the way fasm1 does. It reaches every invocation — Build, Run, Debug, and the background
+compile behind live error checking — because a compile whose arguments differ from the build's is a
+compile whose errors are not the build's errors. The flags land after `fasm2Studio.fasm2Preload`,
+whose instruction set a `-i` line of yours may use, and before the listing macro a debug build
+injects; fasmg takes the last occurrence of a repeated flag, so one set here overrides the same flag
+set by this extension.
+
 The formatter also runs as you type if you turn on VS Code's own `editor.formatOnType`, which is off
 by default. It aligns each line the moment Enter finishes it, and only ever the line you just left —
 text moving under the cursor mid-word is what makes on-type formatting unpleasant in other languages,

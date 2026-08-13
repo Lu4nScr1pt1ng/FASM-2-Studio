@@ -4,9 +4,9 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
   const result = spawnSync('fasm2', [], { shell: true, timeout: 3000, encoding: 'utf8' });
@@ -23,7 +23,7 @@ describe('contributed fasm tasks', () => {
     }
     this.timeout(20000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-task-group-test-'));
+    const dir = makeTempDir('fasm2-studio-task-group-test-');
     const asmPath = path.join(dir, 'prog.asm');
     fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
 
@@ -38,7 +38,7 @@ describe('contributed fasm tasks', () => {
         assert.strictEqual(task.group, vscode.TaskGroup.Build, `task "${task.name}" is not in the Build group`);
       }
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });

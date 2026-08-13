@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
   const result = spawnSync('fasm2', [], { shell: true, timeout: 3000, encoding: 'utf8' });
@@ -23,8 +23,8 @@ describe('FASM: Build honors fasm2Studio.includePath', () => {
     }
     this.timeout(20000);
 
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-includepath-project-'));
-    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-includepath-package-'));
+    const projectDir = makeTempDir('fasm2-studio-includepath-project-');
+    const packageDir = makeTempDir('fasm2-studio-includepath-package-');
     const asmPath = path.join(projectDir, 'main.asm');
     fs.writeFileSync(asmPath, "format binary\ninclude 'shared.inc'\nstart:\n\tmov eax, 1\n", 'utf8');
     fs.writeFileSync(path.join(packageDir, 'shared.inc'), 'SHARED_CONST = 1\n', 'utf8');
@@ -48,8 +48,8 @@ describe('FASM: Build honors fasm2Studio.includePath', () => {
     } finally {
       await config.update('includePath', originalIncludePath, vscode.ConfigurationTarget.Global);
       await config.update('buildOutputPath', originalOutputPath, vscode.ConfigurationTarget.Global);
-      fs.rmSync(projectDir, { recursive: true, force: true });
-      fs.rmSync(packageDir, { recursive: true, force: true });
+      await removeTempDir(projectDir);
+      await removeTempDir(packageDir);
     }
   });
 });

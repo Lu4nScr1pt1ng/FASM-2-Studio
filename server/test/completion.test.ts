@@ -1,11 +1,11 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { CompletionItemKind } from 'vscode-languageserver/node';
 import { URI } from 'vscode-uri';
 import { getCompletions } from '../src/features/completion';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -58,7 +58,7 @@ describe('getCompletions', () => {
     // Regression test for the same underlying bug fixed in workspace.ts's walkIncludeGraph: cc.asm
     // includes both callsite.asm and constants.inc, but callsite.asm doesn't include
     // constants.inc itself — completion while editing callsite.asm must still offer it.
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-completion-test-'));
+    const tmpDir = makeTempDir('fasm2-studio-completion-test-');
     try {
       const writeFile = async (name: string, content: string): Promise<string> => {
         const fsPath = path.join(tmpDir, name);
@@ -76,7 +76,7 @@ describe('getCompletions', () => {
       const labels = getCompletions(ws, callsiteUri, 'fasm2').map((i) => i.label);
       assert.ok(labels.includes('SRC_CAP'), 'expected SRC_CAP, reachable via the shared entry point cc.asm');
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     }
   });
   // --- foreign instruction sets ---------------------------------------------------------------
@@ -86,11 +86,11 @@ describe('getCompletions', () => {
     let tmpDir: string;
 
     beforeEach(async () => {
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-isa-completion-'));
+      tmpDir = makeTempDir('fasm2-studio-isa-completion-');
     });
 
     afterEach(async () => {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     });
 
     async function foreignIsaProject(): Promise<{ ws: Workspace; uri: string }> {

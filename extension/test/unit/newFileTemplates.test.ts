@@ -4,9 +4,9 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { TEMPLATES, templatesFor, uniqueFileName } from '../../src/newFileTemplates';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
   const result = spawnSync('fasm2', [], { shell: true, timeout: 5000, encoding: 'utf8' });
@@ -39,14 +39,14 @@ describe('new-file templates', () => {
     // Cross-assembly is a normal thing for fasm: the PE64 template builds on Linux and the ELF64
     // one builds on Windows, so both are checked wherever this runs.
     for (const template of TEMPLATES) {
-      it(`"${template.label}" assembles`, function () {
+      it(`"${template.label}" assembles`, async function () {
         if (!fasm2Available()) {
           this.skip();
           return;
         }
         this.timeout(20000);
 
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-template-test-'));
+        const dir = makeTempDir('fasm2-studio-template-test-');
         try {
           const src = path.join(dir, template.fileName);
           const out = path.join(dir, 'out.bin');
@@ -56,12 +56,12 @@ describe('new-file templates', () => {
           assert.strictEqual(status, 0, `fasm2 rejected the template:\n${output}`);
           assert.ok(fs.existsSync(out), `no binary was produced:\n${output}`);
         } finally {
-          fs.rmSync(dir, { recursive: true, force: true });
+          await removeTempDir(dir);
         }
       });
     }
 
-    it('the Linux template actually prints its greeting when run', function () {
+    it('the Linux template actually prints its greeting when run', async function () {
       if (process.platform !== 'linux' || !fasm2Available()) {
         this.skip();
         return;
@@ -69,7 +69,7 @@ describe('new-file templates', () => {
       this.timeout(20000);
 
       const template = TEMPLATES.find((t) => t.platform === 'linux')!;
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-template-run-'));
+      const dir = makeTempDir('fasm2-studio-template-run-');
       try {
         const src = path.join(dir, template.fileName);
         const out = path.join(dir, 'hello');
@@ -83,7 +83,7 @@ describe('new-file templates', () => {
         assert.strictEqual(run.status, 0, `the template exited with ${run.status}: ${run.stderr}`);
         assert.strictEqual(run.stdout, 'Hello, world!\n');
       } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        await removeTempDir(dir);
       }
     });
   });

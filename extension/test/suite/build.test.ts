@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
   // "Not found" is reported differently per shell (bash: exit 127, cmd.exe: exit 1 with its own
@@ -24,7 +24,7 @@ describe('FASM: Build honors fasm2Studio.buildOutputPath', () => {
     }
     this.timeout(20000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-build-output-test-'));
+    const dir = makeTempDir('fasm2-studio-build-output-test-');
     const srcDir = path.join(dir, 'src');
     fs.mkdirSync(srcDir);
     const asmPath = path.join(srcDir, 'prog.asm');
@@ -46,7 +46,7 @@ describe('FASM: Build honors fasm2Studio.buildOutputPath', () => {
       assert.ok(!fs.existsSync(path.join(srcDir, 'prog')), 'expected no output left next to the source once buildOutputPath redirects it elsewhere');
     } finally {
       await config.update('buildOutputPath', original, vscode.ConfigurationTarget.Global);
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });

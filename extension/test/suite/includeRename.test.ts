@@ -4,9 +4,9 @@
 // nothing about the feature.
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 /** The server only knows a file outside the open workspace folder once it has been opened as a
  * document — the same reason the entry-point tests open theirs. */
@@ -25,7 +25,7 @@ describe('renaming a file keeps `include` paths pointing at it', () => {
   let originalMode: string | undefined;
 
   beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-include-rename-'));
+    dir = makeTempDir('fasm2-studio-include-rename-');
     const config = vscode.workspace.getConfiguration('fasm2Studio');
     originalMode = config.get<string>('updateIncludesOnFileMove');
     // The prompt is the shipped default, and its wording is asserted separately below; driving it
@@ -37,8 +37,11 @@ describe('renaming a file keeps `include` paths pointing at it', () => {
     await vscode.workspace
       .getConfiguration('fasm2Studio')
       .update('updateIncludesOnFileMove', originalMode, vscode.ConfigurationTarget.Global);
+    // Closing the editors first is what gives removeTempDir's retries something to wait for: the
+    // documents these tests open (and rename) are the handles that keep the directory locked on
+    // Windows, and they are only released once the editors holding them are gone.
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    fs.rmSync(dir, { recursive: true, force: true });
+    await removeTempDir(dir);
   });
 
   it('rewrites the include in every file that named the renamed one', async function () {

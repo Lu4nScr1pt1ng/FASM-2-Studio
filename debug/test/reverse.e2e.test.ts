@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DapClient, isAvailable } from './dapClient';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 // eax is deliberately given a distinctive value and then clobbered twice. Stepping back across the
 // clobber has to restore the value that came *before* it — which is the whole promise of the
@@ -66,7 +67,7 @@ describe('reverse debugging end-to-end (real adapter.js, real gdb execution reco
       this.skip();
       return;
     }
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-reverse-e2e-'));
+    dir = makeTempDir('fasm2-studio-reverse-e2e-');
     asmPath = path.join(dir, 'prog.asm');
     programPath = path.join(dir, 'prog');
     listingPath = path.join(dir, 'prog.lst');
@@ -77,8 +78,8 @@ describe('reverse debugging end-to-end (real adapter.js, real gdb execution reco
     fs.chmodSync(programPath, 0o755);
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('records the run, announces stepBack support, and restores a clobbered register by stepping back', async function () {

@@ -6,7 +6,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { fasmConfig, MESSAGE_PREFIX } from './config';
+import { MESSAGE_PREFIX, stringArraySetting } from './config';
 import { quoteForShell } from './shellQuote';
 
 const TERMINAL_NAME = 'FASM';
@@ -80,10 +80,13 @@ export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(o
  * so a program that reads argv could be debugged but not simply *run*, which is the more common of
  * the two. Each element is quoted individually, so an argument containing a space stays one
  * argument rather than being re-split by the shell.
+ *
+ * An empty element is kept, unlike in fasm2Studio.compilerArgs: an empty string is a perfectly
+ * ordinary argv entry for a program to receive, where for the assembler it would only ever be a
+ * stray positional.
  */
 function runArgs(outputFsPath: string): string[] {
-  const configured = fasmConfig(vscode.Uri.file(outputFsPath)).get<string[]>('runArgs', []);
-  return Array.isArray(configured) ? configured.filter((arg): arg is string => typeof arg === 'string') : [];
+  return stringArraySetting('runArgs', vscode.Uri.file(outputFsPath));
 }
 
 async function exists(fsPath: string): Promise<boolean> {

@@ -5,12 +5,12 @@
 
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { getSemanticTokens, SEMANTIC_TOKENS_LEGEND } from '../src/features/semanticTokens';
 import { Dialect } from '../src/types';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 interface DecodedToken {
   line: number;
@@ -92,11 +92,11 @@ describe('getSemanticTokens', () => {
     let tmpDir: string;
 
     beforeEach(async () => {
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-semtok-'));
+      tmpDir = makeTempDir('fasm2-studio-semtok-');
     });
 
     afterEach(async () => {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     });
 
     async function aarch64LikeProject(source: string): Promise<{ ws: Workspace; uri: string; text: string }> {

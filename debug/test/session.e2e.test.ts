@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DapClient, isAvailable } from './dapClient';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const PROGRAM_SRC = [
   'format ELF64 executable 3',
@@ -73,7 +74,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       this.skip();
       return;
     }
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-'));
+    dir = makeTempDir('fasm2-studio-dap-e2e-');
     asmPath = path.join(dir, 'prog.asm');
     programPath = path.join(dir, 'prog');
     listingPath = path.join(dir, 'prog.lst');
@@ -87,8 +88,8 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     assert.ok(fs.existsSync(listingPath), 'expected the -i injected listing.inc to produce a .lst file');
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('runs a full launch -> breakpoint -> stop -> inspect -> continue -> terminate session over real DAP framing', async function () {
@@ -158,7 +159,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // the confusing behavior this feature fixes. sil is a 64-bit-only sub-register (no 32-bit
     // legacy alias) to prove the wider REGISTER_WIDTH_BITS alias table works, not just the curated
     // Registers-scope set.
-    const regDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-regs-'));
+    const regDir = makeTempDir('fasm2-studio-dap-e2e-regs-');
     const regAsmPath = path.join(regDir, 'regs.asm');
     const regProgramPath = path.join(regDir, 'regs');
     const regListingPath = path.join(regDir, 'regs.lst');
@@ -235,7 +236,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(regDir, { recursive: true, force: true });
+      await removeTempDir(regDir);
     }
   });
 
@@ -336,7 +337,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // off the initial stack and storing it into a "argc dd ?" variable.
     this.timeout(30000);
 
-    const argcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-argc32-'));
+    const argcDir = makeTempDir('fasm2-studio-dap-e2e-argc32-');
     const argcAsmPath = path.join(argcDir, 'argc32.asm');
     const argcProgramPath = path.join(argcDir, 'argc32');
     const argcListingPath = path.join(argcDir, 'argc32.lst');
@@ -428,14 +429,14 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(argcDir, { recursive: true, force: true });
+      await removeTempDir(argcDir);
     }
   });
 
   it('shows arrays and strings for data labels, in both detailed (hover) and compact (watch/Data Labels scope) form', async function () {
     this.timeout(30000);
 
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-data-'));
+    const dataDir = makeTempDir('fasm2-studio-dap-e2e-data-');
     const dataAsmPath = path.join(dataDir, 'data.asm');
     const dataProgramPath = path.join(dataDir, 'data');
     const dataListingPath = path.join(dataDir, 'data.lst');
@@ -532,7 +533,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(dataDir, { recursive: true, force: true });
+      await removeTempDir(dataDir);
     }
   });
 
@@ -625,7 +626,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // two tokens) are never equal, so the listing's address<->line correlation unambiguously
     // attributes the generated "call" instruction to the *invocation* line, not the macro body —
     // confirmed for real against fasm2's own listing output before writing this test.
-    const stepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-step-'));
+    const stepDir = makeTempDir('fasm2-studio-dap-e2e-step-');
     const stepAsmPath = path.join(stepDir, 'step.asm');
     const stepProgramPath = path.join(stepDir, 'step');
     const stepListingPath = path.join(stepDir, 'step.lst');
@@ -803,7 +804,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // strategy — proven here by asking for the *same* 3 instructions two different ways (forward
     // from their own known-good start, and backward from the last one, an address with no source
     // mapping of its own) and requiring byte-identical results either way.
-    const disDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-disasm-'));
+    const disDir = makeTempDir('fasm2-studio-dap-e2e-disasm-');
     const disAsmPath = path.join(disDir, 'dis.asm');
     const disProgramPath = path.join(disDir, 'dis');
     const disListingPath = path.join(disDir, 'dis.lst');
@@ -931,7 +932,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(disDir, { recursive: true, force: true });
+      await removeTempDir(disDir);
     }
   });
 
@@ -943,7 +944,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // generated for the macro *name* itself), so gdb has no symbol to resolve when hovering/
     // watching "write_msg" on the invocation line — it used to fall through to gdb's own
     // evaluator and surface its raw "No symbol table is loaded. Use the \"file\" command." error.
-    const macroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-macroname-'));
+    const macroDir = makeTempDir('fasm2-studio-dap-e2e-macroname-');
     const macroAsmPath = path.join(macroDir, 'macroname.asm');
     const macroProgramPath = path.join(macroDir, 'macroname');
     const macroListingPath = path.join(macroDir, 'macroname.lst');
@@ -1029,7 +1030,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(macroDir, { recursive: true, force: true });
+      await removeTempDir(macroDir);
     }
   });
 
@@ -1085,7 +1086,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     // constants itself, evaluateRequest fell through to gdb's own expression evaluator, which
     // correctly — but unhelpfully — rejects it with "No symbol table is loaded. Use the "file"
     // command." (there's no symbol table for gdb to have loaded; fasmg never emits one).
-    const constDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-dap-e2e-const-'));
+    const constDir = makeTempDir('fasm2-studio-dap-e2e-const-');
     const constAsmPath = path.join(constDir, 'const.asm');
     const constProgramPath = path.join(constDir, 'const');
     const constListingPath = path.join(constDir, 'const.lst');
@@ -1144,7 +1145,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
-      fs.rmSync(constDir, { recursive: true, force: true });
+      await removeTempDir(constDir);
     }
   });
 });

@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 // This project's fasm/fasm1 output never produces a MarkupContent message — only the LSP type
 // allows for one (a 3.18 protocol addition) — so asserting it's a plain string here is safe.
@@ -108,7 +109,7 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
 
   it('reports a real diagnostic for an undefined symbol', async function () {
     this.timeout(15000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-'));
+    const dir = makeTempDir('fasm2-studio-test-');
     const file = path.join(dir, 'bad.asm');
     fs.writeFileSync(file, 'format binary\nmov eax, undefinedsymbol\n');
 
@@ -119,13 +120,13 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.diagnostics[0].range.start.line, 1);
       assert.match(messageText(result.diagnostics[0]), /undefinedsymbol/);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
   it('compiles an entry file but reports diagnostics against an included fragment via reportForFsPath', async function () {
     this.timeout(15000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-'));
+    const dir = makeTempDir('fasm2-studio-test-');
     const entryFile = path.join(dir, 'main.asm');
     const fragmentFile = path.join(dir, 'fragment.inc');
     fs.writeFileSync(entryFile, "format binary\ninclude 'fragment.inc'\n");
@@ -138,13 +139,13 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.diagnostics[0].range.start.line, 0);
       assert.match(messageText(result.diagnostics[0]), /undefinedsymbol/);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
   it('reports no diagnostics for a valid source file', async function () {
     this.timeout(15000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-'));
+    const dir = makeTempDir('fasm2-studio-test-');
     const file = path.join(dir, 'good.asm');
     fs.writeFileSync(file, 'format binary\nstart:\n\tmov eax, 1\n');
 
@@ -153,7 +154,7 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(result.toolError, undefined);
       assert.deepStrictEqual(result.diagnostics, []);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -164,8 +165,8 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
     // building — without an equivalent INCLUDE env var, this fails with "source file not found"
     // even though the project is entirely correct.
     this.timeout(15000);
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-project-'));
-    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-package-'));
+    const projectDir = makeTempDir('fasm2-studio-test-project-');
+    const packageDir = makeTempDir('fasm2-studio-test-package-');
     const entryFile = path.join(projectDir, 'main.asm');
     fs.writeFileSync(entryFile, "format binary\ninclude 'shared.inc'\nstart:\n\tmov eax, 1\n");
     fs.writeFileSync(path.join(packageDir, 'shared.inc'), 'SHARED_CONST = 1\n');
@@ -184,8 +185,59 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       assert.strictEqual(withIncludePath.toolError, undefined);
       assert.deepStrictEqual(withIncludePath.diagnostics, []);
     } finally {
-      fs.rmSync(projectDir, { recursive: true, force: true });
-      fs.rmSync(packageDir, { recursive: true, force: true });
+      await removeTempDir(projectDir);
+      await removeTempDir(packageDir);
+    }
+  });
+
+  // A project can require a flag to assemble at all, and until fasm2Studio.compilerArgs existed
+  // there was no way to give the background compile one — so a project like this reported an error
+  // on every edit, on a line that is not wrong, with nothing in the settings able to reach it.
+  it('passes compilerArgs through to the compile, which some projects need to assemble at all', async function () {
+    this.timeout(15000);
+    const dir = makeTempDir('fasm2-studio-compiler-args-');
+    const file = path.join(dir, 'gated.asm');
+    // `err` inside an `if` is how a fasmg project states a build-time requirement of its own.
+    // Nothing below the gate refers to BUILD_MODE: the point is the requirement itself, and a use
+    // of the undefined symbol would raise a second error that has nothing to do with it.
+    fs.writeFileSync(file, ['format binary', 'if ~ defined BUILD_MODE', "\terr 'BUILD_MODE is not defined'", 'end if', '\tmov eax, 1', ''].join('\n'));
+
+    try {
+      const without = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir });
+      assert.strictEqual(without.toolError, undefined);
+      assert.strictEqual(without.diagnostics.length, 1, 'expected the project to refuse to assemble without its flag');
+      assert.match(messageText(without.diagnostics[0]), /BUILD_MODE is not defined/);
+
+      const withArgs = await runDiagnostics({
+        compilerPath,
+        sourceFsPath: file,
+        cwd: dir,
+        extraArgs: ['-i', 'define BUILD_MODE 1'],
+      });
+      assert.strictEqual(withArgs.toolError, undefined);
+      assert.deepStrictEqual(withArgs.diagnostics, [], 'the flag should have satisfied the requirement, leaving nothing to report');
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  // The ordering the build task and this compile both rely on, stated as a behaviour rather than
+  // as a claim in a comment: user flags go last, and fasmg takes the final occurrence of one.
+  it('places compilerArgs where a repeated flag overrides the one this extension sets', async function () {
+    this.timeout(15000);
+    const dir = makeTempDir('fasm2-studio-compiler-args-order-');
+    const file = path.join(dir, 'many.asm');
+    fs.writeFileSync(file, 'format binary\nmov eax, undef1\nmov ebx, undef2\nmov ecx, undef3\n');
+
+    try {
+      const capped = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, extraArgs: ['-e', '1'] });
+      assert.strictEqual(capped.toolError, undefined);
+      assert.strictEqual(capped.diagnostics.length, 1, "a user's own -e must outrank the -e this extension passes");
+
+      const uncapped = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir });
+      assert.strictEqual(uncapped.diagnostics.length, 3, 'without an override, all three errors are still reported');
+    } finally {
+      await removeTempDir(dir);
     }
   });
 });
@@ -193,7 +245,7 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
 describe('runDiagnostics (reliability, against fake tools — no real fasm2 required)', () => {
   it('reports a toolError instead of throwing when the compiler binary does not exist', async function () {
     this.timeout(10000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-test-'));
+    const dir = makeTempDir('fasm2-studio-test-');
     try {
       const result = await runDiagnostics({
         compilerPath: '/definitely/not/a/real/compiler/anywhere',
@@ -203,7 +255,7 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       assert.deepStrictEqual(result.diagnostics, []);
       assert.ok(result.toolError, 'expected a toolError describing the spawn failure');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -213,7 +265,7 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       return;
     }
     this.timeout(10000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-hang-test-'));
+    const dir = makeTempDir('fasm2-studio-hang-test-');
     const fakeCompiler = path.join(dir, 'hangs-forever.sh');
     fs.writeFileSync(fakeCompiler, '#!/bin/sh\nsleep 30\n', 'utf8');
     fs.chmodSync(fakeCompiler, 0o755);
@@ -232,7 +284,7 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       assert.deepStrictEqual(result.diagnostics, []);
       assert.ok(elapsedMs < 5000, `expected the timeout to cut this off well under 5s, took ${elapsedMs}ms`);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -242,7 +294,7 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       return;
     }
     this.timeout(10000);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-hang-cleanup-test-'));
+    const dir = makeTempDir('fasm2-studio-hang-cleanup-test-');
     const fakeCompiler = path.join(dir, 'hangs-forever.sh');
     fs.writeFileSync(fakeCompiler, '#!/bin/sh\nsleep 30\n', 'utf8');
     fs.chmodSync(fakeCompiler, 0o755);
@@ -255,7 +307,7 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       const after = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('fasm2-studio-'));
       assert.deepStrictEqual(after, before, 'expected no leftover fasm2-studio-*.out temp files after a timed-out run');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });
@@ -318,7 +370,7 @@ describe('a build that fails entirely inside an included file', () => {
     if (!compilerPath) this.skip();
     this.timeout(15000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-foreign-'));
+    const dir = makeTempDir('fasm2-studio-foreign-');
     try {
       const included = path.join(dir, 'base.inc');
       fs.writeFileSync(included, "include 'does/not/exist.inc'\n");
@@ -340,7 +392,7 @@ describe('a build that fails entirely inside an included file', () => {
       // Diagnostic.message is typed string | MarkupContent by the LSP types; ours is always plain.
       assert.match(String(forIncluded[0].message), /not found/);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -352,7 +404,7 @@ describe('a build that fails entirely inside an included file', () => {
     if (!compilerPath) this.skip();
     this.timeout(15000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-foreign-'));
+    const dir = makeTempDir('fasm2-studio-foreign-');
     try {
       fs.writeFileSync(path.join(dir, 'base.inc'), "include 'does/not/exist.inc'\n");
       const file = path.join(dir, 'prog.asm');
@@ -371,7 +423,7 @@ describe('a build that fails entirely inside an included file', () => {
       assert.ok(result.toolError, 'a failing build must never look clean');
       assert.match(result.toolError, /base\.inc/, 'expected the failing include to be named');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });
@@ -460,10 +512,10 @@ describe('runDiagnostics (integration, real assemblers)', () => {
   const X86_PROGRAM = 'format ELF64 executable\nsegment readable executable\nentry $\n\tmov eax, 60\n\txor edi, edi\n\tsyscall\n';
 
   function inTempDir<T>(name: string, content: string, run: (file: string, dir: string) => Promise<T>): Promise<T> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-isa-diag-'));
+    const dir = makeTempDir('fasm2-studio-isa-diag-');
     const file = path.join(dir, name);
     fs.writeFileSync(file, content);
-    return run(file, dir).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
+    return run(file, dir).finally(() => removeTempDir(dir));
   }
 
   it('accepts a valid x86 program under fasm2', async function () {
@@ -509,7 +561,7 @@ describe('runDiagnostics (integration, real assemblers)', () => {
     // A real fasmg project for another target is valid: it brings its own instruction set. The
     // preload advice must never fire here -- that is the case auto-preloading x86 would corrupt.
     const pkg = Array.from({ length: 40 }, (_, i) => `macro zzq${i} a\n\tdb ${i}\nend macro\n`).join('');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-isa-diag-'));
+    const dir = makeTempDir('fasm2-studio-isa-diag-');
     fs.writeFileSync(path.join(dir, 'myisa.inc'), pkg);
     const file = path.join(dir, 'prog.asm');
     fs.writeFileSync(file, "include 'myisa.inc'\n\tzzq1 0\n\tzzq2 0\n\tzzq3 0\n");
@@ -519,7 +571,7 @@ describe('runDiagnostics (integration, real assemblers)', () => {
       assert.strictEqual(result.toolError, undefined, 'a valid foreign-ISA project must not be blamed on the compiler');
       assert.deepStrictEqual(result.diagnostics, []);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 

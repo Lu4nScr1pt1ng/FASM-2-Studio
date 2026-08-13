@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { buildLaunchArgs, GdbDriver } from '../src/gdbDriver';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 function isAvailable(command: string): boolean {
   const result = spawnSync(command, ['--version'], { timeout: 5000 });
@@ -54,7 +55,7 @@ describe('GdbDriver (integration, real gdb + a real compiled fasm2 ELF binary)',
       this.skip();
       return;
     }
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-gdb-test-'));
+    dir = makeTempDir('fasm2-studio-gdb-test-');
     const asmPath = path.join(dir, 'prog.asm');
     programPath = path.join(dir, 'prog');
     fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
@@ -64,8 +65,8 @@ describe('GdbDriver (integration, real gdb + a real compiled fasm2 ELF binary)',
     fs.chmodSync(programPath, 0o755);
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('sets a breakpoint by address, runs, stops there, and reads a register via expression evaluation', async function () {
@@ -161,7 +162,7 @@ describe('GdbDriver (unit, against a fake process that dies mid-command)', () =>
       return;
     }
     const fs2 = await import('fs/promises');
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-gdb-crash-test-'));
+    dir = makeTempDir('fasm2-studio-gdb-crash-test-');
     fakeGdbPath = path.join(dir, 'fake-gdb.sh');
     // Reads (and discards) exactly one line -- the first command GdbDriver sends -- then exits
     // without ever responding, simulating gdb crashing or being killed mid-command.
@@ -169,8 +170,8 @@ describe('GdbDriver (unit, against a fake process that dies mid-command)', () =>
     await fs2.chmod(fakeGdbPath, 0o755);
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('rejects a pending command instead of hanging forever when the process exits unexpectedly', async function () {

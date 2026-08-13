@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DapClient, isAvailable } from './dapClient';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 /** PR_SET_PTRACER (0x59616d61, "Yama") with PR_SET_PTRACER_ANY (-1), so a non-ancestor gdb is
  * allowed to attach whatever ptrace_scope is set to. See the file header. */
@@ -119,7 +120,7 @@ describe('attach end-to-end (real adapter.js, real gdb, real fasm2 binary)', fun
       this.skip();
       return;
     }
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-attach-e2e-'));
+    dir = makeTempDir('fasm2-studio-attach-e2e-');
     spin = buildWithListing(dir, 'spin', SPIN_SRC);
     crash = buildWithListing(dir, 'crash', CRASH_SRC);
 
@@ -133,8 +134,8 @@ describe('attach end-to-end (real adapter.js, real gdb, real fasm2 binary)', fun
     }
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('attaches to a running process, stops it, maps the PC to source, and leaves it running on disconnect', async function () {

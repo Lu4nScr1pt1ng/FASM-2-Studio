@@ -1,12 +1,12 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
 import { runDiagnostics } from '../src/features/diagnostics';
 import { bundledListingIncPath, getInlayHints, hintLabel, ListingMapStore, uriToFsPath } from '../src/features/inlayHints';
 import { buildCandidateSequence, correlateListing, parseListingFile } from '../src/listing/listingMap';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -169,12 +169,12 @@ describe('inlay hints end to end (requires fasm2 on PATH)', function () {
     if (!bundledListingIncPath()) this.skip();
   });
 
-  after(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(tmpDir);
   });
 
   it('reports the real encoded size of each instruction', async function () {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-hints-'));
+    tmpDir = makeTempDir('fasm2-hints-');
     const sourceFsPath = path.join(tmpDir, 'prog.asm');
     fs.writeFileSync(sourceFsPath, PROGRAM, 'utf8');
 

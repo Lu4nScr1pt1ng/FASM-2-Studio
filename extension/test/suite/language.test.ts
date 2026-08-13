@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { invalidateCompilerCache, resolveCompiler } from '../../src/compilerDiscovery';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 const FIXTURES = path.resolve(__dirname, '..', '..', '..', 'test', 'fixtures');
 
@@ -117,8 +118,7 @@ describe('FASM2 Studio extension (real VS Code host)', () => {
     this.timeout(20000);
 
     const fs = await import('fs/promises');
-    const os = await import('os');
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-lang-test-'));
+    const tmpDir = makeTempDir('fasm2-studio-lang-test-');
     const file = path.join(tmpDir, 'bad.asm');
     await fs.writeFile(file, 'format binary\nmov eax, anotherUndefinedSymbol\n', 'utf8');
 
@@ -130,7 +130,7 @@ describe('FASM2 Studio extension (real VS Code host)', () => {
       assert.ok(diagnostics.length > 0, 'expected a diagnostic for the undefined symbol');
       assert.match(diagnostics[0].message, /anotherUndefinedSymbol/);
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     }
   });
 

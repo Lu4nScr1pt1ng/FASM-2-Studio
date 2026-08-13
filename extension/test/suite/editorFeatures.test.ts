@@ -7,9 +7,9 @@
 // unit test still passes.
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 /**
  * Compares two filesystem paths the way the platform itself would.
@@ -75,7 +75,7 @@ describe('editor features (real VS Code host)', () => {
     assert.ok(ext, 'extension should be discoverable by id');
     await ext!.activate();
 
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-editor-'));
+    dir = makeTempDir('fasm2-studio-editor-');
     const file = path.join(dir, 'features.asm');
     await fs.writeFile(file, SOURCE, 'utf8');
     doc = await vscode.workspace.openTextDocument(file);
@@ -86,18 +86,14 @@ describe('editor features (real VS Code host)', () => {
     // The formatting test applies a WorkspaceEdit and never saves it, so its editor is dirty by
     // the time this runs. `closeAllEditors` on a dirty editor puts up a modal "save your changes?"
     // that nothing in a test host ever answers — the suite then hangs until the runner's timeout,
-    // and the `fs.rm` below never runs at all. Saving first is what makes the close unattended;
+    // and the removal below never runs at all. Saving first is what makes the close unattended;
     // the files are about to be deleted anyway, so what is written is irrelevant.
     await vscode.workspace.saveAll(false);
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    // Never allowed to throw: a cleanup failure here is reported by mocha as the *suite's* error
-    // and buries whichever assertion actually failed, which is the far more useful message. A
-    // leaked directory under os.tmpdir() is not worth that trade.
-    try {
-      if (dir) await fs.rm(dir, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`could not remove the temp dir ${dir}: ${(err as Error).message}`);
-    }
+    // removeTempDir never throws, which matters here: a cleanup failure reported by mocha as the
+    // *suite's* error buries whichever assertion actually failed, and that is the more useful
+    // message.
+    await removeTempDir(dir);
   });
 
   it('highlights every occurrence of the symbol under the cursor', async function () {

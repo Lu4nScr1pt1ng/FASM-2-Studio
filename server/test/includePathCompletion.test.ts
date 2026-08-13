@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { CompletionItemKind } from 'vscode-languageserver/node';
 import { getIncludePathCompletions, includePathContext, stringContext } from '../src/features/includePathCompletion';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('stringContext', () => {
   it('reports the text typed inside an unterminated literal', () => {
@@ -52,7 +52,7 @@ describe('getIncludePathCompletions', () => {
   let extraDir: string;
 
   before(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-include-'));
+    root = makeTempDir('fasm2-include-');
     sourceFile = path.join(root, 'main.asm');
     fs.writeFileSync(sourceFile, '');
     fs.writeFileSync(path.join(root, 'helpers.inc'), '');
@@ -69,8 +69,8 @@ describe('getIncludePathCompletions', () => {
     fs.writeFileSync(path.join(extraDir, 'helpers.inc'), '');
   });
 
-  after(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(root);
   });
 
   const ctx = (typed: string) => ({ quote: "'", typed, directive: 'include' });

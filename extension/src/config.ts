@@ -23,6 +23,21 @@ export function fasmConfig(resource?: vscode.Uri): vscode.WorkspaceConfiguration
 export const MESSAGE_PREFIX = 'FASM2 Studio: ';
 
 /**
+ * A `string[]` setting, read defensively.
+ *
+ * settings.json is hand-edited text. VS Code marks a value of the wrong shape with a schema
+ * warning but still hands it over exactly as written, so `"fasm2Studio.runArgs": "-v"` — a string
+ * where an array belongs — reaches the spread that builds a command line and arrives at the
+ * program as two one-character arguments. Anything that is not an array is treated as unset, and
+ * non-string elements are dropped.
+ */
+export function stringArraySetting(name: string, resource?: vscode.Uri): string[] {
+  const configured = fasmConfig(resource).get<unknown>(name, []);
+  if (!Array.isArray(configured)) return [];
+  return configured.filter((entry): entry is string => typeof entry === 'string');
+}
+
+/**
  * Where to write a setting that describes the project rather than the user — the dialect being the
  * clearest case, since one project's answer is wrong for the next one. Writing at workspace scope
  * is also what makes VS Code create `.vscode/settings.json` on its own, so the choice is recorded

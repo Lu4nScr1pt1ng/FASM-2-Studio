@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.16.0
+
+### Arguments for the assembler, everywhere it runs
+
+Some projects do not assemble without a flag. fasmg gives up after 100 passes, which a macro-heavy
+project genuinely exceeds, and a build-time definition is spelled `-i "define TARGET_LINUX 1"`,
+since fasmg has no `-d` the way fasm1 does. The only place to put one was a hand-written
+`tasks.json` — a path `FASM: Build`, `FASM: Run` and `FASM: Debug` do not take, since they build
+the task definition themselves. Live error checking had no path at all: nothing in the settings
+could reach that compile. A project of this kind therefore reported an error on every keystroke, on
+a line that is not wrong, and the fix existed nowhere in the UI.
+
+`fasm2Studio.compilerArgs` reaches every invocation of the assembler — the three commands, the
+debug build that produces the listing, and the background compile behind diagnostics and inlay
+hints. It is `resource`-scoped like the rest, so one folder's flags stay that folder's, and it is
+listed in `untrustedWorkspaces.restrictedConfigurations`: it chooses what a spawned process is told
+to do, which is not something a cloned repo gets to decide before you have trusted it.
+
+Where the flags land in the command line is the whole of the ordering rule. After
+`fasm2Studio.fasm2Preload`, because a `-i` line of yours may use the instruction set the preload
+defines while nothing the preload does can depend on yours. Before the listing macro a debug build
+injects, which stays last for the same reason it always did. Being last among the flags that carry
+a value also means a repeated one wins, since fasmg takes the final occurrence — so `["-e", "5"]`
+genuinely replaces the `-e 200` a diagnostics compile passes rather than being quietly outranked by
+it. Both of those are asserted against the real assembler now, not left as claims in a comment.
+
+The build and the diagnostics compile assemble the same argument list in the same order, which is
+the point of doing it in both places rather than only where it was noticed: a compile whose
+arguments differ from the build's is a compile whose errors are not the build's errors.
+
+One caller deliberately does not get them. The dialect probe — the compile that decides whether to
+suggest "this project is probably fasm1" — runs the *other* assembler, and the two share almost no
+option set: handing fasmg's `-e 200` to fasm1 makes it print its usage banner and exit, which parses
+as zero diagnostics and reads as "it assembles cleanly as fasm1". That is the probe's entire
+evidence, so passing your flags there could turn a correct fasm2 project into a prompt to convert it.
+A project whose build needs flags now simply gets no unsolicited suggestion.
+
+The value is treated as the untrusted text it is. `"fasm2Studio.compilerArgs": "-p 300"` — a string
+where an array belongs, which VS Code flags but still delivers as written — would spread into one
+argument per character, and a blank entry reaches the assembler as a second positional parameter,
+i.e. as an output file named `""`, failing a build for a reason invisible in the settings that
+caused it. Both are dropped on each side of the wire.
+
+### A Windows test that failed after proving its point
+
+The extension's integration suite could fail in teardown on the Windows leg of the matrix, with
+`EPERM` removing a temp directory (and `EBUSY` on another one earlier in the same run) — a green
+test reported as a failure because of the cleanup that came after it.
+
+Windows will not delete a file while a handle to it is open, and the handles belong to the editor
+rather than to the test: a document stays loaded for a moment after `closeAllEditors` resolves, and
+VS Code's own watcher holds the directory. POSIX unlinks an open file without complaint, which is
+why nothing showed up on the Linux or macOS legs.
+
+`fs.promises.rm`'s `maxRetries`/`retryDelay` is the remedy, and specifically the asynchronous form:
+the synchronous one blocks the very event loop that releases those handles, so a synchronous retry
+loop guarantees all of its attempts observe the identical locked state. Every temp directory across
+all three packages now goes through one helper per package that retries and, if the directory still
+survives, warns and leaves it to the operating system's own temp cleanup — teardown failing the test
+it just finished is the worst of both outcomes, since it reports a passing feature as broken over a
+few kilobytes the OS already knows how to reclaim.
+
 ## 1.15.0
 
 ### Hovering a memory operand during a debug session now reads the memory

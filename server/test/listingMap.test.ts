@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { buildAddressLineMap, buildCandidateSequence, correlateListing, MAX_LOOKAHEAD, nextMappedLineAtOrAfter, parseListingFile } from '../src/listing/listingMap';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -68,8 +68,8 @@ describe('buildCandidateSequence', () => {
     );
   });
 
-  it('terminates on a circular include (A includes B includes A) instead of recursing forever', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-circular-include-test-'));
+  it('terminates on a circular include (A includes B includes A) instead of recursing forever', async () => {
+    const dir = makeTempDir('fasm2-studio-circular-include-test-');
     try {
       fs.writeFileSync(path.join(dir, 'a.inc'), "A_SYM = 1\ninclude 'b.inc'\n", 'utf8');
       fs.writeFileSync(path.join(dir, 'b.inc'), "B_SYM = 2\ninclude 'a.inc'\n", 'utf8');
@@ -81,19 +81,19 @@ describe('buildCandidateSequence', () => {
       // b.inc's two lines reached through the first include, and no more after that.
       assert.deepStrictEqual(texts, ['A_SYM = 1', 'B_SYM = 2']);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
-  it('terminates on a file that includes itself directly', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-self-include-test-'));
+  it('terminates on a file that includes itself directly', async () => {
+    const dir = makeTempDir('fasm2-studio-self-include-test-');
     try {
       fs.writeFileSync(path.join(dir, 'self.inc'), "SELF_SYM = 1\ninclude 'self.inc'\n", 'utf8');
 
       const candidates = buildCandidateSequence(path.join(dir, 'self.inc'));
       assert.deepStrictEqual(candidates.map((c) => c.text), ['SELF_SYM = 1']);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });

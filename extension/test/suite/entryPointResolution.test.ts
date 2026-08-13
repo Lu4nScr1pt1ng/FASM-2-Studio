@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
   const result = spawnSync('fasm2', [], { shell: true, timeout: 3000, encoding: 'utf8' });
@@ -41,7 +41,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
     }
     this.timeout(20000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-entrypoint-test-'));
+    const dir = makeTempDir('fasm2-studio-entrypoint-test-');
     const entryPath = path.join(dir, 'cc.asm');
     const fragmentPath = path.join(dir, 'lexer.asm');
     fs.writeFileSync(entryPath, ENTRY_SRC('lexer.asm'), 'utf8');
@@ -59,7 +59,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
       assert.ok(fs.existsSync(path.join(dir, 'cc')), 'expected the entry point\'s own output ("cc"), built via the fragment\'s resolved entry point');
       assert.ok(!fs.existsSync(path.join(dir, 'lexer')), 'must not have tried to compile the fragment standalone');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -70,7 +70,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
     }
     this.timeout(20000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-entrypoint-orphan-test-'));
+    const dir = makeTempDir('fasm2-studio-entrypoint-orphan-test-');
     const orphanPath = path.join(dir, 'orphan.inc');
     fs.writeFileSync(orphanPath, 'HELPER = 1\n', 'utf8');
 
@@ -86,7 +86,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
 
       assert.ok(!fs.existsSync(path.join(dir, 'orphan')), 'must not have tried to compile the orphaned fragment standalone');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -97,7 +97,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
     }
     this.timeout(20000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-entrypoint-ambiguous-test-'));
+    const dir = makeTempDir('fasm2-studio-entrypoint-ambiguous-test-');
     const sharedPath = path.join(dir, 'shared.inc');
     const entryAPath = path.join(dir, 'projectA.asm');
     const entryBPath = path.join(dir, 'projectB.asm');
@@ -124,7 +124,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
       assert.ok(fs.existsSync(path.join(dir, 'projectB')), 'expected the picked project (projectB) to have been built');
       assert.ok(!fs.existsSync(path.join(dir, 'projectA')), 'the unpicked project must not have been built');
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });

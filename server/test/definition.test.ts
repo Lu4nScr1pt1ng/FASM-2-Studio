@@ -1,15 +1,15 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { getDefinitions } from '../src/features/definition';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('getDefinitions', () => {
   it('jumps to the include target when the position is over its path string', async () => {
     // resolveIncludeUri checks the real filesystem, so this needs real files, not synthetic URIs.
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-definition-test-'));
+    const tmpDir = makeTempDir('fasm2-studio-definition-test-');
     try {
       const mainFsPath = path.join(tmpDir, 'main.asm');
       const targetFsPath = path.join(tmpDir, 'lib.inc');
@@ -26,7 +26,7 @@ describe('getDefinitions', () => {
       assert.strictEqual(defs.length, 1);
       assert.strictEqual(defs[0].uri, targetUri);
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     }
   });
 

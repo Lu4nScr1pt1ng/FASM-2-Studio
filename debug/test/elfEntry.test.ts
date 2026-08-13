@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { readElfEntryPoint } from '../src/elfEntry';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 function isAvailable(command: string): boolean {
   const result = spawnSync(command, ['--version'], { timeout: 5000 });
@@ -11,12 +12,12 @@ function isAvailable(command: string): boolean {
 }
 
 describe('readElfEntryPoint', () => {
-  it('reads the real entry point of a fasm2-built ELF64 executable', function () {
+  it('reads the real entry point of a fasm2-built ELF64 executable', async function () {
     if (!isAvailable('fasm2') || os.platform() !== 'linux') {
       this.skip();
       return;
     }
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-elf-test-'));
+    const dir = makeTempDir('fasm2-studio-elf-test-');
     try {
       const asmPath = path.join(dir, 'prog.asm');
       const programPath = path.join(dir, 'prog');
@@ -28,7 +29,7 @@ describe('readElfEntryPoint', () => {
       assert.ok(entry !== undefined);
       assert.ok(entry! > 0n);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 

@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { DapClient, isAvailable } from './dapClient';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 /** Reads up to 32 bytes of stdin, then writes "got: " followed by exactly what it read, then exits.
  * The prefix matters: a pty echoes back whatever is typed at it, so an assertion on the input text
@@ -78,7 +79,7 @@ describe('console: integratedTerminal (real adapter.js, real gdb, real pty)', fu
       this.skip();
       return;
     }
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-tty-e2e-'));
+    dir = makeTempDir('fasm2-studio-tty-e2e-');
     asmPath = path.join(dir, 'prog.asm');
     programPath = path.join(dir, 'prog');
     listingPath = path.join(dir, 'prog.lst');
@@ -89,8 +90,8 @@ describe('console: integratedTerminal (real adapter.js, real gdb, real pty)', fu
     fs.chmodSync(programPath, 0o755);
   });
 
-  after(() => {
-    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  after(async () => {
+    await removeTempDir(dir);
   });
 
   it('carries typed input into the program and its output back out, instead of the Debug Console', async function () {

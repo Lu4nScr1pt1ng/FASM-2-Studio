@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { makeTempDir, removeTempDir } from '../tempDir';
 
 function isAvailable(command: string): boolean {
   const result = spawnSync(command, ['--version'], { timeout: 5000 });
@@ -112,7 +113,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
     }
     this.timeout(30000);
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-ext-debug-test-'));
+    const dir = makeTempDir('fasm2-studio-ext-debug-test-');
     const asmPath = path.join(dir, 'prog.asm');
     fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
 
@@ -124,7 +125,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
 
       assert.ok(stoppedAtLines.includes(9), `expected a stop at line 9 ("add eax, ebx"), got: ${stoppedAtLines.join(', ')}`);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -143,7 +144,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
     // own generated configs at all, and build directly inside resolveDebugConfiguration instead.
     // Deliberately leaves an unrelated document focused to prove this no longer depends on
     // editor focus.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-ext-debug-nofocus-test-'));
+    const dir = makeTempDir('fasm2-studio-ext-debug-nofocus-test-');
     const asmPath = path.join(dir, 'prog.asm');
     fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
     // A real file in the test's own (cleaned-up) temp dir, not a synthetic untitled document:
@@ -170,7 +171,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
 
       assert.ok(stoppedAtLines.includes(9), `expected a stop at line 9 ("add eax, ebx"), got: ${stoppedAtLines.join(', ')}`);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 
@@ -186,7 +187,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
     // typed-ahead input while it is still starting up. Nothing about that failure was visible from
     // the extension side — the session just quietly fell back to the Debug Console — so this test
     // watches for the fallback rather than for the symptom.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fasm2-studio-ext-tty-test-'));
+    const dir = makeTempDir('fasm2-studio-ext-tty-test-');
     const asmPath = path.join(dir, 'prog.asm');
     fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
 
@@ -223,7 +224,7 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
       assert.deepStrictEqual(fellBack, [], 'the session could not use the terminal it opened and fell back to the Debug Console');
     } finally {
       tracker.dispose();
-      fs.rmSync(dir, { recursive: true, force: true });
+      await removeTempDir(dir);
     }
   });
 });

@@ -1,9 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { Workspace } from '../src/workspace';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -11,11 +11,11 @@ describe('Workspace indexing', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-ws-test-'));
+    tmpDir = makeTempDir('fasm2-studio-ws-test-');
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await removeTempDir(tmpDir);
   });
 
   async function writeFile(name: string, content: string): Promise<string> {
@@ -278,7 +278,7 @@ describe('Workspace indexing', () => {
       // sharing a package directory: `set include=..\..\include` before compiling, since a bare
       // `include 'shared.inc'` that isn't next to the including file relies on the INCLUDE
       // environment variable as a search path.
-      const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-ws-test-pkg-'));
+      const packageDir = makeTempDir('fasm2-studio-ws-test-pkg-');
       await fs.writeFile(path.join(packageDir, 'shared.inc'), 'SHARED_CONST = 1\n', 'utf8');
       const uriTarget = URI.file(path.join(packageDir, 'shared.inc')).toString();
       const uriMain = await writeFile('main.asm', "format binary\ninclude 'shared.inc'\n");
@@ -291,7 +291,7 @@ describe('Workspace indexing', () => {
         ws.setIncludeSearchPaths([packageDir]);
         assert.strictEqual(ws.resolveIncludeUri(uriMain, 'shared.inc'), uriTarget);
       } finally {
-        await fs.rm(packageDir, { recursive: true, force: true });
+        await removeTempDir(packageDir);
       }
     });
   });

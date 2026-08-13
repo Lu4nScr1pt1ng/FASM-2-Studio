@@ -1,12 +1,12 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
 import { getHover } from '../src/features/hover';
 import { Workspace } from '../src/workspace';
 import directivesData from '../src/data/directives.json';
 import instructionsData from '../src/data/instructions.json';
+import { makeTempDir, removeTempDir } from './tempDir';
 
 const dialectAlwaysFasm2 = () => 'fasm2' as const;
 
@@ -222,11 +222,11 @@ describe('getHover', () => {
     let tmpDir: string;
 
     beforeEach(async () => {
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-hover-test-'));
+      tmpDir = makeTempDir('fasm2-studio-hover-test-');
     });
 
     afterEach(async () => {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     });
 
     async function writeFile(name: string, content: string): Promise<string> {
@@ -673,11 +673,11 @@ describe('getHover', () => {
     let tmpDir: string;
 
     beforeEach(async () => {
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-isa-hover-'));
+      tmpDir = makeTempDir('fasm2-studio-isa-hover-');
     });
 
     afterEach(async () => {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await removeTempDir(tmpDir);
     });
 
     async function foreignIsaProject(): Promise<{ ws: Workspace; uri: string }> {
