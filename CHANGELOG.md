@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.18.0
+
+### The memory a register points at
+
+A register row in the Registers view now carries the address it holds, which is the field that
+decides whether VS Code offers "View Binary Data" on that row at all. Data labels have had it since
+raw memory reading landed; registers did not — leaving the hex editor reachable from a buffer you
+declared by name and not from the `rsi` a syscall just filled in with one, which is the more common
+way to arrive at memory worth looking at.
+
+Segment registers are deliberately left without one. `cs` holding `0x33` is a descriptor-table
+selector, not an address, and an offer to open a memory view at byte `0x33` could only ever lead
+somewhere unmapped.
+
+It costs no extra work: the row already had to ask gdb what the register held in order to print it,
+and that same answer now serves both.
+
+### Watching a register change
+
+"Break on Value Change" on a register sets a real watchpoint instead of refusing.
+
+The menu entry was already there, because VS Code gates that action on the debug session declaring
+`supportsDataBreakpoints` rather than on anything about the row — so a register got the offer and
+could only be answered with `"rsp" is not a data label this listing knows an address for`, which is
+true and useless. gdb watches a register directly, so that is what it now does.
+
+Only "on write" is offered, because that is all gdb can implement: `rwatch $rsp` is rejected
+outright with "Expression cannot be implemented with read/access watchpoint." Offering the other two
+would put entries in the menu that fail at the moment they are chosen.
+
+What is watched is the register itself, not the memory it addresses — a watchpoint on `rsi` stops
+when the pointer is reassigned, not when the buffer it points at is written. The row's "View Binary
+Data" is what leads to the other one, and the description says which is which, because the two are
+easy to confuse and expensive to confuse for long.
+
+A register that shares a name with one of your data labels is not ambiguous: which one is meant
+comes from the row the action was invoked on, not from the name.
+
+### Opening a folder is enough
+
+The extension now activates on a workspace that contains `.asm`, `.fasm`, `.fas` or `.alm` files,
+rather than waiting for one of them to be opened as a tab. Until now a window opened on a project
+folder had no sign of this extension in it — no status bar, and no list of the programs the folder
+holds — until you happened to click a file, which is the wrong order for the one feature whose
+entire job is to tell you what is in a project you haven't opened anything in yet.
+
+`.inc` is deliberately not on that list, though the language claims it. It is a fragment extension
+shared with several unrelated ecosystems, and a fasm fragment is only ever reached through the entry
+point that includes it — which is one of the four above. Matching it would start a language server
+in every project that happens to contain an include file, to look for programs that are not there.
+
+### The FASM Entry Points section appears
+
+The Explorer section added in 1.17.0 is gated on a context key, and that key was written from
+exactly one place: the view's own `getChildren`. A view gated off is not rendered, and a view that
+is not rendered is never asked for its children — so the single call that could turn the key on was
+reachable only once the key was already on.
+
+The list is now fetched by the refresh that already ran at the end of activation and after every
+save, and that refresh is what sets the key; the view renders from what it fetched rather than
+fetching on its own. Nothing about the section's contents or behaviour changed.
+
 ## 1.17.0
 
 ### What each instruction does to the flags

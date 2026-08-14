@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.18.0
+
+### Open the memory a register points at
+
+A register row in the Registers view now offers **View Binary Data**, which opens the hex editor at
+whatever address the register holds. Data labels have had this for a while; registers hadn't — so
+the buffer you named in your source could be opened as bytes, and the `rsi` a syscall had just
+filled in with a pointer to one could not.
+
+Segment registers stay out of it: `cs` holding `0x33` is a selector, not an address, and opening a
+memory view there would only land somewhere unmapped.
+
+### Watch a register change
+
+**Break on Value Change** on a register now sets a real gdb watchpoint. It used to answer `"rsp" is
+not a data label this listing knows an address for` — true, and no help at all.
+
+Only "on write" is offered, because that's the only kind gdb can implement for a register. And what
+gets watched is the register itself, not the memory it points at: a watchpoint on `rsi` stops when
+the pointer is reassigned, not when the buffer is written. "View Binary Data" on the same row is
+what leads to the other one.
+
+### Opening a folder is enough
+
+The extension now starts up when a folder containing `.asm`/`.fasm`/`.fas`/`.alm` files is opened,
+instead of waiting for you to click one. A window opened on a project used to show no sign of the
+extension at all until a file was opened — including the list of the project's programs, which is
+the one thing you'd want *before* opening anything.
+
+### Fixed: the FASM Entry Points section never appeared
+
+The Explorer section added in 1.17.0 didn't show up. It was gated on a flag that only the section
+itself could set, and it could only set it once it was already showing. It's set during startup now,
+where it belongs.
+
 ## 1.17.0
 
 ### What each instruction does to the flags

@@ -359,7 +359,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         codeLens.refresh();
         // Same trigger, same reason: adding or removing a `format` directive is exactly what moves
         // a file into or out of this list.
-        entryPointsView.refresh();
+        void entryPointsView.refresh();
       }
     }),
   );
@@ -367,7 +367,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // The first scan is what populates the entry-point list at all: lenses computed before it
   // finished would have found an empty one and rendered nothing until the next save.
   codeLens.refresh();
-  entryPointsView.refresh();
+  // Awaited, unlike the lenses: this is the call that decides whether the Explorer grows a "FASM
+  // Entry Points" section, and leaving activation to finish without it means a window that opened
+  // on a folder rather than on a file shows nothing until something else happens to refresh.
+  await entryPointsView.refresh();
 }
 
 export async function deactivate(): Promise<void> {

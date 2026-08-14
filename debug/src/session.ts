@@ -62,6 +62,11 @@ const MAX_STEP_INSTRUCTIONS = 200_000;
  * runConsoleCommand's own doc comment. DEFAULT_COMMAND_TIMEOUT_MS (gdbDriver.ts, 10s) would fire
  * on any long-running program, so this path gets a much longer budget instead. */
 const CONSOLE_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+/** Marks a data breakpoint's `dataId` as naming a register rather than an address. A dataId is
+ * opaque to VS Code — it hands back whatever dataBreakpointInfoRequest returned — so this is
+ * purely how setDataBreakpointsRequest tells the two apart. The colon keeps it from ever colliding
+ * with the "0x...:size" form the address case uses, since a register name has no "0x" prefix. */
+const REGISTER_DATA_ID_PREFIX = 'register:';
 /** Safety cap on the Data Labels scope's own top-level list — mirrors listingMap.ts's
  * MAX_LOOKAHEAD reasoning: bounds a pathological case (a program with thousands of data labels)
  * without affecting any realistic program. */
@@ -1153,9 +1158,22 @@ export class FasmDebugSession extends DebugSession {
         kind === 'registers:gp' ? this.registerGroups.generalPurpose : kind === 'registers:pointers' ? this.registerGroups.pointers : this.registerGroups.segment;
       const variables: DebugProtocol.Variable[] = [];
       for (const name of names) {
-        const formatted = await this.formatRegister(name, REGISTER_WIDTH_BITS[name]);
+        const bits = REGISTER_WIDTH_BITS[name];
+        // Read once and format from the result, rather than calling formatRegister: the value
+        // itself is needed below as well, and asking gdb for it twice would double this scope's
+        // round-trips for nothing. (formatRegister's extra work — appending gdb's decoded flag
+        // string — applies only to eflags, which is its own group and never reaches this loop.)
+        const value = await this.readRegisterBigInt(name, bits);
+        const formatted = value !== undefined && bits !== undefined ? formatRegisterValue(name, bits, value) : undefined;
         const v: DebugProtocol.Variable = new Variable(name, formatted ?? '<unavailable>');
         v.evaluateName = name;
+        // What a register holds is, very often, an address — and this is the field that decides
+        // whether VS Code offers "View Binary Data" on the row at all, so without it the hex
+        // editor was reachable from a data label but not from the rsi/rdi/rsp actually pointing at
+        // the buffer you want to look at. Segment registers are excluded: a selector (0x33) is a
+        // descriptor-table index, not an address, and offering to open a memory view at it would
+        // only ever lead somewhere unmapped.
+        if (value !== undefined && kind !== 'registers:segment') v.memoryReference = `0x${value.toString(16)}`;
         variables.push(v);
       }
       response.body = { variables };
@@ -1403,9 +1421,35 @@ export class FasmDebugSession extends DebugSession {
    *
    * `dataId` is just the address expression to watch; the Variables view offers this on a Data
    * Label row, whose `evaluateName` is its source label.
+   *
+   * VS Code shows "Break on Value Change" on *every* variable row once the adapter declares
+   * supportsDataBreakpoints — it is gated on the session, not on the row — so a register row got
+   * the offer too and could only ever be answered with "rsp is not a data label". A register is a
+   * perfectly good thing to watch, and gdb watches one directly, so it is answered here instead.
+   * Which kind of row this is comes from the container handle rather than from the name, so a
+   * program that happens to label something `rsp` still gets its label watched.
    */
   protected dataBreakpointInfoRequest(response: DebugProtocol.DataBreakpointInfoResponse, args: DebugProtocol.DataBreakpointInfoArguments): void {
     const name = args.name;
+    const container = args.variablesReference !== undefined ? this.variableHandles.get(args.variablesReference) : undefined;
+    if (typeof container === 'string' && container.startsWith('registers')) {
+      response.body = {
+        dataId: `${REGISTER_DATA_ID_PREFIX}${name}`,
+        // Says which of the two readings this is: watching `rsi` stops when the pointer itself is
+        // reassigned, not when the buffer it points at is written — the row's "View Binary Data"
+        // is what leads to the other one, and confusing them costs a whole debugging session.
+        description: `${name} itself (not the memory it points at)`,
+        // gdb implements a register watchpoint by single-stepping and comparing, which it can only
+        // do for writes: `rwatch $rsp` is rejected outright with "Expression cannot be implemented
+        // with read/access watchpoint." Offering the other two would put two menu entries there
+        // that fail at the moment the breakpoint is set.
+        accessTypes: ['write'],
+        canPersist: false,
+      };
+      this.sendResponse(response);
+      return;
+    }
+
     const symbol = this.symbolMap.get(name);
     if (!symbol) {
       response.body = { dataId: null, description: `"${name}" is not a data label this listing knows an address for.` };
@@ -1437,11 +1481,29 @@ export class FasmDebugSession extends DebugSession {
         breakpoints.push({ verified: false });
         continue;
       }
-      const [address, size] = bp.dataId.split(':');
       // gdb's own watch/rwatch/awatch, via MI's -break-watch flags: no flag = write, -r = read,
       // -a = both. The cast gives the watched region the right width; without one gdb watches
       // whatever default size it infers for a bare address.
       const flag = bp.accessType === 'read' ? '-r ' : bp.accessType === 'readWrite' ? '-a ' : '';
+
+      // A register is watched as gdb's own `$name` convenience expression — there is no address to
+      // take, and no cast to apply, since the register already has its width. Handled before the
+      // "address:size" split below, which would otherwise read the prefix as the address.
+      if (bp.dataId.startsWith(REGISTER_DATA_ID_PREFIX)) {
+        const register = bp.dataId.slice(REGISTER_DATA_ID_PREFIX.length);
+        try {
+          const result = await this.gdb.sendCommand(`-break-watch $${register}`);
+          const watch = miData(result)?.wpt as Record<string, unknown> | undefined;
+          const number = watch?.number !== undefined ? String(watch.number) : undefined;
+          if (number) this.dataBreakpointNumbers.push(number);
+          breakpoints.push({ verified: number !== undefined });
+        } catch (err) {
+          breakpoints.push({ verified: false, message: (err as Error).message });
+        }
+        continue;
+      }
+
+      const [address, size] = bp.dataId.split(':');
       const width = size ? Number.parseInt(size, 10) : 0;
       // Every cast here is deliberately a single word. MI splits a command on whitespace, so
       // "*(int *)0x..." arrives as two arguments and is rejected with "Garbage following

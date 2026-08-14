@@ -198,6 +198,37 @@ describe('extension manifest', () => {
         );
       }
     });
+
+    // onLanguage:fasm needs a fasm file to have been *opened*, so a window that opened on a folder
+    // had none of this extension's presence in it — no status bar, and above all no "FASM Entry
+    // Points" section, which is the one thing whose entire job is to tell you what a project you
+    // have not opened a file in yet contains.
+    it('activates on opening a folder that has fasm sources in it', () => {
+      const globs = manifest.activationEvents
+        .filter((e) => e.startsWith('workspaceContains:'))
+        .map((e) => e.slice('workspaceContains:'.length));
+      assert.ok(globs.length > 0, 'no workspaceContains event — opening a fasm project folder activates nothing');
+
+      // Every extension the language claims that this extension is the natural owner of has to be
+      // covered, or a project made only of those files still activates nothing.
+      const owned = ['asm', 'fasm', 'fas', 'alm'];
+      for (const extension of owned) {
+        assert.ok(
+          globs.some((glob) => new RegExp(`[{,.]${extension}[},]`).test(glob)),
+          `no workspaceContains glob covers .${extension} (globs: ${JSON.stringify(globs)})`,
+        );
+      }
+
+      // .inc is deliberately absent, and stays that way: it is a fragment extension shared with
+      // several unrelated ecosystems, and a fasm fragment is only ever reached through the entry
+      // point that includes it — which is one of the files above. Matching it would activate this
+      // extension, and start a language server, in every project that happens to hold an include
+      // file, for a folder that has no fasm program in it to find.
+      assert.ok(
+        !globs.some((glob) => /[{,.]inc[},]/.test(glob)),
+        'a workspaceContains glob matches .inc, activating in unrelated projects that merely have include files',
+      );
+    });
   });
 
   describe('workspace trust', () => {

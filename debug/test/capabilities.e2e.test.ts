@@ -363,6 +363,121 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
     }
   });
 
+  /** Stops the program at `done:` and returns the named Registers sub-group, expanded. */
+  async function registerGroup(client: DapClient, group: string) {
+    await client.sendRequest('setBreakpoints', { source: { path: loop.asmPath }, breakpoints: [{ line: 14 }] });
+    await client.sendRequest('configurationDone');
+    await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+    const scopes = await client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('scopes', { frameId: 1 });
+    const registers = scopes.scopes.find((s) => s.name === 'Registers')!;
+    const groups = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', {
+      variablesReference: registers.variablesReference,
+    });
+    const found = groups.variables.find((v) => v.name === group)!;
+    assert.ok(found, `no "${group}" group among ${JSON.stringify(groups.variables.map((v) => v.name))}`);
+    const rows = await client.sendRequest<{ variables: Array<{ name: string; value: string; memoryReference?: string }> }>('variables', {
+      variablesReference: found.variablesReference,
+    });
+    return { containerReference: found.variablesReference, rows: rows.variables };
+  }
+
+  // A register holding an address is the usual way to arrive at a buffer worth looking at, and
+  // "View Binary Data" is offered on a row only when that row carries a memoryReference.
+  it('gives a register row a memoryReference pointing at what it holds', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(loop);
+    try {
+      const { rows } = await registerGroup(client, 'Pointers');
+      const rsp = rows.find((v) => v.name === 'rsp')!;
+      assert.ok(rsp, `no rsp among ${JSON.stringify(rows.map((v) => v.name))}`);
+      assert.ok(rsp.memoryReference, 'rsp carries no memoryReference, so the hex editor is not offered on it');
+
+      // The reference has to be the register's *own* value — the whole point is that reading memory
+      // there reads what the register points at. Compared numerically rather than as text, since
+      // the displayed hex is zero-padded to the register's width and a memoryReference is not.
+      const shownDecimal = /=\s+0x[0-9a-f]+\s+(\d+)/.exec(rsp.value)?.[1];
+      assert.strictEqual(BigInt(rsp.memoryReference), BigInt(shownDecimal!), `${rsp.memoryReference} is not the value shown (${rsp.value})`);
+
+      // rsp is the one register guaranteed to hold a mapped address here, so this read is a real
+      // check that the reference is usable rather than merely present.
+      const memory = await client.sendRequest<{ data: string }>('readMemory', { memoryReference: rsp.memoryReference, count: 8 });
+      assert.ok(memory.data.length > 0, 'the stack pointer\'s memoryReference did not read as memory');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  // A segment register holds a descriptor-table selector (0x33 in 64-bit user mode), which is not
+  // an address — offering to open a memory view at it would only ever land somewhere unmapped.
+  it('leaves a segment register without one, since a selector is not an address', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(loop);
+    try {
+      const { rows } = await registerGroup(client, 'Segment');
+      for (const row of rows) {
+        assert.strictEqual(row.memoryReference, undefined, `${row.name} should not offer a memory view`);
+      }
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  // VS Code offers "Break on Value Change" on every variable row once supportsDataBreakpoints is
+  // declared, registers included — so the answer has to be a real watchpoint rather than the
+  // "not a data label" refusal a register used to get.
+  it('breaks on a register changing, via a real gdb watchpoint', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(loop);
+    try {
+      // Breaks at "start:" instead of the shared helper's "done:", so the counting loop that
+      // changes rbx is still ahead of us.
+      await client.sendRequest('setBreakpoints', { source: { path: loop.asmPath }, breakpoints: [{ line: 7 }] });
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const scopes = await client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('scopes', { frameId: 1 });
+      const registers = scopes.scopes.find((s) => s.name === 'Registers')!;
+      const groups = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', {
+        variablesReference: registers.variablesReference,
+      });
+      const gp = groups.variables.find((v) => v.name === 'General Purpose')!;
+
+      // The container reference is what tells the adapter this "rbx" is a register rather than a
+      // data label that happens to share the name.
+      const info = await client.sendRequest<{ dataId: string | null; accessTypes?: string[] }>('dataBreakpointInfo', {
+        name: 'rbx',
+        variablesReference: gp.variablesReference,
+      });
+      assert.ok(info.dataId, `expected a dataId for the rbx register, got ${JSON.stringify(info)}`);
+      // gdb rejects rwatch/awatch on a register outright, so only 'write' may be offered.
+      assert.deepStrictEqual(info.accessTypes, ['write']);
+
+      const set = await client.sendRequest<{ breakpoints: Array<{ verified: boolean; message?: string }> }>('setDataBreakpoints', {
+        breakpoints: [{ dataId: info.dataId, accessType: 'write' }],
+      });
+      assert.strictEqual(set.breakpoints[0].verified, true, `gdb refused the register watchpoint: ${set.breakpoints[0].message}`);
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'data breakpoint');
+
+      // The loop's "inc ebx" is what stopped us, so rbx has moved off the zero it was set to.
+      const after = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: gp.variablesReference,
+      });
+      const rbx = after.variables.find((v) => v.name === 'rbx')!;
+      assert.match(rbx.value, /^rbx = 0x0*1\s/, `expected rbx to have just been incremented to 1, got "${rbx.value}"`);
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
   it('reads and writes raw memory at a data label', async function () {
     this.timeout(30000);
     const { proc, client, stderr } = await start(loop);

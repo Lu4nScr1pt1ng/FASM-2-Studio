@@ -103,14 +103,15 @@ Currently fasm2/fasmg sources only. You get:
 
 - Source breakpoints, plus **conditional** (`$ebx == 4`), **hit-count** and **log points**
 - **Function breakpoints** on any label name, resolved through the listing
-- **Watchpoints** — break when a data label is read or written
+- **Watchpoints** — break when a data label is read or written, or when a register is written
 - **Instruction breakpoints** in the disassembly view, with instruction-level stepping
 - Registers grouped by kind with decoded flags, and data labels with string/array previews
 - **Hovering a memory operand reads the memory** — `dword [rsp+8]`, `[buffer+rcx*4]`, `byte [msg]`.
   The registers, labels and fasm literals inside it are all translated into something gdb can
   evaluate, and the width comes from the operand's own size specifier or from the register it is
   paired with. Typing one into the Watch panel works the same way
-- **Raw memory** read/write, so "View Binary Data" opens a data label in the hex editor
+- **Raw memory** read/write, so "View Binary Data" opens a data label — or the address a register
+  holds — in the hex editor
 - **Set next statement**, to move the program counter to another line
 - **Restart** in place, keeping every breakpoint and watchpoint
 - Faults named properly: a SIGSEGV reads as `SIGSEGV (Segmentation fault)`, not "exception"

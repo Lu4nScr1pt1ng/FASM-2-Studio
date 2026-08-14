@@ -25,9 +25,27 @@ class EntryPointsProvider implements vscode.TreeDataProvider<EntryPoint> {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
 
+  /** The list `refresh` last fetched, which is what `getChildren` renders. Held rather than fetched
+   * per render because refresh has to ask the server anyway (see below), and a second round-trip
+   * on the way to drawing the same list would only ever return the same answer. */
+  private entryPoints: EntryPoint[] = [];
+
   constructor(private readonly getClient: () => LanguageClient | undefined) {}
 
-  refresh(): void {
+  /**
+   * Re-reads the entry-point list and publishes both things that depend on it: the context key
+   * deciding whether the view exists at all, and the rows inside it.
+   *
+   * The context key cannot be written from `getChildren`, which is where it used to live. The
+   * view's `when` clause is what gates it, and a view gated off is never rendered, so its children
+   * are never requested — leaving the one call that would turn the key on reachable only once the
+   * key was already on. A workspace whose entry points were all found by the initial scan (that
+   * is: every workspace, since that scan is what finds them) therefore had nothing to switch it,
+   * and the section never appeared.
+   */
+  async refresh(): Promise<void> {
+    this.entryPoints = await listEntryPoints(this.getClient());
+    await vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, this.entryPoints.length > 0);
     this.changed.fire();
   }
 
@@ -35,11 +53,8 @@ class EntryPointsProvider implements vscode.TreeDataProvider<EntryPoint> {
     this.changed.dispose();
   }
 
-  async getChildren(element?: EntryPoint): Promise<EntryPoint[]> {
-    if (element) return []; // flat list — an entry point has no children
-    const entryPoints = await listEntryPoints(this.getClient());
-    void vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, entryPoints.length > 0);
-    return entryPoints;
+  getChildren(element?: EntryPoint): EntryPoint[] {
+    return element ? [] : this.entryPoints; // flat list — an entry point has no children
   }
 
   getTreeItem(entry: EntryPoint): vscode.TreeItem {
@@ -69,7 +84,7 @@ class EntryPointsProvider implements vscode.TreeDataProvider<EntryPoint> {
 export function registerEntryPointsView(
   context: vscode.ExtensionContext,
   getClient: () => LanguageClient | undefined,
-): { refresh: () => void } {
+): { refresh: () => Promise<void> } {
   const provider = new EntryPointsProvider(getClient);
 
   const delegate = (viewCommand: string, target: string): vscode.Disposable =>
@@ -86,6 +101,10 @@ export function registerEntryPointsView(
     delegate('fasm2Studio.entryPoints.clean', 'fasm2Studio.clean'),
     delegate('fasm2Studio.entryPoints.openBuildOutput', 'fasm2Studio.openBuildOutput'),
     vscode.commands.registerCommand('fasm2Studio.entryPoints.refresh', () => provider.refresh()),
+    // Leaves no stale key behind for the next extension to be gated by one of the same name, and
+    // — more to the point — stops a deactivated extension from advertising a view it no longer
+    // backs with a provider.
+    { dispose: () => void vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, false) },
     provider,
   );
 

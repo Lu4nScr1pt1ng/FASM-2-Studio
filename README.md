@@ -375,8 +375,9 @@ button appears only once gdb has actually accepted the command, so a debugger th
 degrades to a message rather than a button that fails.
 
 On top of breakpoints, stepping and continue: conditional, hit-count and log points; function
-breakpoints on any label name; watchpoints on a data label; instruction breakpoints in the
-disassembly view; raw memory read/write behind VS Code's hex editor; set-next-statement; restart
+breakpoints on any label name; watchpoints on a data label, or on a register being written;
+instruction breakpoints in the disassembly view; raw memory read/write behind VS Code's hex editor,
+reachable from a data label or from the address a register holds; set-next-statement; restart
 in place; `args`/`env` for the debugged program; and faults reported by name, so a null
 dereference reads as `SIGSEGV (Segmentation fault)` rather than "exception". Currently fasm2/fasmg sources
 only; fasm1 uses a different native listing format this extension doesn't parse. The gdb backend
