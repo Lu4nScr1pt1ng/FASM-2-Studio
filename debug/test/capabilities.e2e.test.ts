@@ -152,6 +152,14 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
       ]) {
         assert.strictEqual(capabilities[capability], true, `${capability} not declared`);
       }
+
+      // Not a boolean: an undeclared or empty list leaves the Breakpoints panel with no exception
+      // section at all, so there is nothing to uncheck and gdb's stop-on-everything default is the
+      // only reachable behaviour.
+      const filters = (capabilities as unknown as { exceptionBreakpointFilters?: Array<{ filter: string }> })
+        .exceptionBreakpointFilters;
+      assert.ok(Array.isArray(filters) && filters.length > 0, 'no exceptionBreakpointFilters declared');
+      assert.ok(filters.some((f) => f.filter === 'SIGSEGV'), 'SIGSEGV is not among the declared filters');
     } finally {
       proc.kill();
     }
@@ -592,6 +600,47 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
       const info = await client.sendRequest<{ exceptionId: string; description: string }>('exceptionInfo', { threadId: 1 });
       assert.strictEqual(info.exceptionId, 'SIGSEGV');
       assert.match(info.description, /Segmentation fault/i);
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  // The default is to stop, so the only way to tell the toggle is wired to anything is to turn it
+  // off and watch the same faulting program die instead of stopping.
+  it('lets the program take a fault itself when its signal is unchecked', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(crash);
+    try {
+      await client.sendRequest('setExceptionBreakpoints', { filters: [] });
+      await client.sendRequest('configurationDone');
+
+      // Whichever arrives first decides the test: 'terminated' is the program running into its own
+      // unhandled SIGSEGV, 'stopped' is the debugger having interrupted it after all.
+      const outcome = await Promise.race([
+        client.waitForEvent('terminated').then(() => 'terminated'),
+        client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'exception').then(() => 'stopped'),
+      ]);
+      assert.strictEqual(outcome, 'terminated', 'the debugger stopped on a signal it had been told to ignore');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
+    } finally {
+      proc.kill();
+    }
+  });
+
+  // The other half of the same wire: with the filter left on, the fault still stops the session.
+  it('still stops on a fault whose signal is checked', async function () {
+    this.timeout(30000);
+    const { proc, client, stderr } = await start(crash);
+    try {
+      await client.sendRequest('setExceptionBreakpoints', { filters: ['SIGSEGV'] });
+      await client.sendRequest('configurationDone');
+      const stopped = (await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'exception')) as {
+        description?: string;
+      };
+      assert.match(stopped.description ?? '', /SIGSEGV/);
     } catch (err) {
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
     } finally {

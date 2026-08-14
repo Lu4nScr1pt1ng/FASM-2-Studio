@@ -269,6 +269,18 @@ The path inside `include '...'` completes too, against the same directories the 
 search — the including file's own first, then `fasm2Studio.includePath` — so nothing is offered that
 would then fail to resolve. Picking a directory re-opens the list for what is inside it.
 
+Dragging a file in from the explorer writes the `include` line for it, spelled against that same
+search order: relative to the file it was dropped into, which is what keeps the reference correct
+after the project moves, and against a configured include directory only when a relative path would
+have to climb out of the tree — a `'../../../vendor/fasm/include/win64a.inc'` that `INCLUDE` can
+spell as `'win64a.inc'` is both shorter and the spelling that still works on someone else's layout.
+Separators come out as forward slashes whatever the host uses, since a backslash written into a
+source file makes it non-portable and nothing later says so. Without a provider VS Code handles the
+drop itself by inserting the raw path as text, which is neither valid syntax here nor the right
+path — it is spelled against the workspace root rather than against the file being edited. A file
+dropped onto its own tab is ignored rather than turned into a self-include, and anything an
+`include` has no business naming is handed back to VS Code untouched.
+
 Expand selection (`Shift+Alt+Right`) grows by operand, statement, line, enclosing block, then file,
 instead of the editor's own word-then-whole-file fallback, which is what you get in a language with
 no brackets to stop at. Call hierarchy answers "what reaches this label, and what does it reach" as
@@ -301,7 +313,13 @@ terminal output, fasm's own `file.asm [12]:` error headers are clickable. `FASM:
 Output` removes the binary and listing a build wrote. A **FASM Entry Points** section in the
 Explorer lists the files that are programs in their own right — the same distinction that decides
 where the Run/Debug lenses appear — with Build and Debug on each row, so a project's actual build
-targets are visible without opening files one at a time. With no fasm file focused, `Ctrl+Shift+B`
+targets are visible without opening files one at a time. A workspace holding fasm sources none of
+which is a program — a tree of `.inc` fragments, or a `format` directive that is missing or
+misspelled — gets the section with an explanation in it rather than no section at all: the list was
+previously gated on there being something in it, which made its most confusing case the one case it
+said nothing about, and empty-and-unexplained is indistinguishable from this extension being broken.
+A workspace with no fasm files in it still grows nothing, which is what that gate was there for.
+With no fasm file focused, `Ctrl+Shift+B`
 offers one Build task per entry point rather than reporting that the workspace has no build task.
 Selecting several files in the explorer and choosing Build or Clean acts on all of them, resolving
 each program once even when several selected fragments belong to the same one; Run and Debug start a
@@ -336,9 +354,20 @@ by default. It aligns each line the moment Enter finishes it, and only ever the 
 text moving under the cursor mid-word is what makes on-type formatting unpleasant in other languages,
 and it is avoidable here because assembly is line-oriented.
 
-Starting from nothing, `FASM: New File` writes a hello world that already builds and runs — ELF64
-for Linux, PE64 for Windows — so the first thing you see is a working program rather than an empty
-buffer and a `format` directive to look up.
+Starting from nothing, `FASM: New File` writes a program that already builds, so the first thing you
+see is a working program rather than an empty buffer and a `format` directive to look up. Six of
+them: hello world as ELF64 and PE64, the 32-bit version of each — the interfaces are genuinely
+different, `int 0x80` taking its arguments in ebx/ecx/edx where `syscall` takes them in rdi/rsi/rdx,
+and most of the x86 material written before about 2010 is against the former — a PE64 DLL with an
+export, and a boot sector. The boot sector is the one that most rewards being written for you: 512
+bytes exactly, `format binary`, 16-bit real mode, BIOS teletype for output because nothing else
+exists yet, and a `55 AA` signature the firmware checks before it will boot the thing at all. Every
+one of them is assembled by the real compiler on each run of the test suite, and the boot sector is
+additionally checked to be exactly one sector ending in those two bytes — a starter program that
+does not build is worse than no starter program, since it is the first thing a new user sees and
+they have no way to tell their setup from our typo. Whichever templates this machine can actually
+run are offered first; the rest stay on the list, since cross-assembling is something fasm does
+perfectly well and people do deliberately.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source file is never
 modified) and launches it under gdb (or lldb-mi). Since fasm2 doesn't emit DWARF/CodeView debug
@@ -397,7 +426,19 @@ breakpoints on any label name; watchpoints on a data label, or on a register bei
 instruction breakpoints in the disassembly view; raw memory read/write behind VS Code's hex editor,
 reachable from a data label or from the address a register holds; set-next-statement; restart
 in place; `args`/`env` for the debugged program; and faults reported by name, so a null
-dereference reads as `SIGSEGV (Segmentation fault)` rather than "exception". Currently fasm2/fasmg sources
+dereference reads as `SIGSEGV (Segmentation fault)` rather than "exception".
+
+Which signals stop the session is a set of checkboxes in the Breakpoints panel — SIGSEGV, SIGILL,
+SIGFPE, SIGBUS, SIGABRT, SIGPIPE — rather than something only reachable by knowing gdb's `handle`
+command and typing it into the Debug Console. All start checked, because that is what gdb does
+before anyone asks and a panel disagreeing with the debugger would describe a session other than the
+one running; the value is in being able to turn one off. A program that installs its own SIGSEGV
+handler is a real technique rather than a curiosity, and until now it could not be run under this
+debugger without gdb interrupting every fault the program was written to handle itself. The signal
+is passed to the program in both states: whether the *debugger* pauses is a separate question from
+whether the program ever receives it, and withholding one would make the program behave differently
+under the debugger than outside it, which is the one thing a debugger must not do. gdb only —
+lldb-mi has no `handle`, so the toggles are quietly inert on macOS rather than failing the launch. Currently fasm2/fasmg sources
 only; fasm1 uses a different native listing format this extension doesn't parse. The gdb backend
 is exercised end to end locally (Linux) against a real, live compiled binary; CI runs the
 listing/MI-parser unit tests against pre-captured fixtures on every push, but doesn't install

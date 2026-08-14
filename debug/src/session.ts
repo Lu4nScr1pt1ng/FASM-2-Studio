@@ -39,6 +39,7 @@ import {
   resolveRegisterGroups,
   unsignedCastType,
 } from './registers';
+import { defaultEnabledSignals, signalHandlingCommands, SIGNAL_FILTERS } from './signalFilters';
 import { buildConstantMap, buildSymbolAddressMap, ConstantSymbol, DebugSymbol, formatConstantCompact, formatConstantDetailed } from './symbols';
 import directivesData from '@fasm2-studio/server/src/data/directives.json';
 import formatKeywordsData from '@fasm2-studio/server/src/data/formatKeywords.json';
@@ -287,6 +288,15 @@ export class FasmDebugSession extends DebugSession {
     // commands, and this is what lets the console ask it to.
     response.body.supportsCompletionsRequest = true;
     response.body.completionTriggerCharacters = [' ', '-', '$'];
+    // Without these the Breakpoints panel has no exception section at all for a FASM session, and
+    // gdb's own defaults — stop on every fault — are the only behaviour reachable. See
+    // signalFilters.ts for why a program may legitimately want them off.
+    response.body.exceptionBreakpointFilters = SIGNAL_FILTERS.map(({ filter, label, description, default: def }) => ({
+      filter,
+      label,
+      description,
+      default: def,
+    }));
     this.sendResponse(response);
     this.sendEvent(new InitializedEvent());
   }
@@ -359,6 +369,12 @@ export class FasmDebugSession extends DebugSession {
     // doing for the common gdb case, not worth failing the whole launch over on the experimental
     // macOS path.
     void this.gdb.sendCommand('-gdb-set disassembly-flavor intel').catch(() => {});
+
+    // Replays the signal choice onto the driver that has just come into existence. The client sends
+    // setExceptionBreakpoints during the configuration phase, which runs concurrently with the
+    // launch that gets here — so on a cold start that request has usually already been answered
+    // against no gdb at all, and this is the call that actually makes it take effect.
+    void this.applySignalHandling();
   }
 
   /**
@@ -604,6 +620,57 @@ export class FasmDebugSession extends DebugSession {
 
     this.lastSignal = undefined;
     this.sendEvent(new StoppedEvent(reason, MAIN_THREAD_ID));
+  }
+
+  /**
+   * Which signals should stop the session — the checkboxes in the Breakpoints panel.
+   *
+   * DAP sends the complete desired set, so a signal absent from `filters` is one to actively turn
+   * off rather than one to leave alone. Kept even when there is no gdb yet: this request arrives
+   * during the configuration phase, which races the launch that creates the driver, and
+   * startTarget replays whatever is here once gdb exists.
+   */
+  // "BreakPoints", with the capital P the base class spells its dispatch method with — the same
+  // spelling as setBreakPointsRequest above. Named the natural way, this compiles, typechecks and
+  // is simply never called, leaving the base class's no-op to answer every request: the checkboxes
+  // render, respond, and do nothing at all.
+  protected async setExceptionBreakPointsRequest(
+    response: DebugProtocol.SetExceptionBreakpointsResponse,
+    args: DebugProtocol.SetExceptionBreakpointsArguments,
+  ): Promise<void> {
+    this.enabledSignals = new Set(args.filters ?? []);
+    await this.applySignalHandling();
+    this.sendResponse(response);
+  }
+
+  private enabledSignals = defaultEnabledSignals();
+
+  /** Serializes applySignalHandling — see there for why two of them can be in flight at once. */
+  private signalHandlingQueue: Promise<void> = Promise.resolve();
+
+  /**
+   * Pushes the current signal choice into gdb.
+   *
+   * Queued rather than run directly, and reading `this.enabledSignals` when it runs rather than
+   * when it is scheduled. Two callers can be in flight at once on a cold start — startTarget
+   * replaying the stored choice onto a new gdb, and the client's own setExceptionBreakpoints — and
+   * each issues one command per signal. Interleaved, the two runs race per signal and whichever
+   * lands last wins, which is not necessarily the one holding the user's actual choice: a stale
+   * "stop SIGSEGV" arriving after the request that turned it off leaves the debugger stopping on a
+   * signal the user unchecked.
+   *
+   * Best-effort per command: `handle` is a gdb CLI command that lldb-mi does not have, and a macOS
+   * session losing its signal toggles is a far better outcome than one that fails to launch over
+   * them. Same reasoning as the `disassembly-flavor` set in startTarget.
+   */
+  private applySignalHandling(): Promise<void> {
+    this.signalHandlingQueue = this.signalHandlingQueue.then(async () => {
+      if (!this.gdb) return;
+      for (const command of signalHandlingCommands(this.enabledSignals)) {
+        await this.gdb.sendCommand(`-interpreter-exec console "${command}"`).catch(() => undefined);
+      }
+    });
+    return this.signalHandlingQueue;
   }
 
   protected exceptionInfoRequest(response: DebugProtocol.ExceptionInfoResponse): void {

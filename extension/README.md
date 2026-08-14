@@ -41,6 +41,12 @@ that, a language server parses your project and gives you:
 - **Completion for the path inside `include '...'`**, resolved the way the assembler resolves it:
   next to your source first, then `fasm2Studio.includePath`. Pick a folder and it offers what's
   inside.
+- **Drag a file in from the Explorer to get its `include` line.** The path is spelled the way the
+  assembler resolves one — relative to the file you dropped it into, or against
+  `fasm2Studio.includePath` when the file lives outside your project and a relative path would have
+  to climb out of the tree. Forward slashes, so the line stays portable. Drag several files and you
+  get one `include` per line; drop something no `include` would name and it's left to VS Code's
+  normal handling.
 - **Converting a numeric literal between bases**, as a refactor on the literal: hex, decimal, binary
   (grouped, `1111_1111b`), octal, and the character form for printable ASCII. The same reading hover
   has always shown, as an edit rather than something to retype.
@@ -59,10 +65,13 @@ that, a language server parses your project and gives you:
   line the moment Enter finishes it — only ever the line you just left, never the one you are
   still typing.
 
-`FASM: New File` writes a hello world that already builds and runs — Linux (ELF64) or Windows
-(PE64), with the `format` line, the entry point and the exit filled in — so there is something to
-press play on straight away. It sits in **File > New File…** alongside the built-in entries, as
-well as in the command palette.
+`FASM: New File` writes a program that already builds, with the `format` line, the entry point and
+the exit filled in — so there is something to press play on straight away. Six to pick from: hello
+world for Linux (ELF64) and Windows (PE64), the 32-bit version of each for following along with
+material written against `int 0x80` or the stack calling convention, a PE64 DLL with an export, and
+a **boot sector** — 512 bytes ending in `55 AA`, `format binary`, no operating system underneath,
+ready for `qemu-system-i386`. Whatever this machine can run is offered first. It sits in
+**File > New File…** alongside the built-in entries, as well as in the command palette.
 
 `FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, and are
 ordinary build tasks, so `Ctrl+Shift+B` runs them too. The extension finds your compiler
@@ -89,7 +98,14 @@ A **FASM Entry Points** section in the Explorer lists the files that are program
 right, with Build and Debug on each row and Build / Clean / Open Build Output in the context menu —
 so which of your files are programs and which are fragments is visible without opening them one at a
 time. With no fasm file focused, `Ctrl+Shift+B` offers one Build task per entry point instead of
-reporting that the workspace has no build task configured.
+reporting that the workspace has no build task configured. If your project has fasm files but none
+of them is a program, the section says so and offers to write you one, rather than disappearing and
+leaving you to guess whether anything looked.
+
+`FASM: Show Listing` (`Ctrl+Alt+L`) opens the assembler's own listing for the program the active
+file belongs to. `FASM: Check All Entry Points` (`Ctrl+Alt+Shift+B`) assembles every program in the
+workspace and fills the Problems panel with what the compiler says, including for files you have
+never opened.
 
 Debug configurations are offered in the Run and Debug panel's dropdown without needing a
 `launch.json` — both a launch and an attach entry.
@@ -115,6 +131,12 @@ Currently fasm2/fasmg sources only. You get:
 - **Set next statement**, to move the program counter to another line
 - **Restart** in place, keeping every breakpoint and watchpoint
 - Faults named properly: a SIGSEGV reads as `SIGSEGV (Segmentation fault)`, not "exception"
+- **Checkboxes in the Breakpoints panel for which signals stop you** — SIGSEGV, SIGILL, SIGFPE,
+  SIGBUS, SIGABRT, SIGPIPE. All on by default, which is what gdb does anyway; the point is being
+  able to turn one off. A program that installs its own SIGSEGV handler can then run under the
+  debugger without being interrupted at every fault it was written to handle itself. The signal is
+  always passed to the program either way — unchecking one means "don't stop me for this", never
+  "hide it from the program"
 - `args` and `env` in `launch.json` for the debugged program
 - **A terminal of its own**, so a program that reads stdin can be typed at — `"console"` picks
   between `integratedTerminal` (default), `externalTerminal` and `debugConsole`. The terminal is

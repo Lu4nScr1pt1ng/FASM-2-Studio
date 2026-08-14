@@ -17,9 +17,28 @@ import { EntryPoint, listEntryPoints } from './entryPoints';
 
 export const ENTRY_POINTS_VIEW_ID = 'fasm2Studio.entryPoints';
 
-/** Gates the view's `when` clause, so a workspace with no fasm programs in it doesn't grow an
- * empty section in its Explorer. */
+/** True once the workspace holds at least one buildable program. Decides whether the view has rows;
+ * no longer the only thing deciding whether the view exists (see HAS_SOURCES_CONTEXT). */
 const HAS_ENTRY_POINTS_CONTEXT = 'fasm2Studio.hasEntryPoints';
+
+/**
+ * True when the workspace holds fasm sources but none of them is a program — the state the welcome
+ * view explains.
+ *
+ * Gating the view on entry points alone made its most confusing case invisible: a project of
+ * `.inc` fragments, or one whose `format` directive is missing or misspelled, produced no view at
+ * all and therefore no hint that this extension had looked and found nothing. An absent section
+ * reads as "this extension has nothing to say here", which is indistinguishable from it being
+ * broken. A workspace with no fasm files in it at all still gets nothing, which is the case the
+ * original gate existed for.
+ */
+const HAS_SOURCES_CONTEXT = 'fasm2Studio.hasFasmSources';
+
+/** Any file this extension would treat as fasm source. Includes `.inc`, unlike the manifest's
+ * activation globs: a workspace made only of fragments is precisely the one that needs explaining,
+ * and by the time this runs the extension is already active, so there is no unrelated project to
+ * avoid waking up. */
+const FASM_SOURCE_GLOB = '**/*.{asm,fasm,fas,alm,inc}';
 
 class EntryPointsProvider implements vscode.TreeDataProvider<EntryPoint> {
   private readonly changed = new vscode.EventEmitter<void>();
@@ -45,7 +64,16 @@ class EntryPointsProvider implements vscode.TreeDataProvider<EntryPoint> {
    */
   async refresh(): Promise<void> {
     this.entryPoints = await listEntryPoints(this.getClient());
-    await vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, this.entryPoints.length > 0);
+    const hasEntryPoints = this.entryPoints.length > 0;
+    await vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, hasEntryPoints);
+    // Only asked when there are no entry points: with rows to show the view is already visible, and
+    // a workspace-wide file search on every refresh — which runs on every save of a fasm file —
+    // would be paid for an answer nothing reads. `maxResults: 1` makes it a search for existence
+    // rather than a listing; the default excludes (files.exclude/search.exclude) keep it out of
+    // node_modules and friends.
+    const hasSources =
+      hasEntryPoints || (await vscode.workspace.findFiles(FASM_SOURCE_GLOB, undefined, 1)).length > 0;
+    await vscode.commands.executeCommand('setContext', HAS_SOURCES_CONTEXT, hasSources);
     this.changed.fire();
   }
 
@@ -105,7 +133,12 @@ export function registerEntryPointsView(
     // Leaves no stale key behind for the next extension to be gated by one of the same name, and
     // — more to the point — stops a deactivated extension from advertising a view it no longer
     // backs with a provider.
-    { dispose: () => void vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, false) },
+    {
+      dispose: () => {
+        void vscode.commands.executeCommand('setContext', HAS_ENTRY_POINTS_CONTEXT, false);
+        void vscode.commands.executeCommand('setContext', HAS_SOURCES_CONTEXT, false);
+      },
+    },
     provider,
   );
 

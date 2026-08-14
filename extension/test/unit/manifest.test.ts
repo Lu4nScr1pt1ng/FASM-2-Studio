@@ -33,6 +33,7 @@ interface Manifest {
     configurationDefaults: Record<string, Record<string, unknown>>;
     keybindings: Array<{ command: string; key: string; mac?: string; when?: string }>;
     views?: Record<string, Array<{ id: string; name: string; when?: string }>>;
+    viewsWelcome?: Array<{ view: string; contents: string; when?: string }>;
   };
 }
 
@@ -355,9 +356,40 @@ describe('extension manifest', () => {
     });
 
     // Without a `when`, the section shows up in the Explorer of every workspace this extension has
-    // ever activated in, including ones with no fasm program in them at all.
-    it('is gated on there actually being an entry point to list', () => {
-      assert.strictEqual(view?.when, 'fasm2Studio.hasEntryPoints');
+    // ever activated in, including ones with no fasm source in them at all. The gate is sources
+    // rather than entry points, so that a project which *has* fasm files but no program still gets
+    // the section — that is the case the welcome view below exists to explain, and a view gated off
+    // renders neither rows nor welcome.
+    it('is gated on the workspace actually holding fasm sources', () => {
+      assert.strictEqual(view?.when, 'fasm2Studio.hasFasmSources');
+    });
+
+    describe('the empty state', () => {
+      const welcome = (manifest.contributes.viewsWelcome ?? []).filter((w) => w.view === 'fasm2Studio.entryPoints');
+
+      // A project of `.inc` fragments, or one whose `format` directive is missing or misspelled,
+      // produces an empty list. Empty and unexplained is indistinguishable from broken.
+      it('explains an empty list rather than showing a blank section', () => {
+        assert.strictEqual(welcome.length, 1, 'expected exactly one welcome view for the entry points view');
+        assert.ok(welcome[0].contents.trim().length > 0, 'the welcome view has no contents');
+      });
+
+      // Without this the welcome would render *underneath* a populated list, which is where VS Code
+      // puts it when the condition still holds.
+      it('shows only while there is no entry point', () => {
+        assert.strictEqual(welcome[0].when, '!fasm2Studio.hasEntryPoints');
+      });
+
+      // The whole point of an empty state is the way out of it. A welcome view renders a markdown
+      // command link as a button, and both of these are contributed commands.
+      it('offers a way out, and only through commands this extension contributes', () => {
+        const links = [...welcome[0].contents.matchAll(/\(command:([^)]+)\)/g)].map((m) => m[1]);
+        assert.ok(links.length > 0, 'the welcome view offers no action to take');
+        const contributed = new Set(manifest.contributes.commands.map((c) => c.command));
+        for (const link of links) {
+          assert.ok(contributed.has(link), `the welcome view links to ${link}, which is not contributed`);
+        }
+      });
     });
 
     // These take a tree element, not a Uri, so invoking one from the palette — where there is no
@@ -396,7 +428,18 @@ describe('extension manifest', () => {
 
     it('binds each of the things you do to a file, so none of them needs the palette', () => {
       const bound = new Set(manifest.contributes.keybindings.map((b) => b.command));
-      for (const command of ['fasm2Studio.build', 'fasm2Studio.buildAndRun', 'fasm2Studio.run', 'fasm2Studio.debug', 'fasm2Studio.clean']) {
+      for (const command of [
+        'fasm2Studio.build',
+        'fasm2Studio.buildAndRun',
+        'fasm2Studio.run',
+        'fasm2Studio.debug',
+        'fasm2Studio.clean',
+        // Both are things you reach for repeatedly while working on one file: the listing is the
+        // reference you check an encoding against, and checking every entry point is what you do
+        // after editing a shared `.inc` that the open-editor diagnostics cannot speak for.
+        'fasm2Studio.showListing',
+        'fasm2Studio.checkAll',
+      ]) {
         assert.ok(bound.has(command), `${command} has no keybinding`);
       }
     });

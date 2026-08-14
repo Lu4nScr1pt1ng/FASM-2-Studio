@@ -1,5 +1,116 @@
 # Changelog
 
+## 1.20.0
+
+### The include line you would have counted `../` levels to write
+
+Dragging a file in from the explorer now writes the `include` line for it.
+
+fasm has no module system: a path inside a string literal is the only thing tying two files
+together, and writing one means counting directory levels by hand against a search order that is not
+written down anywhere in the project. The gesture people already try — drag the file in — previously
+fell through to VS Code's own default, which inserts the raw path as plain text. That is neither
+valid syntax here nor even the right path: it is spelled against the workspace root rather than
+against the file being edited.
+
+The path is spelled the way fasmg resolves one. Relative to the including file first, which is both
+what the assembler looks at first and what keeps the reference correct after the project moves. A
+configured `fasm2Studio.includePath` directory is preferred only when the relative path would have
+to climb out of the tree — `'../../../vendor/fasm/include/win64a.inc'` encodes the layout of one
+machine, where `'win64a.inc'` against a search directory is shorter and survives someone else's
+checkout. The deepest matching search directory wins, since it spells the shortest path. An absolute
+path is the last resort, for a file on another Windows drive where no relative path exists at all.
+
+Separators are forward slashes whatever the host uses: fasm accepts them on Windows, and a backslash
+written into a source file makes it non-portable in a way nothing later warns about. A quote in a
+file name is doubled, which is how both fasm1 and fasmg escape one — left raw, the literal would end
+early and the rest of the path would be parsed as code.
+
+Dropping several files writes one `include` per line, in the order dragged. A file dropped onto its
+own tab is skipped rather than turned into a self-include, and anything an `include` has no business
+naming — a `.png`, a `Makefile` — is handed back to VS Code untouched rather than blocking the rest
+of the selection.
+
+### Which signals stop you, as checkboxes rather than as gdb trivia
+
+The Breakpoints panel now has an exception section: SIGSEGV, SIGILL, SIGFPE, SIGBUS, SIGABRT,
+SIGPIPE.
+
+Every DAP capability is gated on the client seeing it declared, so an undeclared
+`exceptionBreakpointFilters` is not a graceful degradation — it is an empty section, and gdb's
+stop-on-everything default as the only reachable behaviour. Changing it meant knowing the `handle`
+command and typing it into the Debug Console.
+
+All six start checked, because that is what `info handle` reports before anyone asks; a default
+disagreeing with the debugger would make the panel describe a session other than the one running.
+The value is in being able to turn one off. A program that installs its own SIGSEGV handler is a
+real technique rather than a curiosity, and it could not previously be run under this debugger
+without gdb interrupting every fault the program was written to handle itself.
+
+The signal is passed to the program in both states. Whether the *debugger* pauses is a separate
+question from whether the program ever receives it, and swallowing one would make the program behave
+differently under the debugger than outside it — the one thing a debugger must not do.
+
+Two things about the wiring are worth recording, because both are silent when wrong. The base
+class dispatches to `setExceptionBreakPointsRequest`, with the capital P it also spells
+`setBreakPointsRequest` with; named the natural way the method compiles, typechecks and is never
+called, leaving the base class's no-op to answer every request — checkboxes that render, respond,
+and do nothing. And the launch-time replay onto a newly created gdb races the client's own request,
+each issuing one command per signal: interleaved, whichever lands last wins, which is not
+necessarily the one holding the user's choice. Applications are queued, and read the current
+selection when they run rather than when they were scheduled.
+
+gdb only. lldb-mi has no `handle`, so the toggles are inert on macOS rather than failing the launch,
+the same way the `disassembly-flavor` set already is.
+
+### Four more programs to start from, including a boot sector
+
+`FASM: New File` offered two hello worlds. It now offers six.
+
+Added: the 32-bit ELF and PE hello worlds, since the interfaces are genuinely different — `int 0x80`
+takes its arguments in ebx/ecx/edx where `syscall` takes them in rdi/rsi/rdx — and a large share of
+the x86 material people learn from is written against the older one; a PE64 DLL with an export; and
+a boot sector.
+
+The boot sector is the one that most rewards being written for you, and the case fasm is arguably
+best known for: 512 bytes exactly, `format binary`, 16-bit real mode, BIOS teletype for output
+because nothing else exists yet, and the `55 AA` signature the firmware checks before it will boot
+the sector at all. Nothing about a wrong one looks wrong — it simply does not boot.
+
+Templates are assembled by the real compiler on every test run, and the boot sector is additionally
+asserted to be exactly one sector ending in those two bytes. Naming the DLL's export `Add` is what
+turned up the reason to say so in its own header comment: fasmg's x86 package defines mnemonics
+case-insensitively, so a procedure called `Add` is read as the `add` instruction and the file does
+not assemble.
+
+`platform` on a template is now optional, meaning output no operating system loads at all. Those
+rank between the host's own templates and another platform's: "you cannot double-click this" is
+true of a boot sector everywhere, so it is not the wrong choice for this host the way a PE binary is
+on Linux. It is also the only real answer on macOS, which has no template of its own.
+
+### An empty Entry Points list that says why it is empty
+
+The **FASM Entry Points** view was gated on there being an entry point in it, which made its most
+confusing case the one case it said nothing about. A project of `.inc` fragments, or one whose
+`format` directive is missing or misspelled, produced no view at all — and an absent section reads
+as "this extension has nothing to say here", which is indistinguishable from it being broken.
+
+The view is now gated on the workspace holding fasm sources, with a welcome view explaining the
+empty state and offering `FASM: New File` and a refresh. A workspace with no fasm files in it still
+grows nothing, which is what the original gate existed for. The search behind the new key only runs
+when there are no entry points, and asks for one result rather than a listing.
+
+### Smaller things
+
+`FASM: Show Listing` is bound to `Ctrl+Alt+L` and added to the editor title bar's run menu;
+`FASM: Check All Entry Points` is bound to `Ctrl+Alt+Shift+B`. Both are things you reach for
+repeatedly while working on one file, and both previously needed the palette every time.
+
+The status bar shows the compiler's file name rather than its full path. It is this extension's one
+permanent piece of status bar real estate, and a configured compiler is routinely an absolute path —
+an unshortened `C:\Users\...\fasm2\fasm2.cmd` crowded out every other extension's item to say
+something the tooltip already said in full.
+
 ## 1.19.0
 
 ### The programs you did not have open

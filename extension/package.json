@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -424,11 +424,18 @@
           "id": "fasm2Studio.entryPoints",
           "name": "FASM Entry Points",
           "icon": "$(file-binary)",
-          "when": "fasm2Studio.hasEntryPoints",
+          "when": "fasm2Studio.hasFasmSources",
           "visibility": "collapsed"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "fasm2Studio.entryPoints",
+        "when": "!fasm2Studio.hasEntryPoints",
+        "contents": "No file here declares a `format` directive, so this workspace has no program to build yet.\n\nA file becomes an entry point by naming the output it produces (`format ELF64 executable 3`, `format PE64 console`, `format binary`). An included fragment doesn't need one — it builds through whichever program includes it.\n[Create a Program](command:fasm2Studio.newFile)\n\nAlready have one? It may not be indexed yet.\n[Refresh](command:fasm2Studio.entryPoints.refresh)"
+      }
+    ],
     "keybindings": [
       {
         "command": "fasm2Studio.build",
@@ -458,6 +465,18 @@
         "command": "fasm2Studio.clean",
         "key": "ctrl+alt+shift+c",
         "mac": "cmd+alt+shift+c",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.showListing",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus && resourceLangId == fasm"
+      },
+      {
+        "command": "fasm2Studio.checkAll",
+        "key": "ctrl+alt+shift+b",
+        "mac": "cmd+alt+shift+b",
         "when": "editorTextFocus && resourceLangId == fasm"
       }
     ],
@@ -801,6 +820,11 @@
           "command": "fasm2Studio.run",
           "when": "resourceLangId == fasm",
           "group": "fasm@2"
+        },
+        {
+          "command": "fasm2Studio.showListing",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@3"
         }
       ],
       "editor/context": [

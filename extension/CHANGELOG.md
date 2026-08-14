@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.20.0
+
+### Drag a file in to include it
+
+Drag a `.inc` (or `.asm`) from the Explorer into a source file and you get the `include` line for
+it, with the path already correct — relative to the file you dropped it into, or spelled against
+`fasm2Studio.includePath` when the file lives outside your project and a relative path would have to
+climb out of the tree.
+
+fasm has no module system, so a path in a string literal is the only thing tying two files together,
+and writing one by hand means counting `../` levels against a search order nothing in your project
+writes down. Paths come out with forward slashes so the line stays portable. Drag several files and
+you get one `include` per line. Drop a file onto its own tab, or something no `include` would name,
+and nothing is written.
+
+### Choose which signals stop the debugger
+
+The Breakpoints panel now has checkboxes for SIGSEGV, SIGILL, SIGFPE, SIGBUS, SIGABRT and SIGPIPE.
+
+They all start checked, which is what gdb already does — the point is being able to turn one off. If
+your program installs its own SIGSEGV handler, you can now run it under the debugger without being
+interrupted at every fault it was written to handle itself. Unchecking a signal only stops the
+*debugger* pausing; your program still receives it, so it behaves the same under the debugger as
+outside it.
+
+gdb only — lldb-mi on macOS has no equivalent, so the toggles simply have no effect there.
+
+### Four more starting points, including a boot sector
+
+**FASM: New File** now offers six programs instead of two:
+
+- Hello world for Linux (ELF64) and Windows (PE64) — as before
+- The 32-bit version of each, for following along with material written against `int 0x80` or the
+  stack calling convention
+- A PE64 DLL with an export
+- A **boot sector** — 512 bytes, `format binary`, 16-bit real mode, ending in `55 AA`, ready to
+  hand to `qemu-system-i386` or write to a USB stick
+
+Whatever your machine can run is offered first. Every one of them is assembled by the real compiler
+before release, so a starter program that doesn't build can't ship.
+
+### An Entry Points list that explains itself when empty
+
+If your project has fasm files but none of them declares a `format` directive, the **FASM Entry
+Points** section used to vanish entirely, leaving no clue whether anything had looked. It now stays
+and tells you what an entry point is, with a button to create one.
+
+### Smaller things
+
+- **FASM: Show Listing** is now `Ctrl+Alt+L`, and is in the editor title bar's run menu
+- **FASM: Check All Entry Points** is now `Ctrl+Alt+Shift+B`
+- The status bar shows the compiler's name rather than its full path, which on Windows was wide
+  enough to crowd out everything else. The full path is still in the tooltip
+
 ## 1.19.0
 
 ### Check every program in the workspace, not just the ones you have open

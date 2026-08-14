@@ -9,6 +9,7 @@
 // that flips it. A status bar that is wrong is worse than one that is absent, since it is the
 // thing users check to confirm the extension picked up their configuration at all.
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { isFasmDocument } from './activeEditor';
 import { dialectForDocument } from './buildPaths';
@@ -125,7 +126,12 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
           'Go-to-definition, find-references, rename and symbol search may miss files. Click for options.';
         item.command = STATUS_BAR_MENU_COMMAND;
       } else {
-        item.text = `$(tools) ${dialect} (${compiler.path})`;
+        // Basename only. This is the extension's one permanent piece of status bar real estate, and
+        // a configured compiler is routinely an absolute path — an unshortened
+        // "C:\Users\...\fasm2\fasm2.cmd" crowds out every other extension's item to say something
+        // the tooltip already says in full. The name is what identifies which assembler was picked;
+        // where it lives is what you go looking for only once it turns out to be the wrong one.
+        item.text = `$(tools) ${dialect} (${path.basename(compiler.path)})`;
         item.tooltip = `FASM2 Studio — using ${compiler.path}${compiler.autoDetected ? ' (auto-detected)' : ''}. Click to change the dialect, the compiler, or live error checking.`;
         item.command = STATUS_BAR_MENU_COMMAND;
       }

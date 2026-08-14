@@ -20,6 +20,7 @@ import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider } fro
 import { FasmDynamicDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugConfigurations';
 import { resolveEntryPointFsPath } from './entryPointResolver';
 import { invalidateDebuggerCache } from './gdbDiscovery';
+import { registerIncludeDrop } from './includeDrop';
 import { registerIncludeRename } from './includeRename';
 import { disposeInferiorTerminal } from './inferiorTerminal';
 import { FasmEvaluatableExpressionProvider } from './evaluatableExpression';
@@ -293,6 +294,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerStatusBarMenu(context, activeDiagnosticsIssue, activeIndexingIssue);
   createStatusBarItem(context);
   registerTerminalLinks(context);
+  registerIncludeDrop(context);
   // Registered before the client exists on purpose: it reads `client` through the getter at the
   // moment a rename happens, and a rename during startup is better answered by doing nothing than
   // by a handler that isn't listening yet.
