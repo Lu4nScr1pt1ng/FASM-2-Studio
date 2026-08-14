@@ -160,6 +160,7 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
   // build's own getListingPath appends, and is right to: the output it names has no extension at
   // all, so replacing and appending coincide there. Here they do not.)
   const tmpListing = `${tmpStem}.lst`;
+  activeTempStems.add(tmpStem);
 
   try {
     // fasm1 accepts none of these: its whole option set is -m/-p/-d/-s (flat assembler 1.73.32),
@@ -228,10 +229,81 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     }
     return { diagnostics, foreignDiagnostics, listing };
   } finally {
-    fs.promises.unlink(tmpOut).catch(() => undefined);
-    // The listing is the second artifact the same compile can leave behind in the temp directory.
-    if (opts.listingInclude) fs.promises.unlink(tmpListing).catch(() => undefined);
+    activeTempStems.delete(tmpStem);
+    await removeTempArtifacts(tmpStem);
   }
+}
+
+/** The temp stems of the compiles currently running, so a server process on its way out can take
+ * their artifacts with it — the `finally` above never runs for a compile that is still in flight
+ * when the process exits. */
+const activeTempStems = new Set<string>();
+
+/** Absolute paths of everything in the temp directory that belongs to one compile. */
+function tempArtifactsOf(tmpStem: string, entries: readonly string[]): string[] {
+  const prefix = path.basename(tmpStem);
+  return entries.filter((entry) => entry.startsWith(prefix)).map((entry) => path.join(path.dirname(tmpStem), entry));
+}
+
+/**
+ * Deletes everything the compile wrote, matched by name prefix rather than by the two paths named
+ * above.
+ *
+ * The output file's extension is only a suggestion to fasmg: what else a compile writes is decided
+ * by the source, not by the command line. `virtual as 'lst'` produces a listing beside the output
+ * whether or not this compile asked for one — fasm2's own bundled listing.inc does exactly that, and
+ * any project is free to `include` it (or to emit a map or a symbol file the same way). Deleting
+ * only what was requested left one such file per compile in the temp directory, and diagnostics
+ * recompile on every pause in typing.
+ *
+ * The stem carries this process's pid, a timestamp and a random suffix, so the prefix cannot reach
+ * another compile's artifacts, concurrent or otherwise.
+ */
+async function removeTempArtifacts(tmpStem: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(path.dirname(tmpStem));
+  } catch {
+    return;
+  }
+  await Promise.all(tempArtifactsOf(tmpStem, entries).map((file) => fs.promises.unlink(file).catch(() => undefined)));
+}
+
+/** The same sweep for a process that is exiting, where nothing asynchronous will ever be resumed. */
+function removeTempArtifactsSync(tmpStem: string): void {
+  try {
+    for (const file of tempArtifactsOf(tmpStem, fs.readdirSync(path.dirname(tmpStem)))) {
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        // Already gone, or never written by this compile.
+      }
+    }
+  } catch {
+    // The temp directory itself is unreadable; there is nothing to clean up with.
+  }
+}
+
+/**
+ * Kills every compiler still running and removes what those compiles had written.
+ *
+ * For a server process that is about to disappear. Nothing else stops these children: they are
+ * spawned detached (see execCompiler), which is what lets the timeout kill a whole process tree —
+ * and equally what lets them outlive the server, in their own process group, with the one timer
+ * that would have killed them gone with it. A fasmg macro that does not terminate is an ordinary
+ * thing to type by accident (`while 1` is three lines), so the orphan left behind is not always one
+ * that exits on its own.
+ *
+ * Synchronous throughout, because the moments that need it are: an `exit` notification, whose
+ * handler calls process.exit the moment it returns, and a signal. On Windows the process-tree kill
+ * shells out to taskkill and so cannot finish inside an exiting process; the direct child is killed
+ * regardless, and the compiler being a wrapper script is a POSIX-only arrangement.
+ */
+export function abandonRunningCompilers(): void {
+  for (const child of runningCompilers) killProcessTree(child);
+  runningCompilers.clear();
+  for (const stem of activeTempStems) removeTempArtifactsSync(stem);
+  activeTempStems.clear();
 }
 
 /** The listing this compile wrote, or undefined if it wrote none. A missing file is an ordinary
@@ -246,6 +318,9 @@ async function readListing(listingFsPath: string): Promise<ListingEntry[] | unde
 }
 
 const KILL_GRACE_PERIOD_MS = 2000;
+
+/** The compiler processes running right now, for abandonRunningCompilers. */
+const runningCompilers = new Set<ReturnType<typeof spawn>>();
 
 /**
  * Kills `child` and anything it spawned, not just the single direct process. This matters
@@ -287,6 +362,7 @@ function execCompiler(
       resolve({ stdout: '', timedOut: false, spawnError: (err as Error).message });
       return;
     }
+    runningCompilers.add(child);
 
     let out = '';
     let settled = false;
@@ -296,6 +372,7 @@ function execCompiler(
     const finish = (result: { stdout: string; timedOut: boolean; spawnError?: string }) => {
       if (settled) return;
       settled = true;
+      runningCompilers.delete(child);
       clearTimeout(timer);
       clearTimeout(graceTimer);
       resolve(result);

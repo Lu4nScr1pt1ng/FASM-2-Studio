@@ -67,7 +67,7 @@ import { getDefinitions } from './features/definition';
 import { getDocumentHighlights } from './features/documentHighlight';
 import { getDocumentLinks } from './features/documentLink';
 import { getDocumentSymbols } from './features/documentSymbols';
-import { noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
+import { abandonRunningCompilers, noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
 import { detectEol, FormatOptions, formatLines } from './features/format';
 import { getFoldingRanges } from './features/foldingRange';
 import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
@@ -386,6 +386,10 @@ function reparse(doc: TextDocument): void {
 }
 
 function scheduleDiagnostics(uri: string): void {
+  // A shutdown request is the client saying it will send nothing further and wants the process
+  // gone. Arming another debounce timer here would start a compile nobody is waiting for, in a
+  // process that is leaving — and the client's stop() gives the whole exchange a two-second budget.
+  if (shuttingDown) return;
   if (!workspaceTrusted) {
     reportDiagnosticsAvailability(uri, 'the workspace is not trusted, so the assembler is not run');
     return;
@@ -1148,6 +1152,51 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
     return [];
   }
 });
+
+/**
+ * Set once the client has asked the server to shut down, so nothing new is started afterwards.
+ *
+ * Not the same as the process being gone: `shutdown` is a request that must be answered, and the
+ * `exit` notification that actually ends the process arrives separately (and may never arrive, if
+ * the client gives up waiting and kills the process instead).
+ */
+let shuttingDown = false;
+
+/**
+ * Drops everything this server has running: pending debounce timers, the compilers themselves, and
+ * the temp files those compiles were writing.
+ *
+ * The compilers are the part that matters. They are spawned detached so the timeout can kill a
+ * whole process tree, which equally means nothing in the process group dies with the server — and
+ * the timer that would have killed a runaway one goes with it. Left alone, a compile that had not
+ * finished when the editor closed keeps running with no one to stop it and no one to read its
+ * answer.
+ */
+function stopBackgroundWork(): void {
+  for (const timer of diagnosticTimers.values()) clearTimeout(timer);
+  diagnosticTimers.clear();
+  abandonRunningCompilers();
+}
+
+connection.onShutdown(() => {
+  shuttingDown = true;
+  stopBackgroundWork();
+});
+
+// The shutdown request is the polite path and not the only one: the client kills the server process
+// outright when its stop() times out, the process exits by itself when the editor that spawned it
+// disappears, and `exit` calls process.exit as soon as its handler returns. Each of those is a way
+// for the process to end with compilers still running, so each gets the same cleanup. 'exit'
+// handlers run synchronously, which is why stopBackgroundWork does no asynchronous work.
+process.on('exit', stopBackgroundWork);
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+  // Registering a handler at all is what replaces Node's default of dying immediately without ever
+  // emitting 'exit', so the exit has to be re-issued here.
+  process.on(signal, () => {
+    stopBackgroundWork();
+    process.exit(0);
+  });
+}
 
 documents.listen(connection);
 connection.listen();

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.18.2
+
+### Fixed: assembler processes left running after the editor closed
+
+If a compile was still running when the language server stopped — including after the
+`Stopping server timed out` message in the output channel — the assembler kept going on its own,
+with nothing left to stop it. Usually it finished a moment later and nobody noticed; a source with a
+loop that never terminates (`while 1` is easy to leave half-typed) kept a CPU core busy until the
+machine was rebooted. Shutting down now stops the compilers too, whichever way the server is asked
+to go.
+
+### Fixed: temp files piling up while you work
+
+A project whose source writes a listing of its own left one file in the system temp directory per
+compile — and diagnostics compile every time you pause typing. They are all cleaned up now.
+
 ## 1.18.1
 
 ### Fixed: errors stopped appearing after the first mistake

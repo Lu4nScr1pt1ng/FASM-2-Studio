@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
-import { FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+import { abandonRunningCompilers, FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
 import { makeTempDir, removeTempDir } from './tempDir';
 
 // This project's fasm/fasm1 output never produces a MarkupContent message — only the LSP type
@@ -310,7 +310,89 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
       await removeTempDir(dir);
     }
   });
+
+  it('cleans up an artifact the source wrote that this compile never asked for', async function () {
+    if (!hasFasm2()) this.skip();
+    this.timeout(15000);
+
+    // `virtual as 'lst'` writes a second file beside the output — which is exactly what the bundled
+    // listing.inc does, and any project may include it. Deleting only the paths this module names
+    // left one such file per compile in the temp directory, and diagnostics recompile on every
+    // pause in typing.
+    const dir = makeTempDir('fasm2-studio-artifact-');
+    const sourceFsPath = path.join(dir, 'emits.asm');
+    fs.writeFileSync(sourceFsPath, ["format binary", "db 1", "postpone", "  virtual as 'lst'", "    db 'listing'", '  end virtual', 'end postpone', ''].join('\n'), 'utf8');
+
+    const before = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('fasm2-studio-'));
+    try {
+      const result = await runDiagnostics({ compilerPath: 'fasm2', sourceFsPath, cwd: dir });
+      if (result.toolError) this.skip(); // no usable fasm2 on this machine
+      const after = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('fasm2-studio-'));
+      assert.deepStrictEqual(after, before, 'the compile left an artifact of its own behind in the temp directory');
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
 });
+
+describe('abandonRunningCompilers', () => {
+  it('kills a compiler that is still running, so it cannot outlive the server process', async function () {
+    if (os.platform() === 'win32') {
+      this.skip();
+      return;
+    }
+    this.timeout(10000);
+
+    // The compilers are spawned detached, which is what lets a timeout kill a whole process tree
+    // and equally what stops them dying with the server: they are in their own process group, and
+    // the timer that would eventually have killed them belongs to the process that is leaving. A
+    // fasmg macro that never terminates is an ordinary thing to type by accident, so the orphan is
+    // not always one that ends on its own.
+    const dir = makeTempDir('fasm2-studio-abandon-');
+    const pidFile = path.join(dir, 'pid');
+    const fakeCompiler = path.join(dir, 'hangs-forever.sh');
+    fs.writeFileSync(fakeCompiler, `#!/bin/sh\necho $$ > ${pidFile}\nsleep 30\n`, 'utf8');
+    fs.chmodSync(fakeCompiler, 0o755);
+
+    try {
+      // Deliberately not awaited: the point is to act while the compile is still in flight.
+      const compile = runDiagnostics({ compilerPath: fakeCompiler, sourceFsPath: path.join(dir, 'whatever.asm'), cwd: dir, timeoutMs: 20000 });
+      await waitFor(() => fs.existsSync(pidFile));
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+      assert.ok(isAlive(pid), 'the fake compiler should be running before it is abandoned');
+
+      abandonRunningCompilers();
+
+      await waitFor(() => !isAlive(pid));
+      assert.ok(!isAlive(pid), 'the compiler was left running after the server abandoned it');
+      await compile;
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+});
+
+/** Whether a real fasm2 is installed, for the tests that need one to write a file. */
+function hasFasm2(): boolean {
+  return !spawnSync('fasm2', [], { timeout: 5000 }).error;
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Polls until `condition` holds or ~3s have passed, so the test neither races the OS nor waits a
+ * fixed pessimistic delay for it. */
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 150 && !condition(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 describe('parseDiagnostics (header shapes seen in real project builds)', () => {
   it('parses a header with no trailing colon, which fasmg emits when it quotes no source line', () => {

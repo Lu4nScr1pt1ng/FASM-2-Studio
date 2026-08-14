@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.18.2
+
+### A compiler that outlived the server that started it
+
+A server process on its way out now takes its compilers with it.
+
+The assembler is spawned detached, which is what lets a timed-out compile be killed as a whole
+process tree — the official fasm2 distribution wraps the real binary in a shell script, so killing
+only the direct child leaves the compiler itself holding the stdout pipe open. The same arrangement
+means nothing in that process group dies with the server, and the ten-second timer that would have
+killed a runaway one belongs to the process that is leaving. A compile still in flight when the
+editor closed kept running with nobody to stop it and nobody to read its answer, and
+`while 1` / `end while` is three lines and a genuine thing to have half-typed, so the orphan is not
+always one that ends by itself.
+
+Cleanup is now attached to every way this process can end, not just the polite one: the `shutdown`
+request, the `exit` notification that calls `process.exit` as soon as its handler returns, and the
+signal a client sends when it gives up waiting and kills the server outright — which is what follows
+the `Stopping server timed out` line in the output channel. The shutdown request also cancels the
+pending debounce timers, so a keystroke from a second ago cannot start a fresh compile in a process
+that is closing.
+
+The shutdown request itself was never the slow part: it is answered in about a millisecond even with
+a compile hung in flight, since nothing here blocks on one. What the two-second timeout cost was the
+cleanup on the other side of it.
+
+### Temp files the compile wrote without being asked
+
+Every artifact a compile leaves in the temp directory is now removed, matched by the name prefix
+this module gives it, rather than only the two paths the command line named.
+
+What a compile writes is decided by the source, not by the flags: `virtual as 'lst'` produces a
+listing beside the output whether or not diagnostics asked for one, and the listing macro that does
+it is bundled with fasm2 for any project to `include`. For such a project every compile left a file
+behind — and diagnostics recompile on every pause in typing, so an afternoon of editing was
+thousands of them.
+
 ## 1.18.1
 
 ### The error a macro frame was hiding
