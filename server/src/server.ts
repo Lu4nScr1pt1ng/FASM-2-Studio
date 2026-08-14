@@ -67,7 +67,7 @@ import { getDefinitions } from './features/definition';
 import { getDocumentHighlights } from './features/documentHighlight';
 import { getDocumentLinks } from './features/documentLink';
 import { getDocumentSymbols } from './features/documentSymbols';
-import { abandonRunningCompilers, noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
+import { abandonRunningCompilers, CompileResult, noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
 import { detectEol, FormatOptions, formatLines } from './features/format';
 import { getFoldingRanges } from './features/foldingRange';
 import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
@@ -717,6 +717,223 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
   }
 }
 
+/**
+ * Assembles an entry point exactly as it stands on disk — no live buffer, no shadow tree, no
+ * debounce, and no filtering down to one file's own errors.
+ *
+ * runDiagnosticsFor above answers "what is wrong with the file being edited", which is why it is
+ * built around an open document and its unsaved text. Both callers below ask a different question —
+ * "what does this program do when assembled as it currently stands" — about files that typically
+ * have no editor open at all, so none of that machinery applies to them.
+ */
+async function compileEntryPointFromDisk(
+  entryUri: string,
+  opts: { withListing?: boolean } = {},
+): Promise<{ result?: CompileResult; unavailable?: string }> {
+  if (!workspaceTrusted) return { unavailable: 'the workspace is not trusted, so the assembler is not run' };
+
+  let fsPath: string;
+  try {
+    const parsed = URI.parse(entryUri);
+    if (parsed.scheme !== 'file') return { unavailable: 'only a file on disk can be assembled' };
+    fsPath = parsed.fsPath;
+  } catch {
+    return { unavailable: 'not a valid file path' };
+  }
+
+  const settings = await settingsStore.resolve(entryUri);
+
+  // Detected from the file's own text rather than read from dialectCache, which only ever holds
+  // documents that have been open at some point. An entry point nothing has opened would otherwise
+  // always be assumed to be `defaultDialect`, so a lone fasm1 program in a folder defaulting to
+  // fasm2 (or the reverse) would be handed to the wrong assembler and report errors on code that
+  // is entirely correct — precisely the failure a whole-project check exists to rule out.
+  let dialect: Dialect;
+  try {
+    dialect = detectDialect(await fs.readFile(fsPath, 'utf8'), settings.defaultDialect);
+  } catch (err) {
+    return { unavailable: `could not be read (${(err as Error).message})` };
+  }
+
+  const configuredPath = dialect === 'fasm1' ? settings.fasm1CompilerPath : settings.fasm2CompilerPath;
+  const compilerPath = configuredPath || (await resolveCompilerOnPath(dialect));
+  if (!compilerPath) {
+    const setting = dialect === 'fasm1' ? 'fasm1CompilerPath' : 'fasm2CompilerPath';
+    return { unavailable: `no ${dialect} compiler found on PATH (set fasm2Studio.${setting} or install it)` };
+  }
+
+  const listingInclude = opts.withListing && dialect === 'fasm2' ? bundledListingIncPath() : undefined;
+  if (opts.withListing && !listingInclude) {
+    return {
+      unavailable:
+        dialect === 'fasm1'
+          ? 'a listing is generated here by a fasmg macro, which fasm1 can neither load nor run — it has no equivalent of its own that this understands'
+          : 'the bundled listing macro is missing from this installation',
+    };
+  }
+
+  const result = await runDiagnostics({
+    compilerPath,
+    sourceFsPath: fsPath,
+    cwd: path.dirname(fsPath),
+    includePath: settings.includePath || undefined,
+    preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
+    extraArgs: settings.compilerArgs,
+    listingInclude,
+    dialect,
+    workspaceFolders: workspaceFolderPaths(),
+  });
+  return { result };
+}
+
+/** Every error this compile found, wherever it landed — the entry point's own file and each of its
+ * includes alike. Both counts below describe a whole program rather than one file of it. */
+function totalErrorCount(result: CompileResult): number {
+  let total = result.diagnostics.length;
+  for (const diagnostics of result.foreignDiagnostics ?? []) total += diagnostics[1].length;
+  return total;
+}
+
+/**
+ * Assembles one entry point and hands back the listing the assembler wrote for it.
+ *
+ * Deliberately a fresh compile rather than a read of whatever the last debug build left on disk:
+ * a listing that describes an older version of the source is worse than none, since nothing about
+ * its contents says so. The compile writes to a temp directory and is thrown away, so asking to
+ * *see* a listing never produces a build artifact in the project.
+ */
+connection.onRequest(
+  'fasm2Studio/buildListing',
+  async (params: { uri: string }): Promise<{ text?: string; error?: string; errorCount?: number }> => {
+    const { result, unavailable } = await compileEntryPointFromDisk(params.uri, { withListing: true });
+    if (unavailable || !result) return { error: unavailable ?? 'the compile produced no result' };
+
+    // A listing is written by the assembly itself, so a build that failed part-way can still have
+    // produced a real (if incomplete) one — worth showing, with the failure named alongside it,
+    // rather than replaced by an error message about a file that does exist.
+    const errorCount = totalErrorCount(result);
+    if (result.listingText) return { text: result.listingText, errorCount };
+    return { error: result.toolError ?? 'the assembler wrote no listing for this program', errorCount };
+  },
+);
+
+/**
+ * Diagnostics published by the last whole-project check, keyed by the file they were put on.
+ *
+ * Live diagnostics belong to an open document and are retracted when it closes; these belong to no
+ * document at all, so this is the only record that they were published and the only thing that can
+ * retract them on a later run. Kept as the diagnostics themselves rather than a set of URIs so
+ * closing a file that a check marked can put its marks back (see onDidClose) instead of clearing
+ * them for a reason that has nothing to do with whether they still hold.
+ */
+const checkAllResults = new Map<string, Diagnostic[]>();
+
+/** Whether an open document's own compile is currently vouching for `uri`'s diagnostics, in which
+ * case a whole-project check must neither overwrite nor retract them: that compile saw the unsaved
+ * buffer, and this one only ever sees what is saved. */
+function claimedByOpenDocument(uri: string): boolean {
+  if (documents.get(uri)) return true;
+  for (const owned of foreignDiagnosticOwners.values()) if (owned.has(uri)) return true;
+  return false;
+}
+
+export interface CheckAllSummary {
+  /** Entry points actually assembled. */
+  checked: number;
+  /** Entry points passed over — already covered by an open document's live compile, or unreadable. */
+  skipped: number;
+  /** Files carrying at least one error. */
+  filesWithErrors: number;
+  errors: number;
+  /** Entry points that could not be assembled at all, as "name: why" — a missing include stops the
+   * assembler before it reaches a line worth marking, so these have nowhere to appear as squiggles
+   * and would otherwise be silently counted as clean. */
+  failures: string[];
+  cancelled: boolean;
+  /** Why nothing could run (no compiler, untrusted workspace) — a standing condition rather than a
+   * result, and the one case where a report of "0 errors" would be a lie. */
+  unavailable?: string;
+}
+
+/**
+ * Assembles every entry point in the workspace and publishes what the compiler says about each.
+ *
+ * Live diagnostics are driven entirely by the open-editor set, so until this existed the Problems
+ * panel was only ever as complete as the tabs someone happened to have open: a program broken by
+ * an edit to a shared include stayed clean-looking until the day it was opened. Explicitly invoked
+ * rather than run on a timer — it is one assembler process per program, which is a cost worth
+ * paying on request and not worth paying on every save.
+ */
+connection.onRequest('fasm2Studio/checkAllEntryPoints', async (_params: unknown, token): Promise<CheckAllSummary> => {
+  const entryUris = workspace.listEntryPoints();
+  const published = new Map<string, Diagnostic[]>();
+  const summary: CheckAllSummary = { checked: 0, skipped: 0, filesWithErrors: 0, errors: 0, failures: [], cancelled: false };
+
+  function collect(uri: string, diagnostics: Diagnostic[]): void {
+    if (diagnostics.length === 0) return;
+    const existing = published.get(uri);
+    // One file can be reached by several entry points (that is what a shared include is), and each
+    // compiles it in its own context — so the marks accumulate rather than the last program to be
+    // checked deciding what the file's problems are.
+    if (existing) existing.push(...diagnostics);
+    else published.set(uri, [...diagnostics]);
+  }
+
+  for (const entryUri of entryUris) {
+    if (token.isCancellationRequested) {
+      summary.cancelled = true;
+      break;
+    }
+    if (claimedByOpenDocument(entryUri)) {
+      summary.skipped++;
+      continue;
+    }
+
+    connection.sendNotification('fasm2Studio/checkAllProgress', {
+      done: summary.checked + summary.skipped,
+      total: entryUris.length,
+      uri: entryUri,
+    });
+
+    const { result, unavailable } = await compileEntryPointFromDisk(entryUri);
+    if (unavailable || !result) {
+      // A missing compiler or an untrusted workspace is the same answer for every entry point, so
+      // it is recorded once as the reason the run means nothing rather than repeated per file.
+      summary.unavailable ??= unavailable;
+      summary.skipped++;
+      continue;
+    }
+    summary.checked++;
+
+    // Collected before the toolError check: a build that failed inside an include still located
+    // that error precisely, and those placed diagnostics are the most useful thing it produced.
+    collect(entryUri, result.diagnostics);
+    for (const [fsPath, diagnostics] of result.foreignDiagnostics ?? []) collect(URI.file(fsPath).toString(), diagnostics);
+    if (result.toolError) summary.failures.push(`${path.basename(URI.parse(entryUri).fsPath)}: ${result.toolError}`);
+  }
+
+  for (const [uri, diagnostics] of published) {
+    if (claimedByOpenDocument(uri)) continue;
+    connection.sendDiagnostics({ uri, diagnostics });
+    summary.filesWithErrors++;
+    summary.errors += diagnostics.length;
+  }
+
+  // Retract what the previous run marked and this one did not, so a fixed error disappears without
+  // needing the file opened. Skipped entirely for a cancelled run: the files it never reached are
+  // not files it found clean, and clearing them would report a half-finished check as a pass.
+  if (!summary.cancelled) {
+    for (const uri of checkAllResults.keys()) {
+      if (published.has(uri) || claimedByOpenDocument(uri)) continue;
+      connection.sendDiagnostics({ uri, diagnostics: [] });
+    }
+    checkAllResults.clear();
+  }
+  for (const [uri, diagnostics] of published) checkAllResults.set(uri, diagnostics);
+
+  return summary;
+});
+
 documents.onDidOpen((e: TextDocumentChangeEvent<TextDocument>) => {
   try {
     reparse(e.document);
@@ -763,7 +980,10 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     const timer = diagnosticTimers.get(uri);
     if (timer) clearTimeout(timer);
     diagnosticTimers.delete(uri);
-    connection.sendDiagnostics({ uri, diagnostics: [] });
+    // Back to whatever the last whole-project check said about this file, which is usually nothing.
+    // Those marks describe the file on disk and are not the open editor's to retract: closing a tab
+    // says nothing about whether the errors a project-wide check found in it are still there.
+    connection.sendDiagnostics({ uri, diagnostics: checkAllResults.get(uri) ?? [] });
   } catch (err) {
     logHandlerError('onDidClose', err);
   }

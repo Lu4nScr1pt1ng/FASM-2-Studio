@@ -33,6 +33,16 @@ export interface CompileResult {
    * separate pass would double the assembler load on every keystroke.
    */
   listing?: ListingEntry[];
+  /**
+   * That same listing as the assembler actually wrote it, set whenever `listing` is.
+   *
+   * The parsed form above deliberately keeps only what an address map needs (address, statement
+   * text, bytes), which drops the file-offset column, the alignment, and every entry the
+   * correlator could not tie back to a source line. Showing a listing to a human means showing the
+   * assembler's own output rather than a re-rendering of a lossy subset of it — and the string is
+   * already in hand, since parsing it required reading it.
+   */
+  listingText?: string;
 }
 
 const HEADER_RE = /^(.+) \[(\d+)\]:$/;
@@ -227,7 +237,7 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
         toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}`,
       };
     }
-    return { diagnostics, foreignDiagnostics, listing };
+    return { diagnostics, foreignDiagnostics, listing: listing?.entries, listingText: listing?.text };
   } finally {
     activeTempStems.delete(tmpStem);
     await removeTempArtifacts(tmpStem);
@@ -306,12 +316,13 @@ export function abandonRunningCompilers(): void {
   activeTempStems.clear();
 }
 
-/** The listing this compile wrote, or undefined if it wrote none. A missing file is an ordinary
- * outcome, not an error: a compile that failed before emitting anything never reaches the macro's
- * `postpone` block, and the caller simply keeps whatever map it already had. */
-async function readListing(listingFsPath: string): Promise<ListingEntry[] | undefined> {
+/** The listing this compile wrote, parsed and raw, or undefined if it wrote none. A missing file is
+ * an ordinary outcome, not an error: a compile that failed before emitting anything never reaches
+ * the macro's `postpone` block, and the caller simply keeps whatever map it already had. */
+async function readListing(listingFsPath: string): Promise<{ entries: ListingEntry[]; text: string } | undefined> {
   try {
-    return parseListingFile(await fs.promises.readFile(listingFsPath, 'utf8'));
+    const text = await fs.promises.readFile(listingFsPath, 'utf8');
+    return { entries: parseListingFile(text), text };
   } catch {
     return undefined;
   }

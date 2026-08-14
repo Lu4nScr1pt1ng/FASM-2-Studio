@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.18.2",
+  "version": "1.19.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -328,6 +328,17 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.showListing",
+        "title": "Show Listing",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.checkAll",
+        "title": "Check All Entry Points",
+        "category": "FASM",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "fasm2Studio.selectDialect",
         "title": "Select Dialect",
         "category": "FASM"
@@ -399,6 +410,11 @@
       {
         "command": "fasm2Studio.entryPoints.openBuildOutput",
         "title": "Open Build Output in Hex Editor",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.showListing",
+        "title": "Show Listing",
         "category": "FASM"
       }
     ],
@@ -685,6 +701,10 @@
           "when": "resourceLangId == fasm"
         },
         {
+          "command": "fasm2Studio.showListing",
+          "when": "resourceLangId == fasm"
+        },
+        {
           "command": "fasm2Studio.statusBarMenu",
           "when": "false"
         },
@@ -711,13 +731,22 @@
         {
           "command": "fasm2Studio.entryPoints.openBuildOutput",
           "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.showListing",
+          "when": "false"
         }
       ],
       "view/title": [
         {
+          "command": "fasm2Studio.checkAll",
+          "when": "view == fasm2Studio.entryPoints",
+          "group": "navigation@1"
+        },
+        {
           "command": "fasm2Studio.entryPoints.refresh",
           "when": "view == fasm2Studio.entryPoints",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -745,6 +774,11 @@
           "command": "fasm2Studio.entryPoints.openBuildOutput",
           "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
           "group": "fasm@3"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.showListing",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "fasm@4"
         }
       ],
       "editor/title/run": [
@@ -779,6 +813,11 @@
           "command": "fasm2Studio.debug",
           "when": "resourceLangId == fasm",
           "group": "fasm@2"
+        },
+        {
+          "command": "fasm2Studio.showListing",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@3"
         }
       ],
       "explorer/context": [
@@ -806,6 +845,11 @@
           "command": "fasm2Studio.openBuildOutput",
           "when": "resourceLangId == fasm",
           "group": "fasm@5"
+        },
+        {
+          "command": "fasm2Studio.showListing",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@6"
         }
       ]
     },

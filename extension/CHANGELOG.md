@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.19.0
+
+### Check every program in the workspace, not just the ones you have open
+
+Error checking has always followed your open editors, which means a mistake in a program you are not
+currently looking at stays invisible. Edit one shared `.inc` and you can break four of the five
+programs that include it, with nothing to show for it until you open each one.
+
+**FASM: Check All Entry Points** assembles every program in the workspace and fills the Problems
+panel with what the compiler says — files you have never opened included. It is in the title bar of
+the **FASM Entry Points** view, next to the list of programs it checks, and in the command palette.
+
+It runs the assembler once per program, so it is cancellable, and it builds into a temp directory —
+nothing is written into your project. Programs you already have open are left alone, since the
+normal live checking already covers them and sees your unsaved edits.
+
+### See the assembler's listing for your program
+
+**FASM: Show Listing** opens the listing for whichever program the file you are in belongs to: every
+statement with the address it lands at, its offset in the output file, and the exact bytes it
+assembled to.
+
+This is the file you would normally have to go out of your way to generate. It opens as a read-only
+document rather than something written next to your source, and re-running it refreshes the tab you
+already have open. It assembles fresh each time, so what you are reading always describes the source
+as it is now.
+
+fasm2/fasmg only — the listing comes from a fasmg macro that fasm1 cannot run.
+
 ## 1.18.2
 
 ### Fixed: assembler processes left running after the editor closed

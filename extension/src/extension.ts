@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import { activeFasmEditor, buildableFsPath, isFasmDocument, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
+import { registerCheckAll } from './checkAll';
 import { cleanBuildOutputs } from './clean';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
@@ -13,6 +14,7 @@ import { registerOpenBuildOutput } from './openBuildOutput';
 import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDebugger } from './selectDebugger';
 import { registerSelectDialect } from './selectDialect';
+import { registerShowListing } from './showListing';
 import { registerCodeLens } from './codeLens';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider } from './debugAdapter';
 import { FasmDynamicDebugConfigurationProvider, FASM_DEBUG_TYPE } from './debugConfigurations';
@@ -296,6 +298,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // by a handler that isn't listening yet.
   registerIncludeRename(context, () => client);
   registerOpenBuildOutput(context, () => client);
+  registerShowListing(context, () => client);
+  registerCheckAll(context, () => client);
   context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider(() => client)));
 
   const codeLens = registerCodeLens(context, () => client);

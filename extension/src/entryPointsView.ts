@@ -100,6 +100,7 @@ export function registerEntryPointsView(
     delegate('fasm2Studio.entryPoints.debug', 'fasm2Studio.debug'),
     delegate('fasm2Studio.entryPoints.clean', 'fasm2Studio.clean'),
     delegate('fasm2Studio.entryPoints.openBuildOutput', 'fasm2Studio.openBuildOutput'),
+    delegate('fasm2Studio.entryPoints.showListing', 'fasm2Studio.showListing'),
     vscode.commands.registerCommand('fasm2Studio.entryPoints.refresh', () => provider.refresh()),
     // Leaves no stale key behind for the next extension to be gated by one of the same name, and
     // — more to the point — stops a deactivated extension from advertising a view it no longer

@@ -5,6 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { abandonRunningCompilers, FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+import { bundledListingIncPath } from '../src/features/inlayHints';
+import { parseListingFile } from '../src/listing/listingMap';
 import { makeTempDir, removeTempDir } from './tempDir';
 
 // This project's fasm/fasm1 output never produces a MarkupContent message — only the LSP type
@@ -153,6 +155,50 @@ describe('runDiagnostics (integration, real fasm2 binary)', () => {
       const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir });
       assert.strictEqual(result.toolError, undefined);
       assert.deepStrictEqual(result.diagnostics, []);
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  it('hands back the listing as written as well as parsed, so it can be shown to a human', async function () {
+    this.timeout(15000);
+    const listingInclude = bundledListingIncPath();
+    if (!listingInclude) this.skip();
+
+    const dir = makeTempDir('fasm2-studio-test-');
+    const file = path.join(dir, 'listed.asm');
+    // `use64` because `format binary` starts out 16-bit, and `syscall` is a 64-bit instruction —
+    // without it this assembles to nothing and the listing never gets written.
+    fs.writeFileSync(file, 'format binary\nuse64\n\tmov eax, 60\n\tsyscall\n');
+
+    try {
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir, listingInclude });
+      if (result.toolError) this.skip(); // no usable fasm2 on this machine
+      assert.ok(result.listingText, 'the raw listing should come back alongside the parsed one');
+
+      // The raw text keeps the columns the parsed form drops — the file-offset column in
+      // particular, which is what someone reading a listing is usually there for.
+      assert.match(result.listingText!, /mov eax, 60/);
+      assert.match(result.listingText!, /^\[[0-9A-F]{16}\] [0-9A-F]{8}: /m);
+
+      // The two views must describe the same build: the text is the very string the entries were
+      // parsed out of, not a second compile's output.
+      assert.deepStrictEqual(parseListingFile(result.listingText!), result.listing);
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  it('leaves listingText unset when no listing was asked for, so nothing pays for a feature it does not use', async function () {
+    this.timeout(15000);
+    const dir = makeTempDir('fasm2-studio-test-');
+    const file = path.join(dir, 'plain.asm');
+    fs.writeFileSync(file, 'format binary\n\tmov eax, 1\n');
+
+    try {
+      const result = await runDiagnostics({ compilerPath, sourceFsPath: file, cwd: dir });
+      assert.strictEqual(result.listingText, undefined);
+      assert.strictEqual(result.listing, undefined);
     } finally {
       await removeTempDir(dir);
     }
