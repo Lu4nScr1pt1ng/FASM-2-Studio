@@ -62,16 +62,24 @@ interface Fixture {
   listingPath: string;
 }
 
+/** Every fixture `build` has created, for the `after` hook to remove — see its comment below. */
+const builtFixtures: Fixture[] = [];
+
 function build(name: string, source: string): Fixture {
   const dir = makeTempDir(`fasm2-studio-cap-${name}-`);
-  const asmPath = path.join(dir, `${name}.asm`);
-  const programPath = path.join(dir, name);
-  const listingPath = path.join(dir, `${name}.lst`);
-  fs.writeFileSync(asmPath, source, 'utf8');
-  const result = spawnSync('fasm2', ['-i', "include 'listing.inc'", asmPath, programPath], { cwd: dir, timeout: 15000 });
+  const fixture: Fixture = {
+    dir,
+    asmPath: path.join(dir, `${name}.asm`),
+    programPath: path.join(dir, name),
+    listingPath: path.join(dir, `${name}.lst`),
+  };
+  // Recorded before the build can fail, so a directory that was created still gets cleaned up.
+  builtFixtures.push(fixture);
+  fs.writeFileSync(fixture.asmPath, source, 'utf8');
+  const result = spawnSync('fasm2', ['-i', "include 'listing.inc'", fixture.asmPath, fixture.programPath], { cwd: dir, timeout: 15000 });
   if (result.status !== 0) throw new Error(`fasm2 build failed:\n${result.stdout}\n${result.stderr}`);
-  fs.chmodSync(programPath, 0o755);
-  return { dir, asmPath, programPath, listingPath };
+  fs.chmodSync(fixture.programPath, 0o755);
+  return fixture;
 }
 
 describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, real fasm2 binary)', function () {
@@ -88,8 +96,14 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
     crash = build('crash', CRASH_SRC);
   });
 
+  // Cleans up whatever `build` actually created, rather than naming `loop`/`crash` directly.
+  // Mocha runs a suite's `after` hook even when its `before` called this.skip(), so on a machine
+  // without fasm2 this ran with both still undefined — reading `.dir` off one threw, and a suite
+  // that had correctly skipped itself failed the whole run instead. Tracking the built fixtures
+  // also covers the half-built case, where the second `build` throws and the first's directory
+  // would otherwise be left behind.
   after(async () => {
-    for (const fixture of [loop, crash]) {
+    for (const fixture of builtFixtures) {
       await removeTempDir(fixture.dir);
     }
   });

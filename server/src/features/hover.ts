@@ -231,10 +231,29 @@ function fasmCode(...lines: string[]): string {
   return ['```fasm', ...lines, '```'].join('\n');
 }
 
+/**
+ * The "Flags:" line under an instruction's summary.
+ *
+ * "none" is spelled out rather than dropped, because the absence of a line would be ambiguous with
+ * an instruction this extension has no flag data for — and "does this touch the flags?" is a
+ * question whose useful answer is very often no (lea, mov, push, the whole jump family).
+ */
+function renderFlags(flags: string | undefined): string[] {
+  if (!flags) return [];
+  return ['', flags === 'none' ? '**Flags:** unchanged' : `**Flags:** ${flags}`];
+}
+
 function renderInstructions(entries: InstructionEntry[]): string {
   const blocks = entries.map((i) => {
     const signature = i.operands ? `${i.mnemonic} ${i.operands}` : i.mnemonic;
-    return [fasmCode(signature), '', i.summary, '', `*${i.isa ? `${i.isa} instruction` : 'instruction'}*`].join('\n');
+    return [
+      fasmCode(signature),
+      '',
+      i.summary,
+      ...renderFlags(i.flags),
+      '',
+      `*${i.isa ? `${i.isa} instruction` : 'instruction'}*`,
+    ].join('\n');
   });
   const heading = entries.length > 1 ? [`**${entries.length} forms of \`${entries[0].mnemonic}\`:**`, ''] : [];
   return [...heading, blocks.join('\n\n---\n\n')].join('\n');

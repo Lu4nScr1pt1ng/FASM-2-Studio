@@ -32,6 +32,7 @@ interface Manifest {
     semanticTokenScopes: Array<{ language: string; scopes: Record<string, string[]> }>;
     configurationDefaults: Record<string, Record<string, unknown>>;
     keybindings: Array<{ command: string; key: string; mac?: string; when?: string }>;
+    views?: Record<string, Array<{ id: string; name: string; when?: string }>>;
   };
 }
 
@@ -309,6 +310,48 @@ describe('extension manifest', () => {
   it('names itself the default formatter for FASM, so Format Document never opens a picker', () => {
     const defaults = manifest.contributes.configurationDefaults;
     assert.strictEqual(defaults['[fasm]']['editor.defaultFormatter'], `${manifest.publisher}.${manifest.name}`);
+  });
+
+  it('leaves word-based suggestions off for FASM, so the language server\'s completions are not diluted by arbitrary words from other open files', () => {
+    assert.strictEqual(manifest.contributes.configurationDefaults['[fasm]']['editor.wordBasedSuggestions'], 'off');
+  });
+
+  describe('the entry points view', () => {
+    const view = manifest.contributes.views?.explorer?.find((v) => v.id === 'fasm2Studio.entryPoints');
+
+    it('is contributed into the Explorer, where build targets belong', () => {
+      assert.ok(view, 'expected a fasm2Studio.entryPoints view in the explorer container');
+    });
+
+    // Without a `when`, the section shows up in the Explorer of every workspace this extension has
+    // ever activated in, including ones with no fasm program in them at all.
+    it('is gated on there actually being an entry point to list', () => {
+      assert.strictEqual(view?.when, 'fasm2Studio.hasEntryPoints');
+    });
+
+    // These take a tree element, not a Uri, so invoking one from the palette — where there is no
+    // element to pass — would do nothing at all.
+    it('keeps its per-item commands out of the command palette', () => {
+      const hidden = new Set(
+        (manifest.contributes.menus.commandPalette ?? []).filter((entry) => entry.when === 'false').map((entry) => entry.command),
+      );
+      const itemCommands = manifest.contributes.commands
+        .map((c) => c.command)
+        .filter((c) => c.startsWith('fasm2Studio.entryPoints.') && c !== 'fasm2Studio.entryPoints.refresh');
+      assert.ok(itemCommands.length > 0, 'expected the view to contribute per-item commands');
+      for (const command of itemCommands) {
+        assert.ok(hidden.has(command), `${command} is reachable from the palette, where it has no tree item to act on`);
+      }
+    });
+
+    it('gives every view menu entry a command this extension contributes', () => {
+      const contributed = new Set(manifest.contributes.commands.map((c) => c.command));
+      for (const menu of ['view/title', 'view/item/context']) {
+        for (const entry of manifest.contributes.menus[menu] ?? []) {
+          assert.ok(contributed.has(entry.command), `${menu} references unknown command ${entry.command}`);
+        }
+      }
+    });
   });
 
   describe('keybindings', () => {

@@ -36,7 +36,18 @@ export function bundledListingIncPath(): string | undefined {
 }
 
 /** What `fasm2Studio.inlayHints` can be set to. */
-export type InlayHintMode = 'off' | 'address' | 'size' | 'addressAndSize';
+export type InlayHintMode = 'off' | 'address' | 'size' | 'addressAndSize' | 'bytes' | 'addressAndBytes';
+
+/**
+ * How many bytes of an encoding are shown inline before it is elided.
+ *
+ * An x86 instruction is at most 15 bytes, so this shows every real instruction in full; what it
+ * cuts short is the other kind of line the listing carries bytes for — a `format` directive
+ * emitting a 120-byte ELF header, a `db` of a whole string — where the point of the hint is that
+ * there are bytes and roughly how many, not all of them. The full dump is always on the hint's
+ * tooltip regardless.
+ */
+const MAX_INLINE_BYTES = 16;
 
 /**
  * How wide an address is rendered, in hex digits.
@@ -64,7 +75,30 @@ function formatSize(bytes: number): string {
  * Kept pure and exported so every combination of mode and available data can be asserted directly,
  * without a listing, a compiler or a document.
  */
-export function hintLabel(mode: InlayHintMode, address: bigint | undefined, size: number | undefined): string | undefined {
+/**
+ * The encoding as one uppercase, space-separated run ("66 B8 01 00 00 00"), elided past
+ * MAX_INLINE_BYTES.
+ *
+ * Uppercase because that is how fasm's own listing writes it, and how a reader who is about to
+ * compare this against a hex dump or an opcode table expects to see it.
+ */
+function formatBytes(bytes: string[]): string {
+  const shown = bytes.slice(0, MAX_INLINE_BYTES).map((b) => b.toUpperCase()).join(' ');
+  return bytes.length > MAX_INLINE_BYTES ? `${shown} … (${bytes.length} bytes)` : shown;
+}
+
+/** The whole encoding, never elided — what the hint's tooltip carries. Exported for the tests that
+ * assert an elided inline label still has its full form available. */
+export function fullBytes(bytes: string[]): string {
+  return `${bytes.map((b) => b.toUpperCase()).join(' ')} (${formatSize(bytes.length)})`;
+}
+
+export function hintLabel(
+  mode: InlayHintMode,
+  address: bigint | undefined,
+  size: number | undefined,
+  bytes?: string[],
+): string | undefined {
   if (mode === 'off' || address === undefined) return undefined;
   switch (mode) {
     case 'address':
@@ -75,6 +109,12 @@ export function hintLabel(mode: InlayHintMode, address: bigint | undefined, size
       return size === undefined ? undefined : formatSize(size);
     case 'addressAndSize':
       return size === undefined ? formatAddress(address) : `${formatAddress(address)} · ${formatSize(size)}`;
+    // Same rule as size mode: no bytes means this line produced no code, and an encoding is the
+    // one thing there is nothing to say about.
+    case 'bytes':
+      return bytes === undefined ? undefined : formatBytes(bytes);
+    case 'addressAndBytes':
+      return bytes === undefined ? formatAddress(address) : `${formatAddress(address)} · ${formatBytes(bytes)}`;
   }
 }
 
@@ -104,7 +144,8 @@ export function getInlayHints(doc: TextDocument, range: Range, map: AddressLineM
     const address = map.locationToAddress.get(key);
     if (address === undefined) continue;
 
-    const label = hintLabel(mode, address, map.sizeByLocation.get(key));
+    const bytes = map.bytesByLocation.get(key);
+    const label = hintLabel(mode, address, map.sizeByLocation.get(key), bytes);
     if (label === undefined) continue;
 
     const text = doc.getText({ start: { line, character: 0 }, end: { line, character: Number.MAX_SAFE_INTEGER } });
@@ -113,6 +154,9 @@ export function getInlayHints(doc: TextDocument, range: Range, map: AddressLineM
       label,
       kind: InlayHintKind.Parameter,
       paddingLeft: true,
+      // The full encoding, whatever the mode showed inline — so a hint elided at MAX_INLINE_BYTES
+      // (or one showing only an address) still has the whole answer a hover away.
+      tooltip: bytes ? fullBytes(bytes) : undefined,
     });
   }
 

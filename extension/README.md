@@ -22,6 +22,11 @@ that, a language server parses your project and gives you:
 - **Go to definition, find references, rename, and workspace symbol search** that work across
   your whole project — not just the open file. Files are indexed once in the background and kept
   in sync as you edit, so this stays fast on real-sized projects.
+- **What each instruction does to the flags**, on hover — which it writes, which it only tests,
+  which it leaves alone. Written out rather than given as a set of letters, because the answer is
+  usually qualified: `inc` leaves `CF` alone where `add …, 1` doesn't, `mul` leaves four flags
+  *undefined* rather than untouched, a shift by zero writes none. An instruction that touches
+  nothing says so, so "does `lea` affect the flags?" has an answer.
 - **Signature help** while you're filling in a macro call.
 - **Live diagnostics from the real compiler** — errors and warnings come from actually running
   fasm2/fasm1 in the background as you type, parsed from its real output, not a hand-rolled
@@ -66,13 +71,25 @@ dialect, the compiler, live error checking, the language server's log and a serv
 finds no assembler at all, `FASM: Select Compiler` leads with where to get one and a re-detect —
 detection is cached for the session, so installing one mid-session otherwise looks like nothing
 happened.
-`FASM: Clean Build Output` removes what a build wrote.
+`FASM: Clean Build Output` removes what a build wrote. `FASM: Open Build Output in Hex Editor` opens
+the binary itself — for a header you laid out by hand, or a boot sector that has to be exactly 512
+bytes ending in `55 AA` — finding it the same way Build does, and offering to build it first if it
+is not built yet.
 
 `FASM: Build`, `FASM: Build and Run`, `FASM: Run` and `FASM: Debug` are also on the editor title
 bar, the editor context menu, and the explorer's right-click menu for a `.asm` file — and, for a
 file that is a program in its own right, as Run/Debug/Build lenses above its `format` directive
 (`fasm2Studio.codeLens`). `Ctrl+Alt+R` builds and runs; `Ctrl+Alt+Shift+R` runs the last build
-without assembling first.
+without assembling first. Selecting several files in the explorer and choosing Build or Clean acts
+on all of them, resolving each program once even when several selected fragments belong to the same
+one; Run and Debug start a single program, so they act on the file you clicked and say so when the
+selection held more.
+
+A **FASM Entry Points** section in the Explorer lists the files that are programs in their own
+right, with Build and Debug on each row and Build / Clean / Open Build Output in the context menu —
+so which of your files are programs and which are fragments is visible without opening them one at a
+time. With no fasm file focused, `Ctrl+Shift+B` offers one Build task per entry point instead of
+reporting that the workspace has no build task configured.
 
 Debug configurations are offered in the Run and Debug panel's dropdown without needing a
 `launch.json` — both a launch and an attach entry.
@@ -208,7 +225,7 @@ To use the debugger:
 | `fasm2Studio.gdbPath` | Path to gdb, used by `FASM: Debug`. Leave empty to use `gdb` from PATH. |
 | `fasm2Studio.diagnosticsEnabled` | Compile in the background to show errors/warnings as you edit. |
 | `fasm2Studio.codeLens` | Shows Run / Debug / Build above the `format` directive of a file that is a program in its own right. Included fragments get none — they build through whichever program includes them, which is not something a lens on the fragment could name. On by default. |
-| `fasm2Studio.inlayHints` | Annotates each line that produces machine code with its address and/or encoded size (`off`/`address`/`size`/`addressAndSize`) — what you would otherwise build and read a `.lst` to see. Rides on the background compile that live error checking already runs, so it needs `diagnosticsEnabled`, a trusted workspace and a fasm2/fasmg project. Off by default. |
+| `fasm2Studio.inlayHints` | Annotates each line that produces machine code with its address, its encoded size, and/or the encoding itself (`off`/`address`/`size`/`addressAndSize`/`bytes`/`addressAndBytes`) — what you would otherwise build and read a `.lst` to see. An encoding past 16 bytes is shortened inline, with the full dump on the hint's tooltip. Rides on the background compile that live error checking already runs, so it needs `diagnosticsEnabled`, a trusted workspace and a fasm2/fasmg project. Off by default. |
 | `fasm2Studio.updateIncludesOnFileMove` | Keeps `include` paths correct when you rename or move a file in the explorer — both the paths that named it and, for a file that moved to another directory, its own relative paths (`prompt`/`always`/`never`). Prompts by default, naming how many paths in how many files would change. |
 | `fasm2Studio.diagnosticsDebounceMs` | How long to wait after you stop typing before re-running diagnostics. |
 | `fasm2Studio.buildOutputPath` | Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc`) — keeps build output out of the source tree. Leave empty to build next to the source. |

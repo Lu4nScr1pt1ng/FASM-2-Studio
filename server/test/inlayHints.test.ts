@@ -45,6 +45,46 @@ describe('hintLabel', () => {
   it('widens past the padding rather than truncating a 64-bit address', () => {
     assert.strictEqual(hintLabel('address', 0x7ffff7a0d000n, undefined), '0x7FFFF7A0D000');
   });
+
+  describe('byte modes', () => {
+    const MOV = ['B8', '3C', '00', '00', '00'];
+
+    it('renders the encoding as spaced uppercase hex', () => {
+      assert.strictEqual(hintLabel('bytes', 0x400078n, 5, MOV), 'B8 3C 00 00 00');
+    });
+
+    it('uppercases an encoding the listing happened to spell in lowercase', () => {
+      assert.strictEqual(hintLabel('bytes', 0x400078n, 2, ['cd', '80']), 'CD 80');
+    });
+
+    it('renders the address alongside the encoding', () => {
+      assert.strictEqual(hintLabel('addressAndBytes', 0x400078n, 5, MOV), '0x00400078 · B8 3C 00 00 00');
+    });
+
+    it('says nothing in bytes mode for a line that emitted no code, the same as size mode', () => {
+      assert.strictEqual(hintLabel('bytes', 0x400078n, undefined, undefined), undefined);
+    });
+
+    it('still shows the address in addressAndBytes mode for a line that emitted no code', () => {
+      assert.strictEqual(hintLabel('addressAndBytes', 0x400078n, undefined, undefined), '0x00400078');
+    });
+
+    // A `format ELF64` line emits the whole 120-byte header; spelling it out inline would push the
+    // source off the screen, and the count is the part that is actually informative there.
+    it('elides an encoding too long to sit inline, naming its real length', () => {
+      const header = Array.from({ length: 120 }, () => '00');
+      const label = hintLabel('bytes', 0x400000n, 120, header);
+      assert.ok(label, 'expected a label');
+      assert.ok(label.endsWith('… (120 bytes)'), `expected an elided label, got: ${label}`);
+      assert.strictEqual(label.split(' ').filter((t) => /^[0-9A-F]{2}$/.test(t)).length, 16);
+    });
+
+    it('shows a 15-byte encoding — x86\'s longest legal instruction — in full', () => {
+      const longest = Array.from({ length: 15 }, (_, i) => i.toString(16).padStart(2, '0'));
+      const label = hintLabel('bytes', 0x400000n, 15, longest);
+      assert.ok(label && !label.includes('…'), `the longest real instruction should not be elided, got: ${label}`);
+    });
+  });
 });
 
 describe('uriToFsPath', () => {
@@ -66,6 +106,7 @@ describe('ListingMapStore', () => {
     addressToLocation: new Map(),
     locationToAddress: new Map(),
     sizeByLocation: new Map(),
+    bytesByLocation: new Map(),
     mappedLinesByFile: new Map(files.map((f) => [f, [1]])),
   });
 
@@ -103,6 +144,7 @@ describe('getInlayHints', () => {
         [`${fsPath}:4`, 0x40007dn],
       ]),
       sizeByLocation: new Map([[`${fsPath}:3`, 5]]),
+      bytesByLocation: new Map([[`${fsPath}:3`, ['B8', '3C', '00', '00', '00']]]),
       mappedLinesByFile: new Map([[fsPath, [3, 4]]]),
     };
     return { doc, map };
@@ -216,10 +258,12 @@ describe('parseListingFile byte lengths', () => {
   it('counts the bytes of each statement, and leaves code-less statements without one', () => {
     const entries = parseListingFile(fs.readFileSync(path.join(FIXTURES, 'simple.lst'), 'utf8'));
     assert.ok(entries.length > 0);
-    // Every byteLength that exists must be a positive count, never zero or NaN — a "0 bytes" hint
-    // would be a claim the listing never made.
+    // Every byte list that exists must be non-empty and hold real hex pairs — an empty one would
+    // render as a "0 bytes" hint, a claim the listing never made.
     for (const entry of entries) {
-      if (entry.byteLength !== undefined) assert.ok(entry.byteLength > 0, `bad byteLength for ${entry.text}`);
+      if (entry.bytes === undefined) continue;
+      assert.ok(entry.bytes.length > 0, `empty byte list for ${entry.text}`);
+      for (const byte of entry.bytes) assert.match(byte, /^[0-9A-Fa-f]{2}$/, `bad byte in ${entry.text}`);
     }
   });
 });

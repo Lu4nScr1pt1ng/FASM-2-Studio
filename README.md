@@ -206,10 +206,24 @@ that times out on a large project — the status bar says so, rather than leavin
 panel that looks exactly like success.
 
 `fasm2Studio.inlayHints` puts the machine-level answer directly in the editor: each line that
-produces code is annotated with the address it lands at and how many bytes it encodes to — the
-thing you would otherwise build and read a `.lst` file to find out. It rides on the same background
-compile the error checking already runs, so it costs one extra flag rather than a second pass, and
-with it off nothing is added to that compile at all. Off by default, fasm2/fasmg only.
+produces code is annotated with the address it lands at, how many bytes it encodes to, or the
+encoding itself (`B8 3C 00 00 00` next to `mov eax, 60`) — the thing you would otherwise build and
+read a `.lst` file to find out. It rides on the same background compile the error checking already
+runs, so it costs one extra flag rather than a second pass, and with it off nothing is added to that
+compile at all. An encoding longer than 16 bytes is shortened inline with its real length, since
+x86's longest legal instruction is 15 and anything past that is a header or a string whose point is
+that it is large; every hint carries its full dump as a tooltip whatever the mode. Off by default,
+fasm2/fasmg only.
+
+Hovering an instruction says what it does to the flags: which it writes, which it only tests, and
+which it leaves alone. The answer is written out rather than given as a set of letters, because it
+is routinely qualified — `inc` writes `OF SF ZF AF PF` and leaves `CF` alone, which is the whole
+reason it exists alongside `add …, 1`; `mul` writes `OF` and `CF` and leaves four more *undefined*,
+which is not the same as untouched; a shift by zero writes none of them. An instruction that
+touches nothing says so explicitly, so "does `lea` affect the flags?" has an answer rather than a
+silence indistinguishable from missing data. 304 mnemonics carry it — the base x86/x87 set, the
+conditional jump/set/move families, the string operations that read `DF`, and the x87 comparisons
+that report into EFLAGS.
 
 You also get occurrence highlighting, structural folding (matched `macro`/`if`/`while` pairs
 rather than line-local marker guesses, plus `;region`), clickable `include` paths, and Format
@@ -274,7 +288,17 @@ dialect, the compiler, live error checking, the language server's log and a serv
 assembler installed at all, that path leads to where to get one and a re-detect rather than to a
 file dialog with nothing to find. In
 terminal output, fasm's own `file.asm [12]:` error headers are clickable. `FASM: Clean Build
-Output` removes the binary and listing a build wrote. `fasm2Studio.runArgs` gives the two commands
+Output` removes the binary and listing a build wrote. A **FASM Entry Points** section in the
+Explorer lists the files that are programs in their own right — the same distinction that decides
+where the Run/Debug lenses appear — with Build and Debug on each row, so a project's actual build
+targets are visible without opening files one at a time. With no fasm file focused, `Ctrl+Shift+B`
+offers one Build task per entry point rather than reporting that the workspace has no build task.
+Selecting several files in the explorer and choosing Build or Clean acts on all of them, resolving
+each program once even when several selected fragments belong to the same one; Run and Debug start a
+single program, so they act on the file you clicked and say so when more than one was selected.
+`FASM: Open Build Output in Hex Editor` opens the binary a build produced — for a header laid out by
+hand, or a boot sector that has to be exactly 512 bytes ending in `55 AA` — finding it the same way
+Build does, and offering to build it first if it is not built yet. `fasm2Studio.runArgs` gives the two commands
 that run the program the command line the debugger has taken all along as `"args"` in `launch.json`;
 each entry is quoted as one argument, so a glob or a `;` reaches the program as written rather than
 being acted on by the shell.

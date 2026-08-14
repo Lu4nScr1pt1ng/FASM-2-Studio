@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.17.0
+
+### What each instruction does to the flags
+
+Hovering an instruction now tells you which flags it writes, which it only tests, and which it
+leaves alone — the thing you'd otherwise stop and look up.
+
+It's written out rather than given as a set of letters, because the real answer is usually
+qualified. `inc` writes `OF SF ZF AF PF` and leaves `CF` alone, which is exactly why it exists
+alongside `add …, 1` and exactly what breaks a multi-precision loop written with the wrong one.
+`mul` writes `OF` and `CF` and leaves four more *undefined*, which isn't the same as untouched. A
+shift by zero writes none at all. `div` leaves every status flag undefined.
+
+An instruction that touches nothing says **Flags: unchanged** instead of saying nothing, so "does
+`lea` affect the flags?" has an answer. 304 mnemonics carry this: the base x86/x87 set, the
+conditional jump/set/move families, the string operations that read `DF`, and the x87 comparisons
+that report into EFLAGS.
+
+### The bytes an instruction assembles to
+
+`fasm2Studio.inlayHints` gains `bytes` and `addressAndBytes` — the encoding itself, `B8 3C 00 00 00`
+next to `mov eax, 60`, which is what a `.lst` file usually gets opened for.
+
+It costs nothing extra: the listing behind the existing address and size modes already contained the
+bytes and was only counting them. An encoding longer than 16 bytes (a `format` directive emitting a
+whole ELF header, a `db` of a string) is shortened inline with its real length, and every hint
+carries the full dump as a tooltip whatever mode you're in.
+
+### The programs in your workspace, as a list
+
+A new **FASM Entry Points** section in the Explorer lists the files that are programs in their own
+right, with Build and Debug on each row and Build / Clean / Open Build Output in the context menu.
+
+Which of your files are programs and which are fragments meant to be `include`d is something the
+extension already knows — it's what decides where the Run/Debug lenses appear — but seeing it meant
+opening files one at a time. A workspace with no fasm program in it doesn't grow the section.
+
+### `Ctrl+Shift+B` without a fasm file focused
+
+Build tasks were only offered while a fasm file was the active editor, so `Ctrl+Shift+B` from a
+focused README, or right after opening a folder, said the workspace had no build task configured.
+It now offers one Build task per entry point instead.
+
+### A multi-file selection in the explorer
+
+Selecting several files and choosing Build or Clean Build Output acted on one of them and said
+nothing about the rest. Both now act on the whole selection, building or cleaning each program once
+even when several selected fragments belong to the same one, and reporting the result once rather
+than per file. Run and Debug start a single program, so they still act on the file you clicked —
+but they now say so when more than one was selected.
+
+### The build output, in hex
+
+`FASM: Open Build Output in Hex Editor` opens the binary your build produced — for the header you
+laid out by hand, or the boot sector that has to be 512 bytes ending in `55 AA`. It finds the output
+the same way Build does (including `fasm2Studio.buildOutputPath`), offers to build it if it isn't
+built yet, and offers to install Microsoft's Hex Editor if you don't have it.
+
+### Smaller
+
+Word-based suggestions are off for FASM files now — with completions coming from the instruction set
+and your project's own symbols, every word in every other open file only dilutes the list.
+
 ## 1.16.0
 
 ### Arguments for the assembler

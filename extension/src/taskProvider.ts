@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { LanguageClient } from 'vscode-languageclient/node';
 import { activeFasmEditor } from './activeEditor';
+import { listEntryPoints } from './entryPoints';
 import { dialectFor, getDefaultOutputPath } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX, stringArraySetting } from './config';
@@ -171,9 +173,31 @@ export async function runBuildTask(file: string, debugBuild = false): Promise<nu
 }
 
 export class FasmTaskProvider implements vscode.TaskProvider {
+  constructor(private readonly getClient: () => LanguageClient | undefined) {}
+
+  /**
+   * One "Build" task per entry point in the workspace, for when there is no active fasm file to
+   * build instead.
+   *
+   * Without this, `Ctrl+Shift+B` from a focused README — or straight after opening a folder,
+   * before any source file has been clicked — found no tasks at all and reported the workspace as
+   * having no build task configured, in a workspace whose every file this extension knows how to
+   * build. Entry points only: a fragment cannot be assembled standalone, which is the same reason
+   * the code lenses appear on entry points alone.
+   */
+  private async workspaceBuildTasks(): Promise<vscode.Task[]> {
+    const entryPoints = await listEntryPoints(this.getClient());
+    const built = await Promise.allSettled(
+      entryPoints.map((entry) => buildTask({ type: FASM_TASK_TYPE, file: entry.fsPath }, `Build ${entry.relativePath}`)),
+    );
+    // Each can fail on its own (a dialect whose compiler isn't installed), and one such entry point
+    // shouldn't remove the rest of the workspace's from the picker.
+    return built.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  }
+
   async provideTasks(): Promise<vscode.Task[]> {
     const editor = activeFasmEditor();
-    if (!editor) return [];
+    if (!editor) return this.workspaceBuildTasks();
 
     const file = editor.document.uri.fsPath;
 

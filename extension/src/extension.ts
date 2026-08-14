@@ -3,11 +3,13 @@ import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 import { activeFasmEditor, buildableFsPath, isFasmDocument, NO_ACTIVE_FASM_FILE_MESSAGE } from './activeEditor';
 import { getDefaultOutputPath } from './buildPaths';
-import { cleanBuildOutput } from './clean';
+import { cleanBuildOutputs } from './clean';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
 import { registerNewFile } from './newFile';
+import { registerEntryPointsView } from './entryPointsView';
+import { registerOpenBuildOutput } from './openBuildOutput';
 import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDebugger } from './selectDebugger';
 import { registerSelectDialect } from './selectDialect';
@@ -53,6 +55,26 @@ async function targetFasmFile(resource?: vscode.Uri): Promise<string | undefined
 }
 
 /**
+ * Every file a command invoked from the explorer should act on.
+ *
+ * VS Code hands an explorer context-menu command two arguments: the item that was right-clicked,
+ * and — when the click landed inside a multi-file selection — that whole selection. Reading only
+ * the first meant selecting four files and choosing "Clean Build Output" cleaned one of them and
+ * said nothing about the other three, which looks like the command half-working rather than like
+ * it only ever having been given one file.
+ *
+ * `selection` is ignored when it doesn't contain `resource`: right-clicking a file *outside* the
+ * current selection acts on the file under the cursor, which is what the explorer's own commands do.
+ */
+async function targetFasmFiles(resource?: vscode.Uri, selection?: vscode.Uri[]): Promise<string[]> {
+  if (resource && selection && selection.length > 1 && selection.some((uri) => uri.fsPath === resource.fsPath)) {
+    return selection.map((uri) => uri.fsPath);
+  }
+  const single = await targetFasmFile(resource);
+  return single ? [single] : [];
+}
+
+/**
  * The active file may be a fragment (no "format" directive of its own, meant only to be
  * `include`d) — resolves to the real entry point that should actually be built/run/debugged,
  * auto-resolving when unambiguous and prompting when a workspace has several independent
@@ -77,25 +99,63 @@ async function resolveBuildTarget(action: string, resource?: vscode.Uri): Promis
   return resolveActiveEntryFile(file);
 }
 
+/**
+ * The same, for the commands that can sensibly act on a whole explorer selection (Build, Clean).
+ *
+ * Entry points are de-duplicated: several selected fragments routinely belong to one program, and
+ * resolving each of them separately would otherwise assemble — or clean — that program once per
+ * fragment.
+ */
+async function resolveBuildTargets(action: string, resource?: vscode.Uri, selection?: vscode.Uri[]): Promise<string[]> {
+  if (!(await ensureTrusted(action))) return [];
+  const entries: string[] = [];
+  for (const file of await targetFasmFiles(resource, selection)) {
+    const entry = await resolveActiveEntryFile(file);
+    if (entry && !entries.includes(entry)) entries.push(entry);
+  }
+  return entries;
+}
+
+/**
+ * Names the file a single-target command picked out of a multi-file selection.
+ *
+ * Run and Debug start one program, so unlike Build they have nothing sensible to do with four
+ * files. Acting on the right-clicked one is the correct choice; doing it without a word is what
+ * would read as the other three having silently failed.
+ */
+function noteSingleTarget(file: string, resource?: vscode.Uri, selection?: vscode.Uri[]): void {
+  if (!resource || !selection || selection.length <= 1) return;
+  void vscode.window.showInformationMessage(
+    `${MESSAGE_PREFIX}${selection.length} files are selected; acting on ${path.basename(file)}.`,
+  );
+}
+
 function registerCommands(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand('fasm2Studio.build', async (resource?: vscode.Uri) => {
-      const entryFile = await resolveBuildTarget('Building', resource);
-      if (entryFile) await runBuildTask(entryFile);
+    // Builds every selected file (see targetFasmFiles), sequentially — each runs as its own task
+    // in the shared terminal panel, and starting the next before the last has finished would
+    // interleave two assemblers' output in it. Stops at the first failure rather than burying the
+    // error that matters under the builds that came after it.
+    vscode.commands.registerCommand('fasm2Studio.build', async (resource?: vscode.Uri, selection?: vscode.Uri[]) => {
+      for (const entryFile of await resolveBuildTargets('Building', resource, selection)) {
+        if ((await runBuildTask(entryFile)) !== 0) return;
+      }
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.buildAndRun', async (resource?: vscode.Uri) => {
+    vscode.commands.registerCommand('fasm2Studio.buildAndRun', async (resource?: vscode.Uri, selection?: vscode.Uri[]) => {
       const entryFile = await resolveBuildTarget('Building and running', resource);
       if (!entryFile) return;
+      noteSingleTarget(entryFile, resource, selection);
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
         await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile));
       }
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.run', async (resource?: vscode.Uri) => {
+    vscode.commands.registerCommand('fasm2Studio.run', async (resource?: vscode.Uri, selection?: vscode.Uri[]) => {
       const entryFile = await resolveBuildTarget('Running', resource);
       if (!entryFile) return;
+      noteSingleTarget(entryFile, resource, selection);
       // The source file's directory, not the output's: fasm2Studio.buildOutputPath can send the
       // binary off to a "bin/" of its own, and a program's relative paths are written against
       // where its source lives. This is the same directory a debug launch defaults "cwd" to.
@@ -105,9 +165,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
     // Resolved through the same entry-point path as Build, so it removes exactly the files that
     // Build wrote — cleaning an included fragment cleans the program it is part of, rather than
     // looking for output next to a file that never produced any.
-    vscode.commands.registerCommand('fasm2Studio.clean', async (resource?: vscode.Uri) => {
-      const entryFile = await resolveBuildTarget('Cleaning', resource);
-      if (entryFile) await cleanBuildOutput(entryFile);
+    vscode.commands.registerCommand('fasm2Studio.clean', async (resource?: vscode.Uri, selection?: vscode.Uri[]) => {
+      await cleanBuildOutputs(await resolveBuildTargets('Cleaning', resource, selection));
     }),
 
     // The language client's own channel, which is where fasm2Studio.trace.server writes. Without a
@@ -143,9 +202,10 @@ function registerCommands(context: vscode.ExtensionContext): void {
       await runWorkspaceIndex(client);
     }),
 
-    vscode.commands.registerCommand('fasm2Studio.debug', async (resource?: vscode.Uri) => {
+    vscode.commands.registerCommand('fasm2Studio.debug', async (resource?: vscode.Uri, selection?: vscode.Uri[]) => {
       const file = await targetFasmFile(resource);
       if (!file) return;
+      noteSingleTarget(file, resource, selection);
 
       // Deliberately not resolved/built here: passing the raw active file through with no
       // "program"/"listingFile" leaves FasmDebugConfigurationProvider.resolveDebugConfiguration as
@@ -235,9 +295,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // moment a rename happens, and a rename during startup is better answered by doing nothing than
   // by a handler that isn't listening yet.
   registerIncludeRename(context, () => client);
-  context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider()));
+  registerOpenBuildOutput(context, () => client);
+  context.subscriptions.push(vscode.tasks.registerTaskProvider(FASM_TASK_TYPE, new FasmTaskProvider(() => client)));
 
   const codeLens = registerCodeLens(context, () => client);
+  const entryPointsView = registerEntryPointsView(context, () => client);
 
   context.subscriptions.push(
     vscode.debug.registerDebugConfigurationProvider(FASM_DEBUG_TYPE, new FasmDebugConfigurationProvider(context, () => client)),
@@ -293,13 +355,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // `format` directive, or an `include` that pulls a fragment into a program, both land here.
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((document) => {
-      if (isFasmDocument(document)) codeLens.refresh();
+      if (isFasmDocument(document)) {
+        codeLens.refresh();
+        // Same trigger, same reason: adding or removing a `format` directive is exactly what moves
+        // a file into or out of this list.
+        entryPointsView.refresh();
+      }
     }),
   );
   await runWorkspaceIndex(client);
   // The first scan is what populates the entry-point list at all: lenses computed before it
   // finished would have found an empty one and rendered nothing until the next save.
   codeLens.refresh();
+  entryPointsView.refresh();
 }
 
 export async function deactivate(): Promise<void> {

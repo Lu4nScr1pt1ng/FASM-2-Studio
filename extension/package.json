@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -116,7 +116,8 @@
     "configurationDefaults": {
       "[fasm]": {
         "editor.semanticHighlighting.enabled": true,
-        "editor.defaultFormatter": "Lu4nScr1pt1ng.fasm2-studio"
+        "editor.defaultFormatter": "Lu4nScr1pt1ng.fasm2-studio",
+        "editor.wordBasedSuggestions": "off"
       }
     },
     "snippets": [
@@ -218,17 +219,21 @@
             "off",
             "address",
             "size",
-            "addressAndSize"
+            "addressAndSize",
+            "bytes",
+            "addressAndBytes"
           ],
           "enumDescriptions": [
             "No inline annotations.",
             "The address each instruction is assembled at.",
             "How many bytes each instruction encodes to.",
-            "Both, as \"0x00401000 · 5 bytes\"."
+            "Both, as \"0x00401000 · 5 bytes\".",
+            "The machine code each instruction encodes to, as \"B8 3C 00 00 00\".",
+            "Both, as \"0x00401000 · B8 3C 00 00 00\"."
           ],
           "default": "off",
           "scope": "resource",
-          "description": "Annotates each line that produces machine code with where it lands in memory and how large it is — the information you would otherwise have to build and read a .lst file to see. The data comes from the same background compile that live error checking already runs, so this needs fasm2Studio.diagnosticsEnabled, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
+          "description": "Annotates each line that produces machine code with where it lands in memory, how large it is, and the bytes it encodes to — the information you would otherwise have to build and read a .lst file to see. The byte modes show the encoding itself, which is the thing a .lst is usually opened for; an encoding longer than 16 bytes (a `format` directive emitting a whole ELF header, a `db` of a string) is elided inline, and every hint carries its full dump as a tooltip whatever the mode. The data comes from the same background compile that live error checking already runs, so this needs fasm2Studio.diagnosticsEnabled, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
         },
         "fasm2Studio.runArgs": {
           "type": "array",
@@ -317,6 +322,11 @@
         "category": "FASM"
       },
       {
+        "command": "fasm2Studio.openBuildOutput",
+        "title": "Open Build Output in Hex Editor",
+        "category": "FASM"
+      },
+      {
         "command": "fasm2Studio.selectDialect",
         "title": "Select Dialect",
         "category": "FASM"
@@ -355,8 +365,53 @@
         "command": "fasm2Studio.reportIssue",
         "title": "Report Issue",
         "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.refresh",
+        "title": "Refresh Entry Points",
+        "category": "FASM",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.build",
+        "title": "Build",
+        "category": "FASM",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.buildAndRun",
+        "title": "Build and Run",
+        "category": "FASM",
+        "icon": "$(play)"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.debug",
+        "title": "Debug",
+        "category": "FASM",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.clean",
+        "title": "Clean Build Output",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.entryPoints.openBuildOutput",
+        "title": "Open Build Output in Hex Editor",
+        "category": "FASM"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "fasm2Studio.entryPoints",
+          "name": "FASM Entry Points",
+          "icon": "$(file-binary)",
+          "when": "fasm2Studio.hasEntryPoints",
+          "visibility": "collapsed"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "fasm2Studio.build",
@@ -625,12 +680,70 @@
           "when": "resourceLangId == fasm"
         },
         {
+          "command": "fasm2Studio.openBuildOutput",
+          "when": "resourceLangId == fasm"
+        },
+        {
           "command": "fasm2Studio.statusBarMenu",
           "when": "false"
         },
         {
           "command": "fasm2Studio.pickProcess",
           "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.build",
+          "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.buildAndRun",
+          "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.debug",
+          "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.clean",
+          "when": "false"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.openBuildOutput",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "fasm2Studio.entryPoints.refresh",
+          "when": "view == fasm2Studio.entryPoints",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fasm2Studio.entryPoints.buildAndRun",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "inline@1"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.debug",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "inline@2"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.build",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "fasm@1"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.clean",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "fasm@2"
+        },
+        {
+          "command": "fasm2Studio.entryPoints.openBuildOutput",
+          "when": "view == fasm2Studio.entryPoints && viewItem == fasmEntryPoint",
+          "group": "fasm@3"
         }
       ],
       "editor/title/run": [
@@ -687,6 +800,11 @@
           "command": "fasm2Studio.clean",
           "when": "resourceLangId == fasm",
           "group": "fasm@4"
+        },
+        {
+          "command": "fasm2Studio.openBuildOutput",
+          "when": "resourceLangId == fasm",
+          "group": "fasm@5"
         }
       ]
     },

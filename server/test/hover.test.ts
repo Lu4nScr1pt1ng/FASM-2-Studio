@@ -58,6 +58,57 @@ describe('getHover', () => {
       assert.match(v, /\*sse2 instruction\*/);
     });
 
+    describe('flags', () => {
+      it('states which flags an arithmetic instruction writes', () => {
+        assert.match(value(getHover(ws, uri, 'fasm2', 'add')), /\*\*Flags:\*\* OF SF ZF AF PF CF/);
+      });
+
+      // The single most consequential difference between "inc eax" and "add eax, 1", and the
+      // reason both exist — a loop that carries a bit in CF is broken by picking the wrong one.
+      it('records that inc/dec leave CF alone, unlike add/sub', () => {
+        assert.match(value(getHover(ws, uri, 'fasm2', 'inc')), /\*\*Flags:\*\* OF SF ZF AF PF \(CF unchanged\)/);
+        assert.match(value(getHover(ws, uri, 'fasm2', 'dec')), /CF unchanged/);
+      });
+
+      it('says so explicitly when an instruction leaves the flags alone, rather than staying silent', () => {
+        assert.match(value(getHover(ws, uri, 'fasm2', 'lea')), /\*\*Flags:\*\* unchanged/);
+        assert.match(value(getHover(ws, uri, 'fasm2', 'mov')), /\*\*Flags:\*\* unchanged/);
+      });
+
+      it('names the flags a conditional branch/set/move only tests', () => {
+        assert.match(value(getHover(ws, uri, 'fasm2', 'jbe')), /\*\*Flags:\*\* reads CF ZF/);
+        assert.match(value(getHover(ws, uri, 'fasm2', 'setg')), /\*\*Flags:\*\* reads ZF SF OF/);
+        assert.match(value(getHover(ws, uri, 'fasm2', 'cmovl')), /\*\*Flags:\*\* reads SF OF/);
+      });
+
+      it('reports the flags a division leaves undefined instead of implying it sets them', () => {
+        assert.match(value(getHover(ws, uri, 'fasm2', 'div')), /\*\*Flags:\*\* all status flags undefined/);
+        assert.match(value(getHover(ws, uri, 'fasm2', 'mul')), /SF ZF AF PF undefined/);
+      });
+
+      // "movsd" and "cmpsd" are a string operation in x86 and a scalar-double float operation in
+      // SSE2. The flag data is keyed by mnemonic, so the string form's "reads DF" must not reach
+      // the floating-point form sharing its name.
+      it('keeps string-operation flags off the identically-named SSE2 instruction', () => {
+        const forms = (instructionsData as Array<{ mnemonic: string; isa?: string; flags?: string }>).filter(
+          (i) => i.mnemonic === 'movsd' || i.mnemonic === 'cmpsd',
+        );
+        for (const form of forms) {
+          if (form.isa === 'sse2') assert.strictEqual(form.flags, undefined, `${form.mnemonic} (sse2) should carry no flag data`);
+          else assert.match(form.flags ?? '', /reads DF/, `${form.mnemonic} (${form.isa}) should read DF`);
+        }
+      });
+
+      it('gives no flag data to instruction sets it does not describe, rather than a wrong default', () => {
+        const avx = (instructionsData as Array<{ mnemonic: string; isa?: string; flags?: string }>).filter((i) => i.isa === 'avx');
+        assert.ok(avx.length > 0, 'expected the data to contain AVX instructions');
+        assert.ok(
+          avx.every((i) => i.flags === undefined),
+          'AVX instructions do not touch EFLAGS and carry no flag phrase',
+        );
+      });
+    });
+
     it('recognizes vaddpd and loadall, both found missing against the real fasmg source tree', () => {
       assert.match(value(getHover(ws, uri, 'fasm2', 'vaddpd')), /AVX: add packed double-precision floats/);
       assert.match(value(getHover(ws, uri, 'fasm2', 'loadall')), /loads the entire visible and hidden CPU state/);

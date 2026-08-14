@@ -25,11 +25,12 @@ export const MAX_LOOKAHEAD = 5000;
 export interface ListingEntry {
   address: bigint;
   text: string;
-  /** How many machine-code bytes this statement assembled to, when the listing showed them.
-   * Absent for a statement the assembler emitted no bytes for at all (a label on its own line, an
-   * `org`, a macro definition) — which is exactly the distinction the inlay hints rely on to stay
-   * off lines that produced no code. */
-  byteLength?: number;
+  /** The machine-code bytes this statement assembled to, as the listing spelled them ("B8", "01",
+   * …). Absent for a statement the assembler emitted no bytes for at all (a label on its own line,
+   * an `org`, a macro definition) — which is exactly the distinction the inlay hints rely on to
+   * stay off lines that produced no code. The count is `bytes.length`; the values themselves are
+   * what the "bytes" inlay hint modes show. */
+  bytes?: string[];
 }
 
 export interface SourceLocation {
@@ -44,8 +45,12 @@ export interface AddressLineMap {
   locationToAddress: Map<string, bigint>;
   /** Per `${fsPath}:${line}`, how many machine-code bytes that line assembled to. Same keying as
    * locationToAddress, and populated only for lines the listing showed bytes for — see
-   * ListingEntry.byteLength. Read by the inlay hints (server/src/features/inlayHints.ts). */
+   * ListingEntry.bytes. Read by the inlay hints (server/src/features/inlayHints.ts). */
   sizeByLocation: Map<string, number>;
+  /** Per `${fsPath}:${line}`, those same bytes as the listing spelled them. Keyed and populated
+   * exactly like sizeByLocation — this is the encoding itself rather than its length, behind the
+   * "bytes" inlay hint modes. */
+  bytesByLocation: Map<string, string[]>;
   /** Per source file, the ascending list of lines that actually produced machine code. The
    * complement of this — blank lines, comments, `include`s, bare labels, macro definition bodies,
    * everything in a data section — is most of a typical asm file, and is exactly where a user
@@ -98,7 +103,7 @@ function addContinuationBytes(entry: ListingEntry | undefined, rawLine: string):
 
   const parts = trimmed.split(/\s+/);
   if (!parts.every((part) => /^[0-9A-Fa-f]{2}$/.test(part))) return;
-  entry.byteLength = (entry.byteLength ?? 0) + parts.length;
+  entry.bytes = [...(entry.bytes ?? []), ...parts];
 }
 
 export function parseListingFile(content: string): ListingEntry[] {
@@ -122,11 +127,11 @@ export function parseListingFile(content: string): ListingEntry[] {
     const text = (withBytes ? withBytes[3] : rest).trim();
     if (text.length === 0) continue;
 
-    // The byte dump is a run of " XX" pairs, so its length in bytes is how many matched here plus
-    // whatever the continuation lines above add to it.
-    const byteLength = withBytes ? withBytes[2].trim().split(/\s+/).length : undefined;
+    // The byte dump is a run of " XX" pairs; the continuation lines handled above append whatever
+    // did not fit on this one.
+    const bytes = withBytes ? withBytes[2].trim().split(/\s+/) : undefined;
 
-    entries.push({ address, text, byteLength });
+    entries.push({ address, text, bytes });
   }
 
   return entries;
@@ -204,6 +209,7 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
   const addressToLocation = new Map<bigint, SourceLocation>();
   const locationToAddress = new Map<string, bigint>();
   const sizeByLocation = new Map<string, number>();
+  const bytesByLocation = new Map<string, string[]>();
   const mappedLinesByFile = new Map<string, number[]>();
 
   let cursor = 0;
@@ -226,7 +232,10 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
       // Same first-wins rule as the address above, and for the same reason: one source line can be
       // reached by more than one listing entry (a macro invoked twice), and the first is the one
       // whose address the rest of the map already describes.
-      if (entry.byteLength !== undefined) sizeByLocation.set(key, entry.byteLength);
+      if (entry.bytes !== undefined) {
+        sizeByLocation.set(key, entry.bytes.length);
+        bytesByLocation.set(key, entry.bytes);
+      }
       const lines = mappedLinesByFile.get(loc.fsPath);
       if (lines) lines.push(loc.line);
       else mappedLinesByFile.set(loc.fsPath, [loc.line]);
@@ -240,7 +249,7 @@ export function correlateListing(entries: ListingEntry[], candidates: Candidate[
   // one sorted sweep.
   for (const lines of mappedLinesByFile.values()) lines.sort((a, b) => a - b);
 
-  return { addressToLocation, locationToAddress, sizeByLocation, mappedLinesByFile };
+  return { addressToLocation, locationToAddress, sizeByLocation, bytesByLocation, mappedLinesByFile };
 }
 
 export interface BuiltAddressLineMap extends AddressLineMap {

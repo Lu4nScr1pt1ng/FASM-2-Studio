@@ -1,6 +1,130 @@
 # Changelog
 
-## 1.16.0
+## 1.17.0
+
+### What each instruction does to the flags
+
+Hovering an instruction now says which flags it writes, which it only tests, and which it leaves
+alone. This is the question assembly programmers actually interrupt themselves to look up, and
+until now the hover answered everything except it.
+
+The phrasing is deliberately prose rather than a set of letters, because the true answer is
+routinely qualified in ways a letter set cannot carry. `inc` writes `OF SF ZF AF PF` and leaves
+`CF` untouched — which is the entire reason it exists alongside `add …, 1`, and the entire reason a
+multi-precision loop written with the wrong one is broken. `mul` writes `OF` and `CF` and leaves
+four more *undefined*, which is not the same as leaving them alone. A shift by zero writes none of
+them at all. `div` leaves every status flag undefined.
+
+An instruction that touches nothing says so explicitly — `**Flags:** unchanged` — instead of
+staying silent, because silence would be indistinguishable from an instruction this extension has
+no data for. "Does `lea` affect the flags?" deserves an answer, and the answer is no.
+
+304 mnemonics carry this: the base x86/x87 set, the conditional jump/set/move families (generated
+from one condition-to-flags table, so `jbe`, `setbe` and `cmovbe` can never disagree about what
+`be` tests), the string operations that read `DF`, and the x87 comparisons that report into EFLAGS.
+The data is keyed by mnemonic, which is why it is also gated on the instruction set: `movsd` and
+`cmpsd` are string operations in x86 and scalar-double float operations in SSE2, and the SSE2 forms
+must not inherit "reads DF" from the names they happen to share. An AVX instruction carries no flag
+phrase at all rather than a wrong default.
+
+### The bytes an instruction assembles to
+
+`fasm2Studio.inlayHints` gains `bytes` and `addressAndBytes`. Where the existing modes annotate a
+line with where it lands and how large it is, these show the encoding itself — `B8 3C 00 00 00`
+next to `mov eax, 60` — which is the thing a `.lst` file is usually opened to find.
+
+It costs nothing new. The listing behind the address and size modes already contained the bytes;
+the parser counted them and threw the values away. It now keeps them, and `byteLength` is gone as a
+separate field, since a count and the thing counted are one source of truth or they are two that
+can disagree. A wrapped byte dump — a `format` directive emitting a 120-byte ELF header across
+sixteen listing lines — is folded into one encoding, the same way its length always was.
+
+An encoding longer than 16 bytes is elided inline with its real length, since x86's longest legal
+instruction is 15 bytes and anything past that is a header or a string whose point is that it is
+large, not what its four hundredth byte is. Every hint carries its full, un-elided dump as a
+tooltip regardless of the mode — including in the address-only modes.
+
+### The programs in your workspace, as a list
+
+A new **FASM Entry Points** section in the Explorer lists the files that are programs in their own
+right, with Build and Debug on each row and Build / Clean / Open Build Output behind the context
+menu.
+
+Everything else in this extension addresses whatever file is currently focused, which is right for
+editing but leaves a project's shape invisible: which of forty `.asm`/`.inc` files are programs and
+which are fragments is knowledge the server already has — a top-level `format` directive is what
+distinguishes them, the same fact behind the Run/Debug code lenses — and the only way to see it was
+to open files one at a time and look for a lens.
+
+It sits in the Explorer rather than in an activity-bar container of its own: these are build
+targets, they belong next to the files, and a whole activity bar icon is more presence than a list
+of usually two or three items has earned. A workspace with no fasm program in it does not grow the
+section at all.
+
+### `Ctrl+Shift+B` in a workspace whose files it knows how to build
+
+The task provider returned nothing at all unless a fasm file happened to be the focused editor. So
+`Ctrl+Shift+B` from a focused README — or straight after opening a folder, before any source file
+has been clicked — reported the workspace as having no build task configured, in a workspace full
+of files this extension builds.
+
+With no fasm editor focused it now offers one Build task per entry point instead. Entry points
+only, for the same reason the code lenses appear on entry points alone: a fragment cannot be
+assembled standalone. An entry point whose own build task cannot be constructed — a dialect whose
+compiler is not installed — drops out on its own rather than removing the rest of the workspace's
+from the picker.
+
+### A multi-file selection, acted on as one
+
+VS Code hands an explorer context-menu command two things: the item that was right-clicked, and —
+when the click lands inside a multi-file selection — that whole selection. This extension read only
+the first. Selecting four files and choosing **Clean Build Output** cleaned one of them and said
+nothing about the other three, which reads as the command half-working rather than as it only ever
+having been given one file.
+
+Build and Clean now act on the whole selection. Resolved entry points are de-duplicated first,
+since several selected fragments routinely belong to one program and would otherwise assemble — or
+clean — it once per fragment. Builds run one after another and stop at the first failure, rather
+than burying the error that matters under the builds that followed it. Cleaning reports the whole
+gesture once instead of a popup per file.
+
+Run and Debug start a single program, so they have nothing sensible to do with four files. They
+keep acting on the right-clicked one and now name it when the selection held more, which is the
+part that was actually missing: doing the right thing silently is what looked like the other three
+failing.
+
+### The build output, in hex
+
+`FASM: Open Build Output in Hex Editor` opens the binary a build produced. Assembly is the one
+language where the output file is routinely something you need to read — a hand-built PE/ELF
+header, a boot sector that has to be exactly 512 bytes ending in `55 AA`, a table laid out by hand
+— and the extension already knew exactly where a build writes, honouring `fasm2Studio.buildOutputPath`.
+What stood between the user and those bytes was knowing the path and finding the right "Open With".
+
+It resolves through the same entry point Build does, so asking for the output of an included
+fragment shows the binary its program produced rather than looking for output beside a file that
+never wrote any. Output that has not been built yet offers to build it. The hex editor itself is
+Microsoft's and is not built into VS Code, so a machine without it gets an offer to install rather
+than a raw "no editor for this file".
+
+### Smaller
+
+Word-based suggestions are off for FASM files now. With a language server supplying completions
+from the instruction set and the project's own symbols, the editor's fallback — every word in every
+other open file — only dilutes the list.
+
+### A skipped test that failed the run
+
+The `debug-tests` CI job failed on a machine with no `fasm2` installed, which is every CI runner
+here: the end-to-end suites correctly skipped themselves, and then the teardown of one of them
+threw `TypeError: Cannot read properties of undefined (reading 'dir')` and failed the job anyway.
+
+Mocha runs a suite's `after` hook even when its `before` called `this.skip()`. That hook read
+`.dir` off two fixtures that `before` had returned without building. Teardown now removes whatever
+was actually built, tracked as it is created, which also covers the half-built case the old code
+never handled: when the second fixture's build throws, the first one's directory used to be left
+behind. The declaration that claimed both fixtures always existed is what hid this from the type
+checker, and the tracking list is honest about it being empty.
 
 ### Arguments for the assembler, everywhere it runs
 

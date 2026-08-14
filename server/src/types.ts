@@ -163,6 +163,18 @@ export interface InstructionEntry {
   summary: string;
   operands?: string;
   isa?: string;
+  /**
+   * What this instruction does to the flags register, as a phrase to show the reader — the flags
+   * it writes ("OF SF ZF AF PF CF"), the ones it only tests ("reads CF ZF"), or the literal string
+   * "none". Present for the base x86/x87 set only; a mnemonic from a package this extension does
+   * not ship data for simply has nothing to say here.
+   *
+   * Deliberately prose rather than a flag list: the answer is frequently qualified in a way a set
+   * of letters cannot carry — inc leaves CF alone, mul leaves four of them undefined, and a shift
+   * by zero writes none of them at all — and those qualifications are exactly what someone hovers
+   * the instruction to find out.
+   */
+  flags?: string;
 }
 
 export interface RegisterEntry {

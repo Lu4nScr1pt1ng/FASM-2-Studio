@@ -112,6 +112,34 @@ describe('correlateListing / buildAddressLineMap (end-to-end, real captured outp
     assert.strictEqual(at(0xf)!.line, 8);
   });
 
+  it('carries each line\'s real encoding through to bytesByLocation, not just its length', () => {
+    const simplePath = path.join(FIXTURES, 'simple.asm');
+    const map = buildAddressLineMap(path.join(FIXTURES, 'simple.lst'), simplePath);
+
+    // Straight out of the captured fixture: "mov eax, 1" under `use i386` assembles to the
+    // operand-size-prefixed B8 form, and "int 0x80" to CD 80.
+    assert.deepStrictEqual(map.bytesByLocation.get(`${simplePath}:5`), ['66', 'B8', '01', '00', '00', '00']);
+    assert.deepStrictEqual(map.bytesByLocation.get(`${simplePath}:7`), ['66', '01', 'D8']);
+    assert.deepStrictEqual(map.bytesByLocation.get(`${simplePath}:8`), ['CD', '80']);
+
+    // The two maps are built from one source, so they can never disagree about a line's size.
+    for (const [key, bytes] of map.bytesByLocation) {
+      assert.strictEqual(map.sizeByLocation.get(key), bytes.length, `size/bytes disagree for ${key}`);
+    }
+  });
+
+  it('merges a wrapped byte dump into one encoding, rather than keeping only the first line of it', () => {
+    const entryPath = path.join(FIXTURES, 'with-macro-and-include.asm');
+    const map = buildAddressLineMap(path.join(FIXTURES, 'with-macro-and-include.lst'), entryPath);
+
+    // Whatever the fixture's longest statement is, its byte list must match the length already
+    // recorded for it — the continuation-line folding is what makes those agree.
+    const longest = [...map.bytesByLocation.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+    assert.ok(longest, 'expected at least one statement with bytes');
+    assert.strictEqual(map.sizeByLocation.get(longest[0]), longest[1].length);
+    for (const byte of longest[1]) assert.match(byte, /^[0-9A-Fa-f]{2}$/);
+  });
+
   it('maps a macro invocation to its call site, not the macro body, across an include boundary', () => {
     const entryPath = path.join(FIXTURES, 'with-macro-and-include.asm');
     const map = buildAddressLineMap(path.join(FIXTURES, 'with-macro-and-include.lst'), entryPath);
