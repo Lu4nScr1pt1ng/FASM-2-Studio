@@ -41,9 +41,13 @@ import {
   formatBinaryGrouped,
   formatBitFieldSummary,
   formatBytesLittleEndian,
+  formatChangedSummary,
   formatEflagsSummary,
   formatExtendedFloat,
   formatHexPadded,
+  formatMaskRegister,
+  formatPkru,
+  formatRegisterDelta,
   formatRegisterDetailed,
   formatRegisterValue,
   formatRegisterValueCompact,
@@ -200,6 +204,7 @@ const X87_CONTROL_DESCRIPTIONS: Record<string, string> = {
 const THREAD_REGISTER_DESCRIPTIONS: Record<string, string> = {
   fs_base: 'The base address fs-relative accesses resolve against. In 64-bit mode the fs *selector* is ignored for addressing and this is what `mov rax, [fs:0x28]` actually reads from — thread-local storage, and the stack canary.',
   gs_base: 'The base address gs-relative accesses resolve against. Used for thread-local storage by some runtimes, and by the kernel for per-CPU data.',
+  pkru: 'Protection Key Rights — two bits per memory-protection key (access-disable, write-disable), applied on top of the page tables for pages tagged with that key. Reads as unrestricted in any program that never called pkey_alloc, which is essentially all of them.',
 };
 
 /**
@@ -674,6 +679,72 @@ export class FasmDebugSession extends DebugSession {
   /** Whether the register set has been re-read since the process started running — see
    * resolveRegisterNames for why once is not enough. */
   private registerNamesResolvedWhileRunning = false;
+
+  /** Whether the program has executed since the last register snapshot was taken — set at every
+   * resume (see ensureResumable), cleared by refreshChangedRegisters. What keeps the panel being
+   * read twice within one stop (which VS Code does after an in-place edit) from diffing a register
+   * against itself and reporting that nothing ever changes. */
+  private inferiorRanSinceSnapshot = false;
+
+  /** The integer registers as of the last time the panel was read, as of the read before that, and
+   * which names differ between the two. Both snapshots are kept because they answer different
+   * questions: the diff drives the group headers, and the older values are what a register's own
+   * "previous" row shows. See refreshChangedRegisters. */
+  private registerSnapshot = new Map<string, bigint>();
+  private registerPrevious = new Map<string, bigint>();
+  private changedRegisterNames = new Set<string>();
+
+  /**
+   * Re-reads the integer registers and works out which moved since the last time this ran.
+   *
+   * "Which registers did that instruction touch" is the question an assembly debugging session is
+   * mostly made of, and nothing else in the UI answers it: VS Code highlights a *row* whose value
+   * changed, which requires the group to already be open, and the reason to open a group is usually
+   * that you already suspect the answer. The group headers carry it instead (formatChangedSummary),
+   * so it is readable with everything collapsed.
+   *
+   * Called from the Registers scope's own top-level fetch rather than from the stop handler, which
+   * makes the cost exactly zero for a session where nobody opens the panel — and one batched
+   * "-data-list-register-values" for a session where somebody does, regardless of how many
+   * registers the target has. The comparison is therefore "since the last time this panel was
+   * read", which for the case that matters (stepping with it open) is precisely per-step.
+   */
+  private async refreshChangedRegisters(): Promise<void> {
+    // The second condition is what establishes the baseline. The first stop of a session is reached
+    // without passing through any resume request — configurationDone's own "-exec-run" starts the
+    // program — so without it nothing would be recorded until the *second* stop, and the first step
+    // a user took would report no change at all.
+    if (!this.inferiorRanSinceSnapshot && this.registerSnapshot.size > 0) return;
+    const names = [...this.registerGroups.generalPurpose, ...this.registerGroups.pointers];
+    const values = await this.readRegisterValues(names, 'x');
+    // A failed read leaves both snapshots and the diff in place: "the panel could not be read just
+    // now" and "nothing changed" are very different claims, and only one of them is true.
+    if (values.size === 0) return;
+    this.inferiorRanSinceSnapshot = false;
+
+    this.registerPrevious = this.registerSnapshot;
+    this.registerSnapshot = values;
+    const changed = new Set<string>();
+    for (const [name, value] of values) {
+      const before = this.registerPrevious.get(name);
+      // A name with no earlier reading is one this is the first look at — new, not changed. That is
+      // what keeps the very first stop from reporting all sixteen registers as having moved.
+      if (before !== undefined && before !== value) changed.add(name);
+    }
+    this.changedRegisterNames = changed;
+  }
+
+  /**
+   * Those of `names` that moved at the last step, in the order the group displays them.
+   *
+   * The program counter is deliberately never one of them. It changes at essentially every stop —
+   * that is what executing an instruction *is* — so a summary that named it would say "changed:
+   * rip" forever, and a marker that is always on is one nobody reads. Its own row still carries
+   * what it moved by, where that is a fact about this step rather than a constant.
+   */
+  private changedAmong(names: readonly string[]): string[] {
+    return names.filter((name) => name !== 'rip' && name !== 'eip' && this.changedRegisterNames.has(name));
+  }
   /** The in-flight register-set resolution, which the Registers scope waits on before reading
    * anything. Without that wait the *first* stop would race it and render whatever groups the
    * pre-run resolution had found — which is precisely the set missing the vector registers this
@@ -859,7 +930,22 @@ export class FasmDebugSession extends DebugSession {
    * a launch problem that doesn't exist.
    */
   private ensureResumable(response: DebugProtocol.Response): boolean {
-    if (this.attachTarget?.kind !== 'core') return true;
+    if (this.attachTarget?.kind !== 'core') {
+      // Every path that resumes the program passes through here first, which makes this the one
+      // place "the program is about to execute" can be recorded without each of the eight resume
+      // handlers having to remember to. It has to be recorded *synchronously, here* rather than
+      // from gdb's own "*running" record, which is what this originally did: the step handlers
+      // send their own StoppedEvent as soon as gdb answers "^running" and the stop arrives, so a
+      // client can have fetched the whole Registers scope before that async record is even parsed
+      // — and the snapshot then compared a stop against itself and reported that nothing had ever
+      // changed. (Observed directly: the group headers lagged a step behind, and every second
+      // step showed no change at all.)
+      //
+      // Marking it for a *pause* too is not a miss: the program has been running freely up to the
+      // moment it is interrupted, so its registers have moved as surely as after any step.
+      this.inferiorRanSinceSnapshot = true;
+      return true;
+    }
     this.sendErrorResponse(
       response,
       15,
@@ -1347,9 +1433,18 @@ export class FasmDebugSession extends DebugSession {
 
     if (kind === 'registers') {
       const groups = this.registerGroups;
+      await this.refreshChangedRegisters();
       const variables: Variable[] = [];
-      if (groups.generalPurpose.length > 0) variables.push(this.registerGroupVariable('General Purpose', 'registers:gp'));
-      if (groups.pointers.length > 0) variables.push(this.registerGroupVariable('Pointers', 'registers:pointers'));
+      if (groups.generalPurpose.length > 0) {
+        const v = this.registerGroupVariable('General Purpose', 'registers:gp');
+        v.value = formatChangedSummary(this.changedAmong(groups.generalPurpose));
+        variables.push(v);
+      }
+      if (groups.pointers.length > 0) {
+        const v = this.registerGroupVariable('Pointers', 'registers:pointers');
+        v.value = formatChangedSummary(this.changedAmong(groups.pointers));
+        variables.push(v);
+      }
       // Directly under Pointers, because it is the same question continued: rsp says where the
       // stack is, and this says what is in it.
       if (this.stackPointerName() !== undefined) variables.push(this.registerGroupVariable('Stack', 'registers:stack'));
@@ -1396,9 +1491,29 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
 
-    if (kind === 'registers:gp' || kind === 'registers:pointers' || kind === 'registers:mask') {
-      const names =
-        kind === 'registers:gp' ? this.registerGroups.generalPurpose : kind === 'registers:pointers' ? this.registerGroups.pointers : this.registerGroups.mask;
+    if (kind === 'registers:mask') {
+      const variables: DebugProtocol.Variable[] = [];
+      for (const name of this.registerGroups.mask) {
+        variables.push(
+          await this.registerVariable(name, {
+            // A mask register holds one bit per vector lane. It is not an address, so annotating it
+            // with whatever label happens to sit at 0xff would point nowhere real; it is not packed
+            // text either; and a decimal reading of a bit pattern is the column formatRegisterValue-
+            // Compact's own `decimal: false` exists for.
+            address: false,
+            ascii: false,
+            decimal: false,
+            suffix: async (value) => formatMaskRegister(value),
+          }),
+        );
+      }
+      response.body = { variables };
+      this.sendResponse(response);
+      return;
+    }
+
+    if (kind === 'registers:gp' || kind === 'registers:pointers') {
+      const names = kind === 'registers:gp' ? this.registerGroups.generalPurpose : this.registerGroups.pointers;
       const variables: DebugProtocol.Variable[] = [];
       for (const name of names) {
         variables.push(
@@ -1916,6 +2031,17 @@ export class FasmDebugSession extends DebugSession {
         variables.push(this.syscallVariable(name, bits, value));
         continue;
       }
+      // pkru is a rights mask rather than an address: its bits say which protection keys may be
+      // read and written, so the decoded reading is the only one that says anything, and there is
+      // nothing at "0x0" for a hex editor to open.
+      if (name === 'pkru') {
+        const v: DebugProtocol.Variable = new Variable(name, `${formatRegisterValueCompact(bits, value, { decimal: false })}  ${formatPkru(value)}`);
+        v.evaluateName = name;
+        v.type = THREAD_REGISTER_DESCRIPTIONS[name] ?? `${bits}-bit register`;
+        v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
+        variables.push(v);
+        continue;
+      }
       const v: DebugProtocol.Variable = new Variable(name, formatRegisterValueCompact(bits, value));
       v.evaluateName = name;
       v.type = THREAD_REGISTER_DESCRIPTIONS[name] ?? `${bits}-bit register`;
@@ -2089,14 +2215,27 @@ export class FasmDebugSession extends DebugSession {
 
     const readOnly = (label: string, text: string, description?: string): DebugProtocol.Variable => this.readOnlyVariable(label, text, description);
 
-    const signed = value - (((value >> BigInt(bits - 1)) & 1n) === 1n ? 1n << BigInt(bits) : 0n);
+    const negative = ((value >> BigInt(bits - 1)) & 1n) === 1n;
+    const signed = value - (negative ? 1n << BigInt(bits) : 0n);
     const variables: DebugProtocol.Variable[] = [
       readOnly('hex', formatHexPadded(bits, value), 'Zero-padded to the register\'s full width, so two registers line up digit for digit.'),
       readOnly('unsigned', value.toString()),
-      readOnly('signed', signed.toString(), "Two's-complement reading of the same bits."),
+    ];
+    // Only when the two readings actually differ. For any value with its top bit clear they are the
+    // same digits, and a second row repeating them is the same redundancy the compact row format
+    // exists to cut — "signed 7" under "unsigned 7" is a row that answers nothing.
+    if (negative) variables.push(readOnly('signed', signed.toString(), "Two's-complement reading of the same bits."));
+    variables.push(
       readOnly('binary', formatBinaryGrouped(bits, value), 'Grouped into bytes and nibbles, so a bit position can be counted off directly.'),
       readOnly('bytes', formatBytesLittleEndian(bits, value), 'The individual bytes in memory order — x86 is little-endian, so the low byte comes first.'),
-    ];
+    );
+
+    // What it held before the step that just ran, for a register that moved — with the difference
+    // worked out, since that is the reading being asked for ("rsp changed by -8" is a push).
+    const previous = this.registerPrevious.get(name);
+    if (previous !== undefined && previous !== value) {
+      variables.push(readOnly('previous', formatRegisterDelta(bits, previous, value), 'What this register held before the last step, and how far it moved.'));
+    }
 
     const text = packedAsciiText(bits, value);
     if (text !== undefined) variables.push(readOnly('as text', `'${text}'`, 'Every byte of this value is printable text — a packed character literal.'));
@@ -2583,6 +2722,11 @@ export class FasmDebugSession extends DebugSession {
     try {
       this.sendResponse(response);
       this.lastSignal = undefined;
+      // The register snapshot described the process being replaced. Cleared rather than left to be
+      // diffed against, since "changed since the last step" and "differs from what a whole other
+      // process happened to hold" are not the same claim, and only the first one is worth showing.
+      this.registerSnapshot = new Map();
+      this.changedRegisterNames = new Set();
       // A restart kills the process the recording described, taking the history with it — so the
       // recording has to be re-established against the new one, exactly as configurationDone does
       // for the first run (including subscribing before -exec-run, for the same reason).

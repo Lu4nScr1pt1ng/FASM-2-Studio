@@ -250,7 +250,11 @@ const X87_SLOTS: string[][] = X87_REGISTER_NAMES.map((name) => [name]);
 // x87 instruction and its operand — read only when chasing down which instruction raised a flag.
 const X87_CONTROL_SLOTS: string[][] = [['fctrl'], ['fstat'], ['ftag'], ['fop'], ['fiseg'], ['fioff'], ['foseg'], ['fooff']];
 const MASK_SLOTS: string[][] = Array.from({ length: 8 }, (_, i) => [`k${i}`]);
-const THREAD_SLOTS: string[][] = [['fs_base'], ['gs_base'], ['orig_rax', 'orig_eax']];
+// pkru sits here rather than in a group of its own because it is per-*thread* state like the two
+// TLS bases beside it — the same thread switch that changes fs_base changes this. It is also the
+// last register in gdb's x86-64 list that no group claimed, and a register gdb reports but the
+// panel never shows is one a reader has no way to discover exists.
+const THREAD_SLOTS: string[][] = [['fs_base'], ['gs_base'], ['orig_rax', 'orig_eax'], ['pkru']];
 
 function pickAvailable(slots: string[][], available: ReadonlySet<string>): string[] {
   const picked: string[] = [];
@@ -777,6 +781,111 @@ export function formatSegmentSelector(value: bigint): string {
   if (value === 0n) return 'null selector (unused)';
   const { index, table, rpl } = decodeSegmentSelector(value);
   return `${table}[${index}] ring ${rpl}`;
+}
+
+/** At most this many register names are spelled out on a group header before the rest become a
+ * count. A `call` into a libc routine can come back having touched a dozen registers, and a header
+ * that lists all of them stops being a glance and becomes a second thing to read. */
+const CHANGED_NAMES_SHOWN = 6;
+
+/**
+ * The "what moved" line for a register group's own header — the question being asked at every
+ * single step of an assembly session, and the one a collapsed group cannot otherwise answer.
+ *
+ * VS Code highlights an individual row whose value changed, which covers this for a group that
+ * happens to be open. It cannot cover a closed one, and closed is the normal state of most of these
+ * groups: the reason to look at Pointers at all is usually that something in it moved.
+ */
+export function formatChangedSummary(changed: readonly string[]): string {
+  if (changed.length === 0) return '';
+  if (changed.length <= CHANGED_NAMES_SHOWN) return `changed: ${changed.join(', ')}`;
+  const shown = changed.slice(0, CHANGED_NAMES_SHOWN).join(', ');
+  return `changed: ${shown}, +${changed.length - CHANGED_NAMES_SHOWN} more`;
+}
+
+/**
+ * How a register's value moved, for the row that says what it was before.
+ *
+ * The delta is the point, and it is worth computing rather than leaving to the reader: "rsp changed
+ * by -8" is a `push`, "-0x28" is a prologue reserving space, and reading that off two 12-digit hex
+ * addresses is exactly the arithmetic nobody should be doing by hand at a breakpoint. Signed,
+ * because a stack pointer moves down as often as up, and shown in both bases for the same reason
+ * every other value here is.
+ */
+export function formatRegisterDelta(bits: RegisterBits, previous: bigint, current: bigint): string {
+  const modulus = 1n << BigInt(bits);
+  // The difference taken as a *signed* quantity: a register that went from 0x8 to 0x0 moved by -8,
+  // not by the 2^64-8 an unsigned subtraction would report.
+  let delta = (((current - previous) % modulus) + modulus) % modulus;
+  if (delta >= modulus >> 1n) delta -= modulus;
+  const sign = delta < 0n ? '-' : '+';
+  const magnitude = delta < 0n ? -delta : delta;
+  return `${formatHexPadded(bits, previous)}  (${sign}${magnitude} = ${sign}0x${magnitude.toString(16)})`;
+}
+
+/** How many bits of `value` are set — the lane count of a mask register, and the one number that
+ * summarises one without having to know the element width it will be applied at. */
+export function popCount(value: bigint): number {
+  let count = 0;
+  for (let v = value; v > 0n; v >>= 1n) if ((v & 1n) === 1n) count++;
+  return count;
+}
+
+/**
+ * An AVX-512 mask register as one short line — "0b1111_1111  8 lanes".
+ *
+ * Binary rather than the hex every other integer register leads with, because a mask register is
+ * the one whose value is *positional*: bit n says whether lane n of the next vector operation is
+ * written, and "0xff" makes a reader count that out in their head while "0b1111_1111" simply shows
+ * it. Which lanes those are is deliberately not spelled out any further — how many lanes a mask
+ * covers depends on the element width of the instruction that uses it (a k register is 8 lanes to a
+ * `vaddpd` and 64 to a `vpaddb`), and that is a property of the code, not of the register.
+ *
+ * Only as many bits as the highest set one are shown: the alternative is 64 digits of leading zero
+ * on every mask a real program uses, which is the exact noise the compact formats here exist to cut.
+ */
+export function formatMaskRegister(value: bigint): string {
+  if (value === 0n) return '0b0  no lanes';
+  const bits = value.toString(2);
+  // Padded up to the next nibble so the groups are even, then grouped — the same nibble grouping
+  // formatBinaryGrouped uses, so a mask and a register value read the same way.
+  const padded = bits.padStart(Math.ceil(bits.length / 4) * 4, '0');
+  const groups = (padded.match(/.{4}/g) ?? []).join('_');
+  const lanes = popCount(value);
+  return `0b${groups}  ${lanes} ${lanes === 1 ? 'lane' : 'lanes'}`;
+}
+
+/** Beyond this many restricted keys the list is inverted and the *unrestricted* ones named instead.
+ * Four is chosen to sit above the number of keys any real program allocates and far below the
+ * fifteen the kernel's own default restricts — see formatPkru. */
+const PKRU_RESTRICTED_LISTED = 4;
+
+/**
+ * PKRU — the protection-key rights register, two bits per key: AD (access disable) at bit 2i, WD
+ * (write disable) at bit 2i+1.
+ *
+ * Which half of the picture gets spelled out depends on which one is short, and that is not a
+ * cosmetic choice: the value a Linux process actually starts with is 0x55555554, every key but key
+ * 0 access-disabled, so naming the restricted keys — the obvious way round — makes the ordinary
+ * case a fifteen-item list saying nothing, and hides the one fact in it (key 0, the key all of your
+ * memory is tagged with, is usable). Listing whichever side is smaller keeps both the common case
+ * and the interesting case to one short line.
+ */
+export function formatPkru(value: bigint): string {
+  const unrestricted: number[] = [];
+  const restricted: string[] = [];
+  for (let key = 0; key < 16; key++) {
+    const accessDisabled = ((value >> BigInt(key * 2)) & 1n) === 1n;
+    const writeDisabled = ((value >> BigInt(key * 2 + 1)) & 1n) === 1n;
+    // AD makes WD moot: no access already covers no write.
+    if (accessDisabled) restricted.push(`key${key} no access`);
+    else if (writeDisabled) restricted.push(`key${key} read-only`);
+    else unrestricted.push(key);
+  }
+  if (restricted.length === 0) return 'all 16 keys unrestricted';
+  if (restricted.length <= PKRU_RESTRICTED_LISTED) return restricted.join(', ');
+  const usable = unrestricted.length === 0 ? 'no keys' : unrestricted.map((k) => `key${k}`).join(', ');
+  return `${usable} unrestricted, ${restricted.length} restricted`;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.23.0
+
+### Which registers that step actually changed
+
+The panel showed you sixteen registers. It did not show you the one thing you stepped in order to
+find out — which of them the instruction touched. That answer was sitting in the difference between
+two consecutive reads, and nothing was taking it.
+
+Now the **General Purpose** and **Pointers** headers carry it, so it is readable with every group
+collapsed:
+
+```
+General Purpose    changed: rcx
+Pointers
+```
+
+Collapsed is the point. VS Code already highlights a *row* whose value changed, which requires the
+group to be open — and the reason to open a group is usually that you already suspect the answer.
+
+`rip` is never named there. It changes at essentially every stop, because that is what executing an
+instruction is, so a summary that included it would read `changed: rip` forever and stop being read
+at all. Its own row still shows what it moved by, where that is a fact about this step rather than
+a constant.
+
+A register that moved also gains a `previous` row, with the arithmetic already done:
+
+```
+rsp    0x7fffffffd1b8
+  previous    0x00007fffffffd1c0  (-8 = -0x8)
+```
+
+That is the reading being asked for. `-8` is a push, `-0x28` is a prologue reserving space, and
+deriving either from two twelve-digit hex addresses is precisely the arithmetic nobody should be
+doing by hand at a breakpoint. The subtraction is signed, so a stack pointer moving *down* reads as
+`-8` rather than as the `+18446744073709551608` an unsigned wrap would report.
+
+The comparison is against the last time the panel was read, and it is taken there rather than at
+every stop — so a session where nobody opens the panel pays nothing for it, and one where somebody
+does pays a single batched register read per stop, whatever the target's register count.
+
+### `pkru` was reported by gdb and shown nowhere
+
+It had a width, it resolved in hover and in Watch, and it appeared in no group in the panel — the
+one register gdb reports for a live x86-64 target that had no way to be discovered by looking. It
+now sits in **Thread / Syscall**, read as the rights it actually grants rather than as a number.
+
+Which half of that gets spelled out depends on which is shorter, and that is not cosmetic: the value
+a Linux process genuinely starts with is `0x55555554` — every key but key 0 access-disabled — so
+naming the restricted keys, the obvious way round, makes the ordinary case a fifteen-item list that
+buries its only fact. It reads `key0 unrestricted, 15 restricted` instead. A test now asserts that
+every non-padding name gdb reports lands in some group, so the next one cannot go missing quietly.
+
+### Mask registers read as masks
+
+`k0`-`k7` were being formatted as though they might be addresses or packed text — annotated with
+whatever label happened to sit at `0xff`, and offered to the hex editor. A mask register is neither.
+Its value is *positional*: bit *n* says whether lane *n* of the next vector operation is written. It
+now leads with binary, where that can be counted off directly, and says how many lanes are set:
+`0b1111_1111  8 lanes`. How many lanes a mask *covers* is deliberately not claimed — a `k` register
+is 8 lanes to a `vaddpd` and 64 to a `vpaddb`, which is a property of the code, not of the register.
+
+### Smaller
+
+- Expanding a register no longer shows `signed` repeating `unsigned` digit for digit. It appears
+  when the two readings actually differ — that is, when the sign bit is set — and not otherwise.
+
 ## 1.22.0
 
 ### Half of the machine was not in the Registers panel

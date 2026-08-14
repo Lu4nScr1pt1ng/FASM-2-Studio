@@ -393,6 +393,13 @@ bytes in memory order, its `eax`/`ax`/`al`/`ah` slices — each of which can be 
 the qword at the address it holds, with the string preview if that is what is there. None of it is
 fetched until the row is expanded.
 
+The **General Purpose** and **Pointers** headers say which registers the last step actually moved —
+`changed: rax, rcx` — so the question you step to answer is readable with every group collapsed.
+`rip` is deliberately never named there: it changes at every stop, which is what executing an
+instruction *is*, and a marker that is always lit is one nobody reads. A register that did move
+carries a `previous` row with the arithmetic already done, which is what turns two twelve-digit
+addresses into the fact you wanted: `-8` is a push, `-0x28` is a prologue reserving space.
+
 Under **Flags**, the individual bits decode as usual, and **Conditions** answers the question the
 flags are actually read for: which conditional jumps would be taken right now, `je`/`jb`/`jl` and
 their opposites listed with the flag test that decided each one. It is the bit algebra that gets
@@ -418,9 +425,12 @@ connected target actually reports it:
 - **Stack** — the words at and above `rsp`, each resolved against your labels. There is one frame
   here and no CFI to unwind with, so this is the only place a return address or a prologue's saved
   registers are visible at all.
+- **Mask** — `k0`-`k7` on an AVX-512 target, read in binary rather than hex, because a mask
+  register's value is positional: bit *n* says whether lane *n* gets written, and `0b1111_1111`
+  shows that where `0xff` makes you expand it yourself.
 - **Thread / Syscall** — `fs_base`/`gs_base`, which is what `mov rax, [fs:0x28]` actually reads
-  from (the `fs` selector is ignored for addressing in 64-bit mode and reads as a useless zero), and
-  `orig_rax`, the syscall number named: `59  execve`.
+  from (the `fs` selector is ignored for addressing in 64-bit mode and reads as a useless zero),
+  `orig_rax`, the syscall number named: `59  execve`, and `pkru` read as the rights it grants.
 - **Segment** — selectors decoded into what they are, `0x33` as `GDT[6] ring 3`, and paired with
   their base where one exists.
 

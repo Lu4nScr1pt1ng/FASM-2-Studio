@@ -276,7 +276,10 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       const byName = new Map(raxDetail.map((v) => [v.name, v.value]));
       assert.strictEqual(byName.get('hex'), '0x00000000ffffffff');
       assert.strictEqual(byName.get('unsigned'), '4294967295');
-      assert.strictEqual(byName.get('signed'), '4294967295');
+      // No "signed" row: rax's top bit is clear here, so the two readings are the same digits and
+      // the second row would only repeat the first. It appears when they actually differ — see the
+      // "al"/"ah" slices below, which are negative at 8 bits and say so.
+      assert.strictEqual(byName.has('signed'), false);
       assert.strictEqual(byName.get('binary'), '0b0000_0000 0000_0000 0000_0000 0000_0000 1111_1111 1111_1111 1111_1111 1111_1111');
       assert.strictEqual(byName.get('bytes'), 'ff ff ff ff 00 00 00 00');
       assert.strictEqual(byName.get('eax'), '0xffffffff  4294967295  -1');
@@ -469,6 +472,108 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
     } finally {
       proc.kill();
+    }
+  });
+
+  it('reports which registers each step actually changed, and what they moved by', async function () {
+    this.timeout(60000);
+
+    // Each of these instructions moves a different, individually checkable thing: two plain
+    // register writes, then a push/pop pair that moves rsp by exactly one machine word in each
+    // direction, then a prologue-style reservation. That makes the assertions below statements
+    // about x86 rather than about whatever the machine happened to be holding.
+    const diffDir = makeTempDir('fasm2-studio-dap-e2e-diff-');
+    const diffAsmPath = path.join(diffDir, 'diff.asm');
+    const diffProgramPath = path.join(diffDir, 'diff');
+    const DIFF_SRC = [
+      'format ELF64 executable 3',
+      'entry start',
+      '',
+      'segment readable executable',
+      'start:',
+      '\tmov rax, 1', // line 6 — the breakpoint
+      '\tmov rcx, 2', // 7
+      '\tpush rax', // 8
+      '\tsub rsp, 0x28', // 9
+      '\tmov edi, 0',
+      '\tmov eax, 60',
+      '\tsyscall',
+      '',
+    ].join('\n');
+    fs.writeFileSync(diffAsmPath, DIFF_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", diffAsmPath, diffProgramPath], { cwd: diffDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(diffProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    /** The Registers scope's group headers, by group name — what is readable with everything
+     * collapsed, which is the whole point of putting the summary there. */
+    const groupHeaders = async (): Promise<Map<string, string>> => {
+      const scopes = await client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('stackTrace', { threadId: 1 })
+        .then(() => client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('scopes', { frameId: 1 }));
+      const registers = scopes.scopes.find((s) => s.name === 'Registers')!;
+      const { variables } = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: registers.variablesReference,
+      });
+      return new Map(variables.map((v) => [v.name, v.value]));
+    };
+
+    /** One register's "previous" detail row, or undefined when it did not move. */
+    const previousRow = async (register: string): Promise<string | undefined> => {
+      const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const detail = await findRegisterDetail(client, scopes.scopes[0].variablesReference, register);
+      return detail.find((d) => d.name === 'previous')?.value;
+    };
+
+    const step = async (): Promise<void> => {
+      await client.sendRequest('next', { threadId: 1 });
+      await client.waitForEvent('stopped');
+    };
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: diffProgramPath, asmFile: diffAsmPath, listingFile: path.join(diffDir, 'diff.lst'), cwd: diffDir });
+      await client.sendRequest('setBreakpoints', { source: { path: diffAsmPath }, breakpoints: [{ line: 6 }] });
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      // The first stop has nothing to be compared against yet — and says so, rather than declaring
+      // every register in the file to have "changed" from an absence of information.
+      assert.strictEqual((await groupHeaders()).get('General Purpose'), '');
+
+      await step(); // executes "mov rax, 1"
+      assert.strictEqual((await groupHeaders()).get('General Purpose'), 'changed: rax');
+      assert.match((await previousRow('rax')) ?? '', /\(\+1 = \+0x1\)$/);
+
+      await step(); // executes "mov rcx, 2"
+      const afterRcx = await groupHeaders();
+      // Only what the *last* step touched: rax moved a step ago and is no longer news.
+      assert.strictEqual(afterRcx.get('General Purpose'), 'changed: rcx');
+      // rip moves at every stop, so naming it would make the Pointers summary a constant.
+      assert.strictEqual(afterRcx.get('Pointers'), '');
+      assert.strictEqual(await previousRow('rax'), undefined, 'rax did not move at this step');
+
+      await step(); // executes "push rax" — one machine word down, and no GP register touched
+      const afterPush = await groupHeaders();
+      assert.strictEqual(afterPush.get('General Purpose'), '');
+      assert.strictEqual(afterPush.get('Pointers'), 'changed: rsp');
+      assert.match((await previousRow('rsp')) ?? '', /\(-8 = -0x8\)$/);
+
+      await step(); // executes "sub rsp, 0x28"
+      assert.strictEqual((await groupHeaders()).get('Pointers'), 'changed: rsp');
+      assert.match((await previousRow('rsp')) ?? '', /\(-40 = -0x28\)$/);
+
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      await removeTempDir(diffDir);
     }
   });
 

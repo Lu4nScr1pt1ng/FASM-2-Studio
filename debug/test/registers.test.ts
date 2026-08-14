@@ -11,8 +11,13 @@ import {
   float32FromBits,
   float64FromBits,
   formatBitFieldSummary,
+  formatChangedSummary,
   formatExtendedFloat,
+  formatMaskRegister,
+  formatPkru,
+  formatRegisterDelta,
   formatSegmentSelector,
+  popCount,
   formatVectorValueCompact,
   isReservedRegisterMnemonic,
   PSEUDO_REGISTER_WIDTH_BITS,
@@ -520,9 +525,25 @@ describe('resolveRegisterGroups — the vector, x87 and thread groups', () => {
     assert.strictEqual(groups.mxcsrName, 'mxcsr');
   });
 
-  it('groups the TLS bases and the syscall number together', () => {
+  it('groups the TLS bases, the syscall number and the protection-key rights together', () => {
     const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
-    assert.deepStrictEqual(groups.thread, ['fs_base', 'gs_base', 'orig_rax']);
+    assert.deepStrictEqual(groups.thread, ['fs_base', 'gs_base', 'orig_rax', 'pkru']);
+  });
+
+  it('leaves no register gdb reports out of every group at once', () => {
+    // The real gap this guards: pkru was reported by gdb, had a width entry, resolved in hover and
+    // Watch — and appeared in no group, so the panel gave a reader no way to discover it exists.
+    // Every non-padding name gdb reports for a live x86-64 target has to land somewhere reachable.
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    const placed = new Set([
+      ...groups.generalPurpose, ...groups.pointers, ...groups.segment, ...groups.vector,
+      ...groups.x87, ...groups.x87Control, ...groups.mask, ...groups.thread,
+      groups.eflagsName, groups.mxcsrName,
+    ]);
+    // The one exception, and it is not a gap: xmm0-15 are the low halves of the ymm registers that
+    // *are* placed, and appear as their children rather than as sixteen more top-level rows.
+    const missing = X86_64_AFTER_RUN.filter((name) => name.length > 0 && !placed.has(name) && !/^xmm\d+$/.test(name));
+    assert.deepStrictEqual(missing, []);
   });
 
   it('records gdb\'s own register number for each name, counting empty padding slots', () => {
@@ -680,6 +701,98 @@ describe('decodeSegmentSelector / formatSegmentSelector', () => {
 
   it('calls a null selector what it is instead of reading off three zero fields', () => {
     assert.strictEqual(formatSegmentSelector(0n), 'null selector (unused)');
+  });
+});
+
+describe('formatMaskRegister / popCount', () => {
+  it('reads a mask in binary, where a lane index can be counted off directly', () => {
+    // The whole reason a k register does not lead with hex like every other integer register: its
+    // value is positional, and "0xff" makes the reader do the expansion in their head.
+    assert.strictEqual(formatMaskRegister(0xffn), '0b1111_1111  8 lanes');
+  });
+
+  it('names one set lane in the singular', () => {
+    assert.strictEqual(formatMaskRegister(1n), '0b0001  1 lane');
+  });
+
+  it('calls an all-zero mask what it is rather than printing 64 zeroes', () => {
+    assert.strictEqual(formatMaskRegister(0n), '0b0  no lanes');
+  });
+
+  it('shows only as many nibbles as the highest set bit needs', () => {
+    // A mask that writes lanes 0 and 9 of a 64-lane operation: three nibbles, not sixteen.
+    assert.strictEqual(formatMaskRegister(0x201n), '0b0010_0000_0001  2 lanes');
+  });
+
+  it('counts the lanes of a full 64-bit mask', () => {
+    assert.strictEqual(popCount((1n << 64n) - 1n), 64);
+    assert.strictEqual(popCount(0n), 0);
+  });
+});
+
+describe('formatPkru', () => {
+  it('says nothing is restricted for the value every ordinary program has', () => {
+    assert.strictEqual(formatPkru(0n), 'all 16 keys unrestricted');
+  });
+
+  it('reads the access-disable and write-disable bits of a key apart', () => {
+    assert.strictEqual(formatPkru(0b01n), 'key0 no access');
+    assert.strictEqual(formatPkru(0b10n), 'key0 read-only');
+    // AD set makes WD moot — no access already covers no write.
+    assert.strictEqual(formatPkru(0b11n), 'key0 no access');
+  });
+
+  it('names the key a restriction belongs to', () => {
+    assert.strictEqual(formatPkru(1n << 6n), 'key3 no access');
+    assert.strictEqual(formatPkru((1n << 6n) | (1n << 31n)), 'key3 no access, key15 read-only');
+  });
+
+  it('inverts the list for the value a Linux process actually starts with', () => {
+    // 0x55555554 is the kernel's own init_pkru: key 0 usable, every other key access-disabled.
+    // Read the obvious way round this is a fifteen-item list that buries its only fact.
+    assert.strictEqual(formatPkru(0x55555554n), 'key0 unrestricted, 15 restricted');
+  });
+
+  it('says so when every key is restricted, rather than naming an empty set', () => {
+    assert.strictEqual(formatPkru(0x55555555n), 'no keys unrestricted, 16 restricted');
+  });
+});
+
+describe('formatChangedSummary', () => {
+  it('says nothing at all when nothing moved', () => {
+    assert.strictEqual(formatChangedSummary([]), '');
+  });
+
+  it('lists the registers that moved', () => {
+    assert.strictEqual(formatChangedSummary(['rax', 'rcx']), 'changed: rax, rcx');
+  });
+
+  it('stops listing and starts counting once a call has touched half the register file', () => {
+    assert.strictEqual(
+      formatChangedSummary(['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'r8', 'r9']),
+      'changed: rax, rbx, rcx, rdx, rsi, rdi, +2 more',
+    );
+  });
+});
+
+describe('formatRegisterDelta', () => {
+  it('reads a push as the -8 it is, not as an unsigned wrap', () => {
+    // The case that motivates a signed delta at all: rsp moving down wraps past zero if the
+    // subtraction is done unsigned, and "+18446744073709551608" is not what a push did.
+    assert.strictEqual(formatRegisterDelta(64, 0x7fffffffd198n, 0x7fffffffd190n), '0x00007fffffffd198  (-8 = -0x8)');
+  });
+
+  it('reads a prologue reserving stack space', () => {
+    assert.strictEqual(formatRegisterDelta(64, 0x1000n, 0xfd8n), '0x0000000000001000  (-40 = -0x28)');
+  });
+
+  it('reads an increment forwards', () => {
+    assert.strictEqual(formatRegisterDelta(64, 0n, 42n), '0x0000000000000000  (+42 = +0x2a)');
+  });
+
+  it('handles a 32-bit register wrapping past zero', () => {
+    // "dec eax" at zero: down by one, not up by 4294967295.
+    assert.strictEqual(formatRegisterDelta(32, 0n, 0xffffffffn), '0x00000000  (-1 = -0x1)');
   });
 });
 
