@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.21.1
+
+### Fixed: setting `r8b`-`r15b` silently did nothing
+
+fasm calls the low byte of `r8` `r8b`; gdb calls it `r8l`, and quietly treats `$r8b` as a variable of
+its own rather than rejecting it — so the write succeeded, changed no register, and the panel showed
+the new value anyway. The name is now translated before it reaches gdb, in the register view, on
+hover, in Watch and inside a memory operand.
+
+### Fixed: setting `eax` did not clear the top half of `rax`
+
+Every real `mov eax, ...` zeroes the upper 32 bits of `rax`; gdb's register write does not, which
+left the CPU in a state no instruction could produce. Setting a 32-bit register now behaves like the
+instruction it stands for. Setting `al` or `ax` still leaves everything above them alone, which is
+also what the hardware does.
+
+### Fixed: a typo in a hex value zeroed the register
+
+Typing `0xzz` set the register to 0 — the parser found the `0` and used it. It is now refused.
+
 ## 1.21.0
 
 ### Registers you can actually read

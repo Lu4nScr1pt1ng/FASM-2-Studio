@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.21.1
+
+### Fixed: writing `r8b`-`r15b` changed nothing and said it had
+
+The low byte of `r8`-`r15` is `r12b` in fasm's syntax and `r12l` in gdb's, and gdb does not reject
+the name it does not know — `$r12b` is read as a *convenience variable*, which is a legal thing to
+invent on the spot. So the write went to that invented variable, reported success, and left the
+register exactly as it was. The panel then showed the value that had been asked for while the CPU
+still held the old one, which is the worst way for this to fail: you step on believing a value you
+never set. The name is now translated before it reaches gdb, everywhere one is used — the register
+view, hover, Watch, and inside a memory operand.
+
+### Fixed: setting a 32-bit register left the upper half of its 64-bit parent alone
+
+There is no x86-64 instruction that writes `eax` and preserves the high half of `rax` — every one of
+them zeroes it. gdb's own `$eax = 1` does not, leaving `rax` at `0xffffffff00000001`, a state the
+program could not have reached by executing anything. Setting a 32-bit view now goes to its 64-bit
+parent, so it zero-extends the way the instruction it stands for does. The 8- and 16-bit views are
+deliberately unchanged: `mov al, 1` really does leave everything above it alone.
+
+### Fixed: a mistyped hex literal set the register to zero
+
+`0xzz` is not a number, but it contains one — the leading `0` — and the parser that pulls a value out
+of a partially-edited display row found it and used it. A typo in a hex digit silently zeroed the
+register. Input that is not a recognizable display row now has to be a number outright, or it is
+refused.
+
 ## 1.21.0
 
 ### Registers you can read at a glance

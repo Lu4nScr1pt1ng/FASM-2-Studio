@@ -422,6 +422,46 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       const eaxAfterAl = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'watch' })).result;
       assert.strictEqual(eaxAfterAl, '0x7f  127', 'expected writing al to have changed only the low byte of eax');
 
+      // Writing a 32-bit view zeroes the upper half of its 64-bit parent, the way every real
+      // "mov eax, ..." does. gdb's own "$eax = 1" does not (it leaves rax at 0xffffffff00000001, a
+      // state no instruction could have produced), so the write is redirected to rax — see
+      // wideParentOf32BitView.
+      await client.sendRequest('setVariable', { variablesReference: registersRef, name: 'rax', value: '0xffffffffffffffff' });
+      await client.sendRequest('setVariable', { variablesReference: raxRef, name: 'eax', value: '0x1' });
+      assert.strictEqual(
+        (await client.sendRequest<{ result: string }>('evaluate', { expression: 'rax', context: 'watch' })).result,
+        '0x1',
+        'expected writing eax to zero the upper half of rax, as x86-64 does',
+      );
+
+      // ...while an 8- or 16-bit write must NOT, since no instruction at those widths does.
+      await client.sendRequest('setVariable', { variablesReference: raxRef, name: 'ax', value: '0xbeef' });
+      assert.strictEqual(
+        (await client.sendRequest<{ result: string }>('evaluate', { expression: 'rax', context: 'watch' })).result,
+        '0xbeef  48879',
+        'expected writing ax to leave the rest of rax alone',
+      );
+
+      // The low byte of r8-r15 is "r12b" in fasm syntax and "r12l" to gdb, which does not reject the
+      // name it does not know — it reads "$r12b" as an invented convenience variable, so the write
+      // used to report success and change nothing at all. The regression this guards is a *silent*
+      // one: the panel would show the value it had asked for while the CPU still held the old one.
+      const r12Ref = await findRegisterRef(client, scopesAgain.scopes[0].variablesReference, 'r12');
+      await client.sendRequest('setVariable', { variablesReference: registersRef, name: 'r12', value: '0xffffffffffffffff' });
+      await client.sendRequest('setVariable', { variablesReference: r12Ref, name: 'r12b', value: '0x2a' });
+      assert.strictEqual(
+        (await client.sendRequest<{ result: string }>('evaluate', { expression: 'r12', context: 'watch' })).result,
+        '0xffffffffffffff2a  -214',
+        'expected "r12b" to reach the real register rather than a gdb convenience variable',
+      );
+
+      // A mistyped hex literal is refused rather than scavenged for the "0" inside it — setting a
+      // register to zero over a typo is worse than saying no.
+      await assert.rejects(
+        client.sendRequest('setVariable', { variablesReference: registersRef, name: 'eax', value: '0xzz' }),
+        /Could not parse/,
+      );
+
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
       await client.sendRequest('disconnect');

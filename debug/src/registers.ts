@@ -58,6 +58,31 @@ const SUB_REGISTER_NAMES: Record<string, string[]> = {
   r12: ['r12d', 'r12w', 'r12b'], r13: ['r13d', 'r13w', 'r13b'], r14: ['r14d', 'r14w', 'r14b'], r15: ['r15d', 'r15w', 'r15b'],
 };
 
+// The reverse of SUB_REGISTER_NAMES, restricted to the 32-bit views: "eax" -> "rax", "r12d" -> "r12".
+// See wideParentOf32BitView for why only that width needs it.
+const PARENT_OF_32_BIT_VIEW: Record<string, string> = Object.fromEntries(
+  Object.entries(SUB_REGISTER_NAMES)
+    .filter(([parent]) => REGISTER_WIDTH_BITS[parent] === 64)
+    .flatMap(([parent, subs]) => subs.filter((s) => REGISTER_WIDTH_BITS[s] === 32).map((s) => [s, parent])),
+);
+
+/**
+ * The 64-bit register a 32-bit name is a view of ("eax" -> "rax"), or undefined for a name that is
+ * not one — including on a 32-bit target, where "eax" is a whole register in its own right and the
+ * caller is expected to check that the parent actually exists before using this.
+ *
+ * This exists because of the one x86-64 rule that has no equivalent at any other width: a write to
+ * a 32-bit register zeroes the upper half of its 64-bit parent, while a write to a 16- or 8-bit one
+ * leaves everything above it alone. There is no instruction that writes eax and preserves the high
+ * half of rax, so a debugger that offers "set eax" and produces one has put the CPU in a state the
+ * program could not have reached — which is exactly the sort of thing you go to a debugger to rule
+ * out. gdb's own `$eax = 1` does precisely that (verified against gdb 16.3: rax reads back
+ * 0xffffffff00000001), so the write is redirected to the parent instead.
+ */
+export function wideParentOf32BitView(name: string): string | undefined {
+  return PARENT_OF_32_BIT_VIEW[name];
+}
+
 /** The narrower registers that alias part of `name`, each with the slice of `value` it holds.
  * Empty for a register with no narrower name (rip/eip, the segment registers, eflags). */
 export function subRegisterViews(name: string, value: bigint): Array<SubRegisterView & { value: bigint }> {
@@ -66,6 +91,27 @@ export function subRegisterViews(name: string, value: bigint): Array<SubRegister
     const shift = sub.endsWith('h') && sub.length === 2 ? 8 : 0;
     return { name: sub, bits, shift, value: (value >> BigInt(shift)) & ((1n << BigInt(bits)) - 1n) };
   });
+}
+
+/**
+ * The one place fasm's register spelling and gdb's disagree: the low byte of r8-r15 is `r8b`-`r15b`
+ * in Intel/fasm syntax and `r8l`-`r15l` to gdb.
+ *
+ * This has to be translated rather than tolerated, because gdb does not reject the name it does not
+ * know — `$r12b` is read as a *convenience variable*, which is a perfectly legal thing to invent on
+ * the spot. `p $r12b` answers "void" and `set $r12b = 0x2a` assigns to that invented variable and
+ * leaves the CPU untouched, reporting success (verified against gdb 16.3: r12 reads back unchanged
+ * afterwards, while the same write to `$r12l` lands). A silent no-op on a register write is the
+ * worst failure available here — you single-step on, believing a value you never set.
+ */
+const GDB_REGISTER_ALIASES: Record<string, string> = Object.fromEntries(
+  [8, 9, 10, 11, 12, 13, 14, 15].map((n) => [`r${n}b`, `r${n}l`]),
+);
+
+/** `name` as gdb spells it in a `$`-expression. Identical to the input for every register whose two
+ * spellings agree, which is all of them but the eight above. */
+export function gdbRegisterName(name: string): string {
+  return GDB_REGISTER_ALIASES[name] ?? name;
 }
 
 export interface RegisterGroups {
@@ -344,15 +390,22 @@ export function parseUserNumber(input: string, bits: RegisterBits, current?: big
   if (/^-?\d+$/.test(trimmed)) return wrap(BigInt(trimmed));
 
   const columns = trimmed.replace(LABEL_PREFIX_RE, '').replace(ANNOTATION_TAIL_RE, '');
-  const values = [...columns.matchAll(NUMBER_TOKEN_RE)].map((m) => wrap(BigInt(m[0].replace(/_/g, ''))));
+  const tokens = [...columns.matchAll(NUMBER_TOKEN_RE)].map((m) => m[0]);
+  const values = tokens.map((t) => wrap(BigInt(t.replace(/_/g, ''))));
 
-  if (values.length > 0 && current !== undefined) {
+  // Everything below reads a *display string* — several columns of the same value, one of them
+  // edited. A lone bare decimal with no "0x"/"0b" column beside it is not that; it is a typo like
+  // "0xzz", whose only number is the leading "0". Setting a register to zero because someone
+  // mistyped a hex digit is worse than refusing, so that case is left to fail below.
+  const looksLikeDisplayString = values.length > 1 || tokens.some((t) => /^0[xb]/i.test(t));
+
+  if (looksLikeDisplayString && current !== undefined) {
     const edited = values.filter((v) => v !== wrap(current));
     if (edited.length === 0) return wrap(current); // re-submitted unedited — a no-op, not a failure
     if (edited.every((v) => v === edited[0])) return edited[0];
     // More than one column was edited, to different values — no principled way to pick one, so fall
     // through to the last-resort pull below rather than guessing.
-  } else if (values.length > 0) {
+  } else if (looksLikeDisplayString) {
     if (values.every((v) => v === values[0])) return values[0];
     // The odd-one-out rule: unedited columns still agree with each other, so a lone dissenter among
     // two or more agreeing ones is the edit.

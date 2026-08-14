@@ -10,12 +10,14 @@ import {
   formatRegisterDetailed,
   formatRegisterValue,
   formatRegisterValueCompact,
+  gdbRegisterName,
   packedAsciiText,
   parseUserNumber,
   REGISTER_WIDTH_BITS,
   resolveRegisterGroups,
   subRegisterViews,
   unsignedCastType,
+  wideParentOf32BitView,
 } from '../src/registers';
 
 // Real "-data-list-register-names" output, captured from gdb 16.3 against actual fasm2-compiled
@@ -389,5 +391,60 @@ describe('parseUserNumber', () => {
 
   it('returns undefined for genuinely unparseable input', () => {
     assert.strictEqual(parseUserNumber('not a number', 32), undefined);
+  });
+
+  it('refuses a mistyped hex literal rather than setting the register to the "0" inside it', () => {
+    // "0xzz" contains exactly one number — the leading 0 — and scavenging it would silently zero
+    // the register over a typo. Same for any other stray word with a digit in it.
+    assert.strictEqual(parseUserNumber('0xzz', 32, 0x2an), undefined);
+    assert.strictEqual(parseUserNumber('0xzz', 32), undefined);
+    assert.strictEqual(parseUserNumber('eax4', 32, 0x2an), undefined);
+    assert.strictEqual(parseUserNumber('take 5', 32, 0x2an), undefined);
+  });
+});
+
+describe('wideParentOf32BitView', () => {
+  it('maps every 32-bit view to the 64-bit register a write to it must zero the upper half of', () => {
+    assert.strictEqual(wideParentOf32BitView('eax'), 'rax');
+    assert.strictEqual(wideParentOf32BitView('esp'), 'rsp');
+    assert.strictEqual(wideParentOf32BitView('r12d'), 'r12');
+  });
+
+  it('claims no parent for the widths x86-64 does *not* zero-extend from', () => {
+    // "mov al, 1" and "mov ax, 1" leave everything above them untouched; only the 32-bit write is
+    // special. Redirecting those to the parent would wipe bits the instruction preserves.
+    for (const name of ['al', 'ah', 'ax', 'sil', 'r12b', 'r12w']) {
+      assert.strictEqual(wideParentOf32BitView(name), undefined, name);
+    }
+  });
+
+  it('claims no parent for a register that has none', () => {
+    assert.strictEqual(wideParentOf32BitView('rax'), undefined);
+    assert.strictEqual(wideParentOf32BitView('eflags'), undefined);
+    assert.strictEqual(wideParentOf32BitView('cs'), undefined);
+  });
+});
+
+describe('gdbRegisterName', () => {
+  it('translates the one spelling fasm and gdb disagree on: r8b-r15b vs r8l-r15l', () => {
+    // gdb does not reject "$r12b" — it reads it as an invented convenience variable, so a write to
+    // it reports success and changes no register at all. See GDB_REGISTER_ALIASES.
+    for (const n of [8, 9, 10, 11, 12, 13, 14, 15]) {
+      assert.strictEqual(gdbRegisterName(`r${n}b`), `r${n}l`);
+    }
+  });
+
+  it('leaves every register whose two spellings already agree exactly as written', () => {
+    for (const name of ['rax', 'eax', 'ax', 'al', 'ah', 'sil', 'dil', 'bpl', 'spl', 'r12', 'r12d', 'r12w', 'rip', 'eflags', 'cs']) {
+      assert.strictEqual(gdbRegisterName(name), name, name);
+    }
+  });
+
+  it('covers every "b"-suffixed name the width table claims to know', () => {
+    // Guards the two tables drifting apart: a name offered for hover/Watch that gdb silently
+    // misreads is worse than one that is not offered.
+    for (const name of Object.keys(REGISTER_WIDTH_BITS).filter((n) => /^r\d+b$/.test(n))) {
+      assert.notStrictEqual(gdbRegisterName(name), name, name);
+    }
   });
 });

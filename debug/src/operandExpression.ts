@@ -33,7 +33,7 @@
 
 import { parseNumericLiteral } from '@fasm2-studio/server/src/features/numericLiteral';
 import { Token, TokenType, tokenizeLine } from '@fasm2-studio/server/src/parser/tokenizer';
-import { REGISTER_WIDTH_BITS, RegisterBits } from './registers';
+import { gdbRegisterName, REGISTER_WIDTH_BITS, RegisterBits } from './registers';
 
 /** fasm size specifiers that name a width a single cast-read can return as one scalar. Deliberately
  * the same domain as session.ts's READABLE_VALUE_BITS: `fword`/`tbyte`/`dqword` and friends are
@@ -109,7 +109,7 @@ function translateToken(token: Token, resolve: OperandResolver): string | undefi
       const lower = token.text.toLowerCase();
       // Registers first: an x86 register name is never also a label in a program that assembles,
       // since fasm would not let you define one.
-      if (REGISTER_WIDTH_BITS[lower] !== undefined) return `$${lower}`;
+      if (REGISTER_WIDTH_BITS[lower] !== undefined) return `$${gdbRegisterName(lower)}`;
 
       // Constants before labels: a constant has a value but no address, so substituting its
       // address (there isn't one) would be the wrong operation, not merely a different one.

@@ -39,6 +39,7 @@ import {
   formatRegisterDetailed,
   formatRegisterValue,
   formatRegisterValueCompact,
+  gdbRegisterName,
   packedAsciiText,
   parseUserNumber,
   REGISTER_WIDTH_BITS,
@@ -47,6 +48,7 @@ import {
   resolveRegisterGroups,
   subRegisterViews,
   unsignedCastType,
+  wideParentOf32BitView,
 } from './registers';
 import { defaultEnabledSignals, signalHandlingCommands, SIGNAL_FILTERS } from './signalFilters';
 import {
@@ -1400,6 +1402,13 @@ export class FasmDebugSession extends DebugSession {
     this.sendResponse(response);
   }
 
+  /** Whether the connected target actually reports this register — the groups are built from gdb's
+   * own "-data-list-register-names" for the loaded binary, so this is architecture-correct rather
+   * than a 64-bit guess (a 32-bit target has no rax to be asked about). */
+  private targetHasRegister(name: string): boolean {
+    return this.registerGroups.generalPurpose.includes(name) || this.registerGroups.pointers.includes(name);
+  }
+
   private registerGroupVariable(label: string, handleKey: string): Variable {
     return new Variable(label, '', this.variableHandles.create(handleKey));
   }
@@ -1506,7 +1515,7 @@ export class FasmDebugSession extends DebugSession {
       name: `[${name}]`,
       value: text,
       variablesReference: 0,
-      evaluateName: `*(${unsignedCastType(bits)}*)$${name}`,
+      evaluateName: `*(${unsignedCastType(bits)}*)$${gdbRegisterName(name)}`,
       type: `The ${bits === 64 ? 'qword' : 'dword'} at the address ${name} holds.`,
       memoryReference: `0x${value.toString(16)}`,
       presentationHint: { kind: 'data', attributes: ['readOnly'] },
@@ -1522,7 +1531,7 @@ export class FasmDebugSession extends DebugSession {
     if (!this.gdb || bits === undefined) return undefined;
     try {
       const castType = unsignedCastType(bits);
-      const result = await this.gdb.sendCommand(`-data-evaluate-expression "(${castType})$${name}"`);
+      const result = await this.gdb.sendCommand(`-data-evaluate-expression "(${castType})$${gdbRegisterName(name)}"`);
       const raw = miData(result)?.value;
       if (typeof raw !== 'string') return undefined;
       const match = /^\d+/.exec(raw);
@@ -2384,8 +2393,15 @@ export class FasmDebugSession extends DebugSession {
       return undefined;
     }
 
+    // Writing a 32-bit view goes to its 64-bit parent so the upper half is zeroed, the way every
+    // real "mov eax, ..." does — see wideParentOf32BitView. `parsed` is already wrapped to 32 bits,
+    // so assigning it to the parent *is* the zero-extension. Only when the parent is a register this
+    // target actually has: on i386 "eax" is the whole register and there is no rax to redirect to.
+    const parent = bits === 32 ? wideParentOf32BitView(name) : undefined;
+    const target = parent !== undefined && this.targetHasRegister(parent) ? parent : name;
+
     try {
-      await this.gdb.sendCommand(`-data-evaluate-expression "$${name} = ${parsed.toString()}"`);
+      await this.gdb.sendCommand(`-data-evaluate-expression "$${gdbRegisterName(target)} = ${parsed.toString()}"`);
     } catch (err) {
       this.sendErrorResponse(response, 7, (err as Error).message);
       return undefined;
