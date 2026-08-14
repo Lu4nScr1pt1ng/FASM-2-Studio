@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.18.1
+
+### The error a macro frame was hiding
+
+An error raised from inside a macro is reported on the line that wrote it, instead of silently
+turning off diagnostics for the whole file.
+
+fasmg prints a macro call stack between the header that locates an error and the message itself:
+
+```
+main.asm [38]:
+        mov [message], ax
+mov? [38]
+Custom error: operand sizes do not match.
+```
+
+That third line is a call-stack frame, but a single-frame one is shaped exactly like the colon-less
+header fasmg uses when it has no source line to quote — same "name [number]", no trailing colon.
+Read as a header, it moved the error out of `main.asm` and into a file called `mov?`, which exists
+nowhere; an error the editor cannot place anywhere becomes the status-bar sentence "Build failed in
+mov? line 38", and the document's own diagnostics are cleared to make room for it.
+
+The x86 package validates operand sizes, addressing modes and unknown mnemonics through `err` inside
+its instruction macros, so this frame is present on essentially every everyday mistake — `? [4]` when
+no macro matches the mnemonic at all. The effect was that the first real typo took the file's
+diagnostics down and every later edit kept them down, since each new error arrived the same way. It
+recovered only once the file assembled cleanly again, which is precisely when there was nothing left
+to show.
+
+Shape alone cannot separate a frame from a header, so position does: only a header the parser was
+not already awaiting a message for opens a new error block. That also settles the frames that do
+carry a trailing colon and a quoted line of macro body (`macro wrap [1]:`), which were mis-read the
+same way.
+
 ## 1.18.0
 
 ### The memory a register points at

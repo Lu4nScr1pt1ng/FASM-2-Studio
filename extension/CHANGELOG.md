@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.18.1
+
+### Fixed: errors stopped appearing after the first mistake
+
+Diagnostics went quiet as soon as a file failed to assemble for certain everyday reasons — a
+mistyped mnemonic, mismatched operand sizes, an unspecified operand size — and stayed quiet through
+every edit afterwards, showing only `Build failed in mov? line 38` or `Build failed in ? line 4` in
+the status bar. Nothing was wrong with your file that the squiggles should not have shown you.
+
+The assembler prints a macro call stack under each error, and one line of it looks exactly like the
+line that says which file and line the error is on. The extension believed it, and attributed the
+error to a file named after the macro — a file that does not exist, so there was nowhere to put the
+squiggle and the file's errors were cleared instead.
+
+Those errors now land on the line you wrote, as they should have all along.
+
 ## 1.18.0
 
 ### Open the memory a register points at

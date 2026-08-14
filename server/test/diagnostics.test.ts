@@ -340,6 +340,62 @@ describe('parseDiagnostics (header shapes seen in real project builds)', () => {
     assert.strictEqual(diags[0].range.start.line, 6, 'expected the location from the real header, not the trace');
   });
 
+  it('does not mistake a single-frame macro trace for a header', () => {
+    // Verbatim from `fasm2` (g.kp60). Every instruction-encoding error fasmg's x86 package raises
+    // arrives with a one-frame trace like this, and it is shaped exactly like a colon-less header:
+    // reading it as one attributed the error to a "file" called "mov?", which exists nowhere, so
+    // the document's own errors were replaced by an empty diagnostic list — the whole file went
+    // quiet the moment it stopped assembling, and stayed quiet through every later edit.
+    const output = ['bad.asm [5]:', '\tmov [msg], ax', 'mov? [38]', 'Custom error: operand sizes do not match.'].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/bad.asm');
+
+    assert.strictEqual(diags.length, 1, 'expected the error on the file, not on the macro frame');
+    assert.strictEqual(diags[0].range.start.line, 4);
+    assert.match(messageText(diags[0]), /operand sizes do not match/);
+  });
+
+  it('does not mistake the "?" frame of an unrecognized mnemonic for a header', () => {
+    // The trace frame for a mnemonic no macro matches is named "?" alone, so the error landed on a
+    // file called "?" — which is what "Build failed in ? line 4: illegal instruction" was.
+    const output = ['bad.asm [5]:', '\tmvo rax, 1', '? [4]', 'Processed: mvo rax, 1', 'Error: illegal instruction.'].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/bad.asm');
+
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].range.start.line, 4);
+  });
+
+  it('does not mistake a macro frame that carries its own source line for a header', () => {
+    // A frame can be printed with a trailing colon and a quoted line of the macro's body, making it
+    // matchable as an ordinary header too — position, not shape, is what rules it out.
+    const output = ['nest.asm [8]:', '\twrap mov [x], ax', 'macro wrap [1]:', '\top', 'Processed: mov [x]', 'Error: missing argument.'].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/nest.asm');
+
+    assert.strictEqual(diags.length, 1);
+    assert.strictEqual(diags[0].range.start.line, 7);
+  });
+
+  it('keeps reporting the blocks after one that ended in a macro trace', () => {
+    // The frames must not swallow the headers that follow them: a file with several mistakes gets
+    // one block each, back to back, and every one of them ends in a trace.
+    const output = [
+      'multi.asm [5]:',
+      '\tmvo rax, 1',
+      '? [4]',
+      'Processed: mvo rax, 1',
+      'Error: illegal instruction.',
+      'multi.asm [7]:',
+      '\tmov [q], ax',
+      'mov? [38]',
+      'Custom error: operand sizes do not match.',
+    ].join('\n');
+    const diags = parseDiagnostics(output, '/tmp/multi.asm');
+
+    assert.deepStrictEqual(
+      diags.map((d) => d.range.start.line),
+      [4, 6],
+    );
+  });
+
   it('takes the innermost location from an include-chain header', () => {
     // "prog.asm [18] support/win64.inc [14]:" means the error is at win64.inc line 14, reached
     // from prog.asm line 18 — attributing it to prog.asm line 18 would point at the wrong file.

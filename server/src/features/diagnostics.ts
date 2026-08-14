@@ -41,11 +41,11 @@ const HEADER_RE = /^(.+) \[(\d+)\]:$/;
  * it — as with the "Custom error: NO OUTPUT FILE." raised past the end of the file. Requiring the
  * colon dropped those errors entirely, leaving a failing build looking clean.
  *
- * Deliberately allows only a single "file [line]" pair: the macro call-stack trace fasmg prints
- * between a header and its message ("movzx? [30] x86.store_instruction@src [77]
- * x86.require.bits64? [6]") also ends in "[number]", and treating that as a header replaced the
- * real one and discarded the diagnostic. Excluding brackets from the file part is what separates
- * them, since a trace always has earlier bracketed groups.
+ * Deliberately allows only a single "file [line]" pair, so a multi-frame macro call-stack trace
+ * ("movzx? [30] x86.store_instruction@src [77] x86.require.bits64? [6]") cannot be read as one.
+ * That shape alone does not separate them — a single-frame trace ("mov? [38]") is indistinguishable
+ * from a colon-less header by its text — so what actually keeps traces out is position: parseOutput
+ * only opens a block on a header it was not already expecting a message for.
  */
 const BARE_HEADER_RE = /^([^[\]]+) \[(\d+)\]$/;
 // fasmg emits "Error: ..." for built-in assembler errors and "Custom error: ..." for errors
@@ -393,6 +393,15 @@ function parseOutput(output: string, sourceFsPath: string): ParsedOutput {
   for (const line of lines) {
     const header = HEADER_RE.exec(line) ?? BARE_HEADER_RE.exec(line);
     if (header) {
+      // Only the first header of a block says where the error is. Between it and the message,
+      // fasmg prints the macro call stack, and a single-frame one is shaped exactly like a header:
+      // "mov? [38]", "? [4]", "macro wrap [1]:". Letting a frame overwrite the pending header put
+      // the error in a "file" named after a macro, which exists nowhere, so it became an
+      // unplaceable foreign error and cleared the document's diagnostics instead of marking the
+      // line. Everything fasmg's x86 package rejects (operand size, addressing mode, illegal
+      // instruction) reports through exactly such a frame. The block ends at its message, so a
+      // pending header means the line at hand still belongs to the same block.
+      if (pendingLine !== undefined) continue;
       // A header can name a whole include chain ("prog.asm [18] support/win64.inc [14]:"); the
       // location that matters is the innermost one, which is the last file/line pair on the line.
       const chain = [...header[0].matchAll(/(\S(?:[^[]*\S)?) \[(\d+)\]/g)];
