@@ -399,6 +399,35 @@ their opposites listed with the flag test that decided each one. It is the bit a
 re-derived at every breakpoint and mis-remembered in exactly the places that matter — `jb` versus
 `jl`, `ja` versus `jg` — and the flags have already been read to display them, so it costs nothing.
 
+The rest of the machine is there too, grouped the same way, and every group only appears when the
+connected target actually reports it:
+
+- **Vector** — `xmm0`-`xmm15`, or `ymm`/`zmm` where the CPU has them, listed once each at their
+  widest name with the narrower aliases underneath. The same bits read as packed doubles, floats,
+  qwords, dwords, words and bytes at the same time, since nothing in the register says which the
+  program meant. On x86-64 this is not an optional extra: every floating-point argument and return
+  value in the SysV ABI travels in `xmm0`-`xmm7`.
+- **x87 FPU** — `st0`-`st7` with the 80-bit extended format taken apart (sign, exponent,
+  significand, and whether the bits are a normal, a denormal, a NaN, or an encoding no FPU can
+  produce), plus the control and status words. A register nothing was pushed into reads `<empty>`
+  rather than as the plausible-looking number its leftover bits spell, and the group header says
+  which physical register `st0` currently *is* — the rotation that silently renames every `st(n)`.
+- **MXCSR** — the SSE control word, decoded the way EFLAGS is. Its low six bits are sticky: a float
+  operation that went wrong leaves a record there that nothing clears, so the NaN that appeared out
+  of nowhere has its cause still sitting in `IE` or `ZE` when you look.
+- **Stack** — the words at and above `rsp`, each resolved against your labels. There is one frame
+  here and no CFI to unwind with, so this is the only place a return address or a prologue's saved
+  registers are visible at all.
+- **Thread / Syscall** — `fs_base`/`gs_base`, which is what `mov rax, [fs:0x28]` actually reads
+  from (the `fs` selector is ignored for addressing in 64-bit mode and reads as a useless zero), and
+  `orig_rax`, the syscall number named: `59  execve`.
+- **Segment** — selectors decoded into what they are, `0x33` as `GDT[6] ring 3`, and paired with
+  their base where one exists.
+
+`rip` shows the instruction it is about to execute alongside the address. Everything here is
+readable by hover and Watch too, and the vector and x87 registers can be written from the panel —
+`xmm0` lane by lane, `st0` as the float it holds.
+
 Hovering a memory operand reads the memory it names. Without that, the editor falls back to the word
 under the cursor, which in assembly is never the thing you were pointing at: in
 `mov eax, dword [rsp+8]` the word under `rsp` is `rsp`, so the question that reached the debugger was

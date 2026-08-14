@@ -1,5 +1,142 @@
 # Changelog
 
+## 1.22.0
+
+### Half of the machine was not in the Registers panel
+
+The panel showed the general-purpose registers, the pointers, EFLAGS and the segment selectors. That
+is the whole of what an x86 program had in 1985, and about half of what one has now. Asked what it
+actually has, gdb answers with a list more than three times as long — and everything it named that
+was missing is now a group of its own, appearing only when the connected target really reports it.
+
+**Vector — `xmm0`-`xmm15`, and `ymm`/`zmm` where the CPU has them.** This is the serious omission.
+On x86-64 the SysV ABI puts *every* floating-point argument and return value in `xmm0`-`xmm7`, so a
+program that calls `printf("%f")` was passing a value through a register the debugger would not
+show. Each physical register is listed once, at its widest name, with the narrower aliases as
+children the way `al`/`ax`/`eax` sit under `rax` — `xmm0` is the low half of `ymm0`, and listing
+both would be listing one register twice.
+
+Expanding one gives every reading of the same bits at once:
+
+```
+ymm1    0xc0020000000000003ff8000000000000
+  hex           0x00000000000000000000000000000000c0020000000000003ff8000000000000
+  4 x double    1.5, -2.25, 0, 0
+  8 x float     0, 1.9375, 0, -2.03125, 0, 0, 0, 0
+  4 x qword     0x3ff8000000000000, 0xc002000000000000, 0x0, 0x0
+  8 x dword     0x0, 0x3ff80000, 0x0, 0xc0020000, 0x0, 0x0, 0x0, 0x0
+  16 x word     16 lanes
+  32 x byte     32 lanes
+  xmm1          0xc0020000000000003ff8000000000000
+```
+
+(that program did `movupd xmm1, dqword [pair]` over a `dq 1.5, -2.25`, so the doubles are the
+reading it meant — but the debugger has no way to know that, which is the point)
+
+All of them, rather than a guess at which one this program meant, because the guess is not
+available: nothing in the register records whether a `movaps` put four floats or sixteen bytes
+there. A register loaded with text by a `movdqu` reads as that text — `'SIMD/x86-64!!!!!'` — which
+no numeric base shows. Every lane is derived from one value read once, so the whole expansion costs a
+single round trip.
+
+**x87 FPU — `st0`-`st7` and the environment words.** For 32-bit code x87 is the only floating-point
+path there is, and plenty of 64-bit fasm still uses it. The 80-bit extended format is taken apart
+rather than left as the decimal gdb prints, because the states that cause trouble are invisible in a
+decimal: an *unnormal* is a value no FPU since the 387 can produce, so seeing one means something
+wrote raw bytes over the x87 state, and it prints as an ordinary number. Two further things the
+decimal cannot say:
+
+- A register nothing was pushed into is not zero. It holds whatever the last code to use the FPU
+  left, and reads as a perfectly plausible value. The tag word is the only authority on that, so an
+  untouched register now says `<empty>` instead.
+- The x87 registers are a *stack*, and `st0` names whichever physical register `TOP` points at. One
+  `fld` too many wraps it, and every `st(n)` after that quietly means a different register than the
+  source says. The group header now reads `st0 = R6`.
+
+**MXCSR**, decoded exactly the way EFLAGS is. Worth the same glance, too: its low six bits are
+sticky exception flags that hardware sets and never clears, so a program producing a NaN out of
+nowhere has the cause — `IE` for an invalid operation, `ZE` for a divide by zero — still sitting
+there whenever you get around to looking. `RC` is named rather than numbered, since "rounding
+control = 3" and "toward zero (truncate)" are not equally useful readings.
+
+**Thread / Syscall.** `fs_base` and `gs_base` are what `[fs:0x28]` — the stack canary, and
+thread-local storage generally — actually reads from; in 64-bit mode the `fs` *selector* is ignored
+for addressing entirely and reads as a zero that says nothing. And `orig_rax` is named, not just
+numbered: a fasm program with no libc is essentially a sequence of syscalls, so the number is the
+whole meaning of the instruction, and Linux keeps it there precisely because `rax` itself has been
+overwritten with the return value by the time you can look.
+
+```
+orig_rax    59  execve
+```
+
+Its tooltip carries the argument registers with it, including the one that causes a genuinely silent
+bug: the fourth syscall argument goes in `r10`, not `rcx`, because the `syscall` instruction
+overwrites `rcx` with the return address. Code that passes it in `rcx` assembles fine and passes
+garbage.
+
+### A Stack group, because nothing else could answer that question
+
+There is one frame in this debugger and nothing to unwind with — a fasmg binary carries no CFI — so
+"what called this" and "what did the prologue just push" had no answer anywhere in the UI. The words
+at and above `rsp` do answer it, and each one goes through the same label resolution every register
+row gets:
+
+```
+[rsp+0x0]     0x4000e7  → start+0x37
+[rsp+0x8]     0x40111f  → msg
+```
+
+The first is the return address the `call` pushed. One register read and one memory read for the
+whole group, however deep it goes.
+
+### rip says which instruction it is about to run
+
+```
+rip    0x4000f4  → helper  nop
+```
+
+It is the one register whose value has a better reading than any number, and the only one where the
+address alone was never the thing being asked for.
+
+### A segment selector is not a number
+
+`cs = 0x33` is not a quantity and not an address; it is thirteen bits of descriptor-table index, one
+bit choosing the table, and two bits of privilege level. Read as hex it says nothing at all, and read
+as a selector it is the ordinary user-mode 64-bit code segment. It now says so — `0x33  GDT[6] ring
+3` — and `fs`/`gs` carry their base alongside, which is the half of those two that means anything.
+
+The decimal column is gone from every register that is a bit pattern rather than a quantity: a
+control word, a status word, a selector. Nothing in a program ever adds one to `mxcsr`, and
+`0x1f80  8064` spent a column saying the same thing twice in a base nobody asked for.
+
+### Fixed: AVX registers were invisible on every machine that has them
+
+gdb is asked which registers the target has once the binary is loaded. The answer at that point comes
+from the *architecture*; the answer after the process starts comes from the process, and only that
+one has been through the CPU's actual XSAVE state. On a machine with AVX the first list has
+`xmm0`-`xmm15` and no `ymm` registers whatsoever; the second has all sixteen of them, plus `pkru`.
+
+Resolving only at launch — which is all this did — therefore hid every AVX register permanently, for
+the whole session, on hardware that has them. The set is now re-read at the first stop, and the
+Registers panel waits for that read rather than racing it, so the vector group is right on the first
+stop and not just the second.
+
+### Writing the new registers
+
+A vector register is written lane by lane, since gdb offers no whole-register assignment for one and
+the field that reads as a single 128-bit integer is not writable. An x87 register is written as the
+float it holds — `-2.5`, not a bit pattern — and the string is handed to gdb unchanged rather than
+parsed on the way past, because an 80-bit significand has more precision than this extension's own
+numbers do and rounding the value someone typed would be a strange way to honor it.
+
+Hover and Watch reach all of it too. One ordering detail is deliberate and worth stating: a name fasm
+reserves (`xmm0`, `st0`, `rax`) resolves as a register *before* your program's symbols, because the
+symbol cannot exist — fasm would not let you define it. The names gdb adds on top of the ISA
+(`fs_base`, `orig_rax`, `mxcsr`) get no such precedence, because a fasm program is perfectly free to
+define a label called `orig_rax`, and answering with the register instead would describe the wrong
+thing entirely.
+
 ## 1.21.1
 
 ### Fixed: writing `r8b`-`r15b` changed nothing and said it had

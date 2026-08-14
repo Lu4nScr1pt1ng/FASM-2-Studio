@@ -1292,4 +1292,205 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       await removeTempDir(constDir);
     }
   });
+
+  it('shows the SIMD, x87, MXCSR, TLS, stack and segment state a real x86-64 program actually has', async function () {
+    this.timeout(30000);
+
+    // Every group added here is exercised by a program that genuinely uses it: SSE loads into
+    // xmm0-2 (including a movdqu of a 16-byte string, which is what SSE is *for* in a program like
+    // this), two x87 pushes so the FPU stack has a TOP other than zero, a push and a call so the
+    // stack has a real return address in it, and a labelled pointer for the label resolution.
+    const simdDir = makeTempDir('fasm2-studio-dap-e2e-simd-');
+    const simdAsmPath = path.join(simdDir, 'simd.asm');
+    const simdProgramPath = path.join(simdDir, 'simd');
+    const simdListingPath = path.join(simdDir, 'simd.lst');
+    const SIMD_PROGRAM_SRC = [
+      'format ELF64 executable 3',
+      'entry start',
+      '',
+      'segment readable executable',
+      'start:',
+      '\tmovsd xmm0, qword [pi]',
+      '\tmovupd xmm1, dqword [pair]',
+      '\tmovdqu xmm2, dqword [text]',
+      '\tfld qword [pi]',
+      '\tfld1',
+      '\tlea rsi, [msg]',
+      '\tpush rsi',
+      '\tcall helper',
+      '\tnop',
+      '\tmov edi, 0',
+      '\tmov eax, 60',
+      '\tsyscall',
+      '',
+      'helper:',
+      '\tnop',
+      '\tret',
+      '',
+      'segment readable writeable',
+      'pi\tdq 3.14159265358979',
+      'pair\tdq 1.5, -2.25',
+      "text\tdb 'SIMD/x86-64!!!!!',0",
+      "msg\tdb 'hello',0",
+      '',
+    ].join('\n');
+    fs.writeFileSync(simdAsmPath, SIMD_PROGRAM_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", simdAsmPath, simdProgramPath], { cwd: simdDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(simdProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: simdProgramPath, asmFile: simdAsmPath, listingFile: simdListingPath, cwd: simdDir });
+      await client.sendRequest('setBreakpoints', { source: { path: simdAsmPath }, breakpoints: [{ line: 20 }] }); // the nop inside helper
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const registersRef = scopes.scopes[0].variablesReference;
+      const groups = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', { variablesReference: registersRef });
+      const groupNames = groups.variables.map((g) => g.name);
+
+      // The vector group is named for the widest extension the *running* process turned out to
+      // have, which is only knowable after it started — the register set gdb reports before the
+      // first instruction executes has no ymm registers in it at all.
+      const vectorLabel = groupNames.find((n) => n.startsWith('Vector'));
+      assert.ok(vectorLabel, `expected a Vector group, got: ${groupNames.join(', ')}`);
+      for (const expected of ['General Purpose', 'Pointers', 'Stack', 'Flags', 'MXCSR', 'x87 FPU', 'Thread / Syscall', 'Segment']) {
+        assert.ok(groupNames.includes(expected), `expected a "${expected}" group, got: ${groupNames.join(', ')}`);
+      }
+
+      // The SIMD registers, at whatever width this CPU reports them — a movdqu of a string reads
+      // back as that string, which no numeric base would show.
+      const vectorRef = await getRegisterGroupRef(client, registersRef, vectorLabel);
+      const vectorRows = await client.sendRequest<{ variables: Array<{ name: string; value: string; variablesReference: number }> }>('variables', {
+        variablesReference: vectorRef,
+      });
+      const textReg = vectorRows.variables.find((v) => /^[xyz]mm2$/.test(v.name))!;
+      assert.ok(textReg, 'expected a row for the third SIMD register');
+      assert.match(textReg.value, /'SIMD\/x86-64!!!!!'/);
+
+      // Expanding one gives every reading of the same bits, none of which cost another round trip.
+      const pairReg = vectorRows.variables.find((v) => /^[xyz]mm1$/.test(v.name))!;
+      const lanes = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: pairReg.variablesReference,
+      });
+      // The lane *count* depends on how wide this CPU reports the register, so the assertion is on
+      // the lanes the program actually loaded — which sit at the low end whatever the width is.
+      const doubleLanes = lanes.variables.find((v) => /^\d+ x double$/.test(v.name))!;
+      assert.ok(doubleLanes, `expected a packed-double reading, got: ${lanes.variables.map((v) => v.name).join(', ')}`);
+      assert.ok(doubleLanes.value.startsWith('1.5, -2.25'), `unexpected double lanes: ${doubleLanes.value}`);
+
+      // Hovering a SIMD register works even though it is 128 bits wide and no unsigned cast names
+      // one — the read goes through its 64-bit lanes instead.
+      const xmm1Hover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'xmm1', context: 'hover' });
+      assert.match(xmm1Hover.result, /^xmm1 {2}\(128-bit vector register\)/);
+      assert.match(xmm1Hover.result, /2 x double\s+1\.5, -2\.25/);
+
+      // MXCSR reads as its named bits, the same way EFLAGS does. 0x1f80 (everything masked,
+      // nothing raised) is what a freshly started process has.
+      const mxcsrGroup = groups.variables.find((g) => g.name === 'MXCSR')!;
+      assert.strictEqual(mxcsrGroup.value, '[ IM DM ZM OM UM PM ]');
+
+      // Two flds means TOP has rotated, which is exactly the thing that silently renames every
+      // st(n) and is invisible without decoding the status word.
+      const x87Group = groups.variables.find((g) => g.name === 'x87 FPU')!;
+      assert.match(x87Group.value, /^st0 = R[0-7]/);
+      const x87Ref = await getRegisterGroupRef(client, registersRef, 'x87 FPU');
+      const x87Rows = await client.sendRequest<{ variables: Array<{ name: string; value: string; variablesReference: number }> }>('variables', {
+        variablesReference: x87Ref,
+      });
+      const st0 = x87Rows.variables.find((v) => v.name === 'st0')!;
+      assert.match(st0.value, /^1\b/, `expected fld1 to leave 1 in st0, got ${st0.value}`);
+      assert.match(st0.value, /\(valid\)/);
+      // The registers nothing was pushed into say so, rather than reading as whatever bits are
+      // left in them — the tag word is the only thing that can tell the difference.
+      assert.strictEqual(x87Rows.variables.find((v) => v.name === 'st5')!.value, '<empty>');
+      assert.match(x87Rows.variables.find((v) => v.name === 'fctrl')!.value, /PC=3/);
+
+      // The 80-bit format's own fields, which is where the states an ordinary decimal hides live.
+      const st0Detail = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: st0.variablesReference,
+      });
+      const st0ByName = new Map(st0Detail.variables.map((v) => [v.name, v.value]));
+      assert.strictEqual(st0ByName.get('hex'), '0x3fff8000000000000000');
+      assert.strictEqual(st0ByName.get('class'), 'normal');
+      assert.strictEqual(st0ByName.get('exponent'), '2^0  (biased 0x3fff)');
+
+      // The stack, which is the only place a return address is visible: there is one frame here and
+      // nothing to unwind with, so "what called this" has no other answer.
+      const stackRef = await getRegisterGroupRef(client, registersRef, 'Stack');
+      const stackRows = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: stackRef,
+      });
+      assert.strictEqual(stackRows.variables[0].name, '[rsp+0x0]');
+      assert.match(stackRows.variables[0].value, /→ start\+0x[0-9a-f]+/, 'expected the return address the call pushed to resolve to a label');
+      assert.match(stackRows.variables[1].value, /→ msg/, 'expected the pushed rsi to resolve to the label it points at');
+
+      // rip says which instruction is about to run, which is the one reading of it that answers the
+      // question it is looked at for.
+      const rip = await findRegisterValue(client, registersRef, 'rip');
+      assert.match(rip ?? '', /→ helper\s+nop$/);
+
+      // A segment selector decoded rather than shown as a number that means nothing.
+      const cs = await findRegisterValue(client, registersRef, 'cs');
+      assert.strictEqual(cs, '0x33  GDT[6] ring 3');
+
+      // Not in a syscall, said in words — the register holds -1, which as a number reads as
+      // 18446744073709551615 and means nothing at all.
+      const threadRef = await getRegisterGroupRef(client, registersRef, 'Thread / Syscall');
+      const threadRows = await client.sendRequest<{ variables: Array<{ name: string; value: string; type?: string }> }>('variables', {
+        variablesReference: threadRef,
+      });
+      assert.strictEqual(threadRows.variables.find((v) => v.name === 'orig_rax')!.value, 'not in a syscall');
+
+      // ...and named when it does hold a number. Set through gdb rather than by waiting for a real
+      // syscall stop, because the kernel resets orig_rax to -1 on a breakpoint trap.
+      await client.sendRequest('evaluate', { expression: 'set $orig_rax = 59', context: 'repl' });
+      const named = await client.sendRequest<{ variables: Array<{ name: string; value: string; type?: string }> }>('variables', {
+        variablesReference: threadRef,
+      });
+      const origRax = named.variables.find((v) => v.name === 'orig_rax')!;
+      assert.strictEqual(origRax.value, '59  execve');
+      assert.match(origRax.type!, /the fourth is r10, not rcx/);
+
+      // A SIMD register is writable, lane by lane, since gdb has no whole-register assignment for
+      // one — and a write of more than 64 bits has to land in both halves.
+      const written = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: vectorRef,
+        name: vectorRows.variables[3].name,
+        value: '0xdeadbeefcafebabe1122334455667788',
+      });
+      assert.match(written.value, /^0xdeadbeefcafebabe1122334455667788/);
+
+      // An x87 register is written as the float it holds, not as a bit pattern.
+      const st0Written = await client.sendRequest<{ value: string }>('setVariable', { variablesReference: x87Ref, name: 'st0', value: '-2.5' });
+      assert.match(st0Written.value, /^-2\.5\s+normal\s+sign -/);
+
+      // A name gdb invented rather than one the ISA reserves still resolves in Watch...
+      const fsBase = await client.sendRequest<{ result: string }>('evaluate', { expression: 'fs_base', context: 'watch' });
+      assert.match(fsBase.result, /^0x[0-9a-f]+/);
+
+      // ...but never ahead of one of this program's own labels, which is the whole reason those
+      // names are kept out of the reserved set.
+      const msgLabel = await client.sendRequest<{ result: string }>('evaluate', { expression: 'msg', context: 'watch' });
+      assert.match(msgLabel.result, /hello/, 'expected a program label to win over any register lookup');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      await removeTempDir(simdDir);
+    }
+  });
+
 });

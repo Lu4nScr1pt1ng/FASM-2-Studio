@@ -1,7 +1,25 @@
 import * as assert from 'assert';
 import {
   decodeEflags,
+  decodeExtendedFloat,
+  decodeMxcsr,
+  decodeSegmentSelector,
+  decodeX87Control,
+  decodeX87Status,
+  decodeX87Tags,
   EFLAGS_BITS,
+  float32FromBits,
+  float64FromBits,
+  formatBitFieldSummary,
+  formatExtendedFloat,
+  formatSegmentSelector,
+  formatVectorValueCompact,
+  isReservedRegisterMnemonic,
+  PSEUDO_REGISTER_WIDTH_BITS,
+  registerWidthBits,
+  VECTOR_WIDTH_BITS,
+  vectorLaneGroups,
+  vectorSubRegisterViews,
   evaluateJumpConditions,
   formatBinaryGrouped,
   formatBytesLittleEndian,
@@ -19,6 +37,7 @@ import {
   unsignedCastType,
   wideParentOf32BitView,
 } from '../src/registers';
+import { syscallName, SYSCALL_ARGUMENT_REGISTERS } from '../src/syscalls';
 
 // Real "-data-list-register-names" output, captured from gdb 16.3 against actual fasm2-compiled
 // ELF binaries (a 32-bit "format ELF executable 3" and a 64-bit "format ELF64 executable 3") —
@@ -446,5 +465,364 @@ describe('gdbRegisterName', () => {
     for (const name of Object.keys(REGISTER_WIDTH_BITS).filter((n) => /^r\d+b$/.test(n))) {
       assert.notStrictEqual(gdbRegisterName(name), name, name);
     }
+  });
+});
+
+// The two register-name lists a real x86-64 target reports, captured from gdb 16.3 against a
+// running process — and captured *twice on purpose*, before and after the process started, because
+// they differ. The pre-run list is what gdb knows from the binary's architecture; the post-run list
+// is what it knows from the live process's XSAVE state, and only that one has the AVX registers.
+// Trimmed to the entries these tests actually exercise, with gdb's empty-string padding kept where
+// it sits, since the *index* of a name in this array is the register number gdb answers to.
+const X86_64_BEFORE_RUN = [
+  'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp',
+  'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
+  'rip', 'eflags', 'cs', 'ss', 'ds', 'es', 'fs', 'gs',
+  'st0', 'st1', 'st2', 'st3', 'st4', 'st5', 'st6', 'st7',
+  'fctrl', 'fstat', 'ftag', 'fiseg', 'fioff', 'foseg', 'fooff', 'fop',
+  'xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4', 'xmm5', 'xmm6', 'xmm7',
+  'xmm8', 'xmm9', 'xmm10', 'xmm11', 'xmm12', 'xmm13', 'xmm14', 'xmm15',
+  'mxcsr', '', '', 'fs_base', 'gs_base', 'orig_rax',
+];
+
+const X86_64_AFTER_RUN = [
+  ...X86_64_BEFORE_RUN,
+  'ymm0', 'ymm1', 'ymm2', 'ymm3', 'ymm4', 'ymm5', 'ymm6', 'ymm7',
+  'ymm8', 'ymm9', 'ymm10', 'ymm11', 'ymm12', 'ymm13', 'ymm14', 'ymm15',
+  'pkru',
+];
+
+describe('resolveRegisterGroups — the vector, x87 and thread groups', () => {
+  it('picks xmm before the process has started, since gdb reports no ymm registers until then', () => {
+    const groups = resolveRegisterGroups(X86_64_BEFORE_RUN);
+    assert.strictEqual(groups.vector.length, 16);
+    assert.strictEqual(groups.vector[0], 'xmm0');
+  });
+
+  it('picks ymm once the process is running and gdb has re-read the CPU\'s actual extensions', () => {
+    // The bug this guards is invisible without both fixtures: resolving the register set only at
+    // launch is resolving it from the list that has no AVX registers in it at all.
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.strictEqual(groups.vector[0], 'ymm0');
+    assert.strictEqual(groups.vector.length, 16);
+  });
+
+  it('lists each SIMD register once, at its widest reported name — never xmm0 and ymm0 as two rows', () => {
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.deepStrictEqual(groups.vector.filter((n) => /mm0$/.test(n)), ['ymm0']);
+    assert.strictEqual(groups.vector.includes('xmm0'), false);
+  });
+
+  it('groups the x87 stack apart from the x87 environment words', () => {
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.deepStrictEqual(groups.x87, ['st0', 'st1', 'st2', 'st3', 'st4', 'st5', 'st6', 'st7']);
+    assert.deepStrictEqual(groups.x87Control, ['fctrl', 'fstat', 'ftag', 'fop', 'fiseg', 'fioff', 'foseg', 'fooff']);
+    assert.strictEqual(groups.mxcsrName, 'mxcsr');
+  });
+
+  it('groups the TLS bases and the syscall number together', () => {
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.deepStrictEqual(groups.thread, ['fs_base', 'gs_base', 'orig_rax']);
+  });
+
+  it('records gdb\'s own register number for each name, counting empty padding slots', () => {
+    // st0 sits at index 24 in this list, and "-data-list-register-values x 24" is the only way to
+    // ask for its raw 80 bits — no expression form returns them.
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.strictEqual(groups.numbers.get('st0'), 24);
+    assert.strictEqual(groups.numbers.get('mxcsr'), 56);
+    assert.strictEqual(groups.numbers.get('fs_base'), 59);
+    assert.strictEqual(groups.numbers.get(''), undefined);
+  });
+
+  it('gives a 32-bit target its xmm registers and its x87 stack too', () => {
+    const groups = resolveRegisterGroups(I386_REGISTER_NAMES);
+    assert.deepStrictEqual(groups.vector, ['xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4', 'xmm5', 'xmm6', 'xmm7']);
+    assert.strictEqual(groups.x87.length, 8);
+    assert.strictEqual(groups.mxcsrName, 'mxcsr');
+    // No fs_base/gs_base/orig_rax on i386 — the group simply does not appear.
+    assert.deepStrictEqual(groups.thread, []);
+  });
+});
+
+describe('reserved mnemonics vs gdb\'s own pseudo-registers', () => {
+  it('treats every name fasm reserves as a register that outranks a program symbol', () => {
+    for (const name of ['rax', 'al', 'xmm0', 'ymm15', 'zmm31', 'st0', 'st7', 'k1', 'eflags']) {
+      assert.strictEqual(isReservedRegisterMnemonic(name), true, name);
+    }
+  });
+
+  it('does not reserve the names gdb adds on top of the ISA — a program may legitimately define one', () => {
+    // This is the whole reason the two maps are separate: `orig_rax` is a perfectly legal label
+    // name in fasm, and resolving it as a register ahead of the program's own symbols would
+    // describe the wrong thing entirely.
+    for (const name of ['fs_base', 'gs_base', 'orig_rax', 'mxcsr', 'fctrl', 'pkru']) {
+      assert.strictEqual(isReservedRegisterMnemonic(name), false, name);
+      assert.notStrictEqual(PSEUDO_REGISTER_WIDTH_BITS[name], undefined, name);
+    }
+  });
+
+  it('still knows the width of a pseudo-register, for the panel rows that do display one', () => {
+    assert.strictEqual(registerWidthBits('fs_base'), 64);
+    assert.strictEqual(registerWidthBits('mxcsr'), 32);
+    assert.strictEqual(registerWidthBits('fctrl'), 16);
+    assert.strictEqual(registerWidthBits('rax'), 64);
+    assert.strictEqual(registerWidthBits('nonsense'), undefined);
+  });
+
+  it('gives the SIMD registers widths outside RegisterBits, since no unsigned cast names one', () => {
+    assert.strictEqual(VECTOR_WIDTH_BITS.xmm0, 128);
+    assert.strictEqual(VECTOR_WIDTH_BITS.ymm0, 256);
+    assert.strictEqual(VECTOR_WIDTH_BITS.zmm0, 512);
+    assert.strictEqual(REGISTER_WIDTH_BITS.xmm0, undefined);
+  });
+});
+
+describe('decodeMxcsr', () => {
+  it('reads the power-on default (0x1f80) as every exception masked and nothing raised', () => {
+    // Cross-checked against gdb's own rendering of the same register, which prints exactly this
+    // set of names for a freshly started process.
+    assert.strictEqual(formatBitFieldSummary(decodeMxcsr(0x1f80n)), '[ IM DM ZM OM UM PM ]');
+  });
+
+  it('surfaces a sticky exception flag, which is the reason to look at this register at all', () => {
+    const fields = new Map(decodeMxcsr(0x1f85n).map((f) => [f.name, f.value]));
+    assert.strictEqual(fields.get('IE'), 1); // invalid operation
+    assert.strictEqual(fields.get('ZE'), 1); // divide by zero
+    assert.strictEqual(fields.get('DE'), 0);
+  });
+
+  it('names the rounding mode rather than leaving RC as a number', () => {
+    const rc = decodeMxcsr(0x7f80n).find((f) => f.name === 'RC')!;
+    assert.strictEqual(rc.value, 3);
+    assert.strictEqual(rc.meaning, 'toward zero (truncate)');
+  });
+
+  it('reads FZ and DAZ, the two bits that silently change what float arithmetic means', () => {
+    const fields = new Map(decodeMxcsr(0x9f40n).map((f) => [f.name, f.value]));
+    assert.strictEqual(fields.get('FZ'), 1);
+    assert.strictEqual(fields.get('DAZ'), 1);
+  });
+});
+
+describe('decodeX87Control / decodeX87Status / decodeX87Tags', () => {
+  it('reads the x87 control word default (0x37f) as extended precision, round to nearest', () => {
+    const fields = new Map(decodeX87Control(0x37fn).map((f) => [f.name, f]));
+    assert.strictEqual(fields.get('PC')!.value, 3);
+    assert.strictEqual(fields.get('PC')!.meaning, 'extended (64-bit mantissa — the default)');
+    assert.strictEqual(fields.get('RC')!.value, 0);
+    assert.strictEqual(fields.get('IM')!.value, 1);
+  });
+
+  it('reads TOP out of the status word — which physical register st0 currently names', () => {
+    // 0x3000 is TOP = 6, the value a real program shows after two pushes onto an empty stack
+    // (verified live against gdb with two flds outstanding).
+    const top = decodeX87Status(0x3000n).find((f) => f.name === 'TOP')!;
+    assert.strictEqual(top.value, 6);
+  });
+
+  it('reads the comparison result out of C0/C2/C3 rather than EFLAGS, where x87 does not put it', () => {
+    const fields = new Map(decodeX87Status(0x4000n).map((f) => [f.name, f.value]));
+    assert.strictEqual(fields.get('C3'), 1); // "equal"
+    assert.strictEqual(fields.get('C0'), 0);
+    assert.strictEqual(fields.get('C2'), 0); // ordered — no NaN involved
+  });
+
+  it('flags a stack fault, and the direction C1 gives it', () => {
+    const fields = new Map(decodeX87Status(0x241n).map((f) => [f.name, f.value]));
+    assert.strictEqual(fields.get('SF'), 1);
+    assert.strictEqual(fields.get('IE'), 1);
+    assert.strictEqual(fields.get('C1'), 1); // overflow rather than underflow
+  });
+
+  it('reads all eight tag states out of the tag word, two bits each', () => {
+    // 0xfff is what a program with two values pushed actually reports: R0-R5 empty, R6/R7 valid
+    // (verified live — R6 and R7 are the two the pushes landed in, with TOP at 6).
+    const tags = decodeX87Tags(0xfffn);
+    assert.strictEqual(tags.length, 8);
+    assert.strictEqual(tags[0].state, 'empty');
+    assert.strictEqual(tags[5].state, 'empty');
+    assert.strictEqual(tags[6].state, 'valid');
+    assert.strictEqual(tags[7].state, 'valid');
+  });
+
+  it('reads an all-empty tag word (0xffff), the state a program starts in', () => {
+    assert.ok(decodeX87Tags(0xffffn).every((t) => t.state === 'empty'));
+  });
+});
+
+describe('formatBitFieldSummary', () => {
+  it('names a set one-bit flag, but shows a multi-bit field\'s value', () => {
+    // "[ TOP ]" would say the field is set when what it holds is which register st0 is.
+    assert.strictEqual(formatBitFieldSummary(decodeX87Status(0x3000n)), '[ TOP=6 ]');
+  });
+
+  it('says so plainly when nothing is set', () => {
+    assert.strictEqual(formatBitFieldSummary(decodeMxcsr(0n)), '[ ]');
+  });
+});
+
+describe('decodeSegmentSelector / formatSegmentSelector', () => {
+  it('reads the ordinary 64-bit user code selector (0x33) as GDT entry 6, ring 3', () => {
+    // The value every x86-64 Linux user process actually has in cs, and as plain hex it says
+    // nothing at all — which is the entire reason this decoding exists.
+    assert.deepStrictEqual(decodeSegmentSelector(0x33n), { index: 6, table: 'GDT', rpl: 3 });
+    assert.strictEqual(formatSegmentSelector(0x33n), 'GDT[6] ring 3');
+  });
+
+  it('reads the matching stack selector (0x2b) as GDT entry 5, ring 3', () => {
+    assert.strictEqual(formatSegmentSelector(0x2bn), 'GDT[5] ring 3');
+  });
+
+  it('reads the LDT bit', () => {
+    assert.deepStrictEqual(decodeSegmentSelector(0x37n), { index: 6, table: 'LDT', rpl: 3 });
+  });
+
+  it('calls a null selector what it is instead of reading off three zero fields', () => {
+    assert.strictEqual(formatSegmentSelector(0n), 'null selector (unused)');
+  });
+});
+
+describe('vector lane readings', () => {
+  it('reads a packed pair of doubles — the reading an addpd/mulpd operates on', () => {
+    // 1.5 and -2.25, laid out the way "dq 1.5, -2.25" puts them in memory: lane 0 in the low bits.
+    const value = (0xc002000000000000n << 64n) | 0x3ff8000000000000n;
+    const doubles = vectorLaneGroups(128, value).find((g) => g.kind === 'float64')!;
+    assert.strictEqual(doubles.label, '2 x double');
+    assert.deepStrictEqual(doubles.lanes, ['1.5', '-2.25']);
+  });
+
+  it('reads the same bits as four floats, sixteen bytes, and every width between', () => {
+    const value = (0xc002000000000000n << 64n) | 0x3ff8000000000000n;
+    const kinds = vectorLaneGroups(128, value).map((g) => g.label);
+    assert.deepStrictEqual(kinds, ['2 x double', '4 x float', '2 x qword', '4 x dword', '8 x word', '16 x byte']);
+    assert.strictEqual(vectorLaneGroups(128, value).find((g) => g.kind === 'int8')!.lanes.length, 16);
+  });
+
+  it('scales the lane count with the register width', () => {
+    assert.strictEqual(vectorLaneGroups(256, 0n).find((g) => g.kind === 'float64')!.lanes.length, 4);
+    assert.strictEqual(vectorLaneGroups(512, 0n).find((g) => g.kind === 'int8')!.lanes.length, 64);
+  });
+
+  it('numbers lanes from the low-order end, the end every SIMD instruction numbers from', () => {
+    const qwords = vectorLaneGroups(128, (0xaaaan << 64n) | 0xbbbbn).find((g) => g.kind === 'int64')!;
+    assert.deepStrictEqual(qwords.lanes, ['0xbbbb', '0xaaaa']);
+  });
+
+  it('offers the narrower aliases of a wide register, the way al/ax sit under rax', () => {
+    const views = vectorSubRegisterViews('zmm3', (1n << 200n) | 0x42n);
+    assert.deepStrictEqual(views.map((v) => v.name), ['ymm3', 'xmm3']);
+    assert.strictEqual(views[1].bits, 128);
+    assert.strictEqual(views[1].value, 0x42n);
+  });
+
+  it('has no narrower alias to offer for an xmm register, which is already the narrowest', () => {
+    assert.deepStrictEqual(vectorSubRegisterViews('xmm3', 1n), []);
+  });
+
+  it('shows an untouched vector register as three characters, not sixty-four zeros', () => {
+    assert.strictEqual(formatVectorValueCompact(256, 0n), '0x0');
+  });
+
+  it('reads a register loaded with text as text — what movdqu over a string leaves behind', () => {
+    // "SIMD/x86-64!!!!!" loaded by a movdqu, exactly as a live run produces it.
+    const value = 0x212121212134362d3638782f444d4953n;
+    assert.strictEqual(formatVectorValueCompact(128, value), `0x${value.toString(16)}  'SIMD/x86-64!!!!!'`);
+  });
+});
+
+describe('float32FromBits / float64FromBits', () => {
+  it('decodes the IEEE-754 bit patterns without asking gdb for a second opinion', () => {
+    assert.strictEqual(float64FromBits(0x3ff8000000000000n), 1.5);
+    assert.strictEqual(float64FromBits(0xc002000000000000n), -2.25);
+    assert.strictEqual(float32FromBits(0x3fc00000n), 1.5);
+  });
+
+  it('decodes the values no numeric reading of the hex would reveal', () => {
+    assert.ok(Number.isNaN(float64FromBits(0x7ff8000000000000n)));
+    assert.strictEqual(float64FromBits(0x7ff0000000000000n), Infinity);
+    assert.ok(Object.is(float64FromBits(0x8000000000000000n), -0));
+  });
+});
+
+describe('decodeExtendedFloat', () => {
+  // Every bit pattern below was read back out of a real x87 register with gdb 16.3 after setting
+  // the register to the stated value — not derived from the format description.
+  it('takes apart the 80 bits gdb reports for a normal value', () => {
+    const d = decodeExtendedFloat(0x3fff8000000000000000n); // 1.0
+    assert.strictEqual(d.classification, 'normal');
+    assert.strictEqual(d.negative, false);
+    assert.strictEqual(d.exponent, 0);
+    assert.strictEqual(d.integerBit, true);
+    assert.strictEqual(d.significand, 0x8000000000000000n);
+  });
+
+  it('reads the sign and scale of a negative value', () => {
+    const d = decodeExtendedFloat(0xbfffc000000000000000n); // -1.5
+    assert.strictEqual(d.classification, 'normal');
+    assert.strictEqual(d.negative, true);
+    assert.strictEqual(d.exponent, 0);
+  });
+
+  it('reads a value scaled above 1', () => {
+    const d = decodeExtendedFloat(0x4000c8f5c28f5c28f800n); // 3.14
+    assert.strictEqual(d.exponent, 1);
+    assert.strictEqual(d.significand, 0xc8f5c28f5c28f800n);
+  });
+
+  it('classifies zero, infinity and both kinds of NaN', () => {
+    assert.strictEqual(decodeExtendedFloat(0n).classification, 'zero');
+    assert.strictEqual(decodeExtendedFloat(0x7fff8000000000000000n).classification, 'infinity');
+    assert.strictEqual(decodeExtendedFloat(0x7fffc000000000000000n).classification, 'quiet NaN');
+    assert.strictEqual(decodeExtendedFloat(0x7fffa000000000000000n).classification, 'signaling NaN');
+  });
+
+  it('classifies an unnormal as unsupported — a value no FPU since the 387 can produce', () => {
+    // Integer bit clear at a non-zero exponent. Seeing one means something wrote raw bytes over
+    // the x87 state, and no decimal reading of the register would ever say so.
+    assert.strictEqual(decodeExtendedFloat(0x40004000000000000000n).classification, 'unsupported');
+    assert.strictEqual(decodeExtendedFloat(0x7fff4000000000000000n).classification, 'unsupported');
+  });
+
+  it('classifies a denormal without calling it unsupported — it has a well-defined value', () => {
+    assert.strictEqual(decodeExtendedFloat(0x00000000000000000001n).classification, 'denormal');
+  });
+
+  it('summarises the structure on one line, without recomputing a decimal it cannot hold exactly', () => {
+    assert.strictEqual(formatExtendedFloat(0xbfffc000000000000000n), 'normal  sign -  exp 2^0  significand 0xc000000000000000');
+    assert.strictEqual(formatExtendedFloat(0n), 'zero  significand 0x0000000000000000');
+  });
+});
+
+describe('syscallName', () => {
+  it('names the x86-64 calls a fasm program actually makes', () => {
+    assert.strictEqual(syscallName('x86_64', 0n), 'read');
+    assert.strictEqual(syscallName('x86_64', 1n), 'write');
+    assert.strictEqual(syscallName('x86_64', 59n), 'execve');
+    assert.strictEqual(syscallName('x86_64', 60n), 'exit');
+  });
+
+  it('uses a genuinely different table for i386, where the same numbers mean other calls', () => {
+    // The failure this prevents is silent: picking the wrong table names the wrong syscall rather
+    // than failing to name one.
+    assert.strictEqual(syscallName('i386', 1n), 'exit');
+    assert.strictEqual(syscallName('i386', 4n), 'write');
+    assert.notStrictEqual(syscallName('i386', 60n), syscallName('x86_64', 60n));
+  });
+
+  it('names nothing for the -1 Linux reports when the program is not in a syscall', () => {
+    assert.strictEqual(syscallName('x86_64', 0xffffffffffffffffn), undefined);
+    assert.strictEqual(syscallName('x86_64', -1n), undefined);
+  });
+
+  it('names nothing for a number past the end of the table rather than inventing a call', () => {
+    assert.strictEqual(syscallName('x86_64', 9999n), undefined);
+  });
+
+  it('records that the fourth syscall argument is r10, not rcx', () => {
+    // The classic silent bug: rcx is overwritten by the syscall instruction itself, so code that
+    // passes argument four there assembles fine and passes garbage.
+    assert.strictEqual(SYSCALL_ARGUMENT_REGISTERS.x86_64[3], 'r10');
+    assert.strictEqual(SYSCALL_ARGUMENT_REGISTERS.i386[3], 'esi');
   });
 });
