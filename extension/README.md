@@ -80,6 +80,10 @@ dialect, the compiler, live error checking, the language server's log and a serv
 finds no assembler at all, `FASM: Select Compiler` leads with where to get one and a re-detect —
 detection is cached for the session, so installing one mid-session otherwise looks like nothing
 happened.
+The program gets a terminal it is the process of, with no shell in between — so it starts whatever
+your terminal profile is, its arguments reach it exactly as written, and when it ends the terminal
+says so (its exit code, or the signal that killed it) and waits for a key instead of closing and
+taking its output with it.
 `FASM: Clean Build Output` removes what a build wrote. `FASM: Open Build Output in Hex Editor` opens
 the binary itself — for a header you laid out by hand, or a boot sector that has to be exactly 512
 bytes ending in `55 AA` — finding it the same way Build does, and offering to build it first if it
@@ -121,7 +125,14 @@ Currently fasm2/fasmg sources only. You get:
 - **Function breakpoints** on any label name, resolved through the listing
 - **Watchpoints** — break when a data label is read or written, or when a register is written
 - **Instruction breakpoints** in the disassembly view, with instruction-level stepping
-- Registers grouped by kind with decoded flags, and data labels with string/array previews
+- **Registers that read at a glance** — each row is the value and nothing else, since the row
+  already has the register's name on it: `0x2a  42`, `0x0`, `-1` for a value whose sign bit is set,
+  `'PATH'` for a packed character literal, `→ msg+0x8` for a value that lands in one of your labels.
+  Expand a register for the full-width hex, the binary, the bytes in memory order, its `eax`/`ax`/
+  `al`/`ah` slices (each settable on its own) and what it points at. Under **Flags**, alongside the
+  decoded bits, **Conditions** says which conditional jumps would be taken right now — `je`, `jb`,
+  `jl` and the rest, so the signed/unsigned pairs never have to be re-derived at a breakpoint
+- Data labels with string/array previews
 - **Hovering a memory operand reads the memory** — `dword [rsp+8]`, `[buffer+rcx*4]`, `byte [msg]`.
   The registers, labels and fasm literals inside it are all translated into something gdb can
   evaluate, and the width comes from the operand's own size specifier or from the register it is

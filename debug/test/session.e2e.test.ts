@@ -48,6 +48,29 @@ async function findRegisterValue(client: DapClient, registersRef: number, regist
   return undefined;
 }
 
+/** The children of one register's own row — the full-width/binary/byte/sub-register readings the
+ * compact row value deliberately leaves out (see session.ts's registerDetailVariables). */
+async function findRegisterDetail(client: DapClient, registersRef: number, registerName: string): Promise<Array<{ name: string; value: string }>> {
+  const detail = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+    variablesReference: await findRegisterRef(client, registersRef, registerName),
+  });
+  return detail.variables;
+}
+
+/** One register row's own variablesReference — the container its detail children (and its
+ * settable sub-register views) live under. */
+async function findRegisterRef(client: DapClient, registersRef: number, registerName: string): Promise<number> {
+  const groups = await client.sendRequest<{ variables: Array<{ variablesReference: number }> }>('variables', { variablesReference: registersRef });
+  for (const group of groups.variables) {
+    const members = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', {
+      variablesReference: group.variablesReference,
+    });
+    const match = members.variables.find((v) => v.name === registerName);
+    if (match) return match.variablesReference;
+  }
+  throw new Error(`no "${registerName}" row in this Registers scope`);
+}
+
 /** setVariable targets a *group's* variablesReference (the container), not an individual
  * register's own — the register being set doesn't have to already be a listed row in that
  * specific group (setRegister validates the name against REGISTER_WIDTH_BITS directly, not
@@ -135,10 +158,10 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       assert.ok(registersScope);
 
       const rax = await findRegisterValue(client, registersScope.variablesReference, 'rax');
-      assert.ok(rax && /\b1\b/.test(rax), `expected rax to read back as 1 before "add eax,ebx" executes, got: ${rax}`);
+      assert.strictEqual(rax, '0x1', `expected rax to read back as 1 before "add eax,ebx" executes, got: ${rax}`);
 
       const evalResult = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax', context: 'watch' });
-      assert.match(evalResult.result, /\b1\b/);
+      assert.strictEqual(evalResult.result, '0x1');
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
@@ -202,32 +225,88 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       await client.sendRequest('configurationDone');
       await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
 
-      // Hovering over "eax" (context: hover) and evaluating from Watch/Debug Console (context:
-      // watch) both go through the same code path — exercised here as "hover" specifically, since
-      // that's the actual feature request (hover a register while debugging, see its value).
+      // Hovering over "eax" gets the detailed block — the one context with room for every reading
+      // of the value at once, including the sub-register slices of it that no other view shows.
       const eax = await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' });
-      assert.strictEqual(eax.result, 'eax = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+      assert.strictEqual(
+        eax.result,
+        [
+          'eax  (32-bit register)',
+          '0xffffffff  4294967295  signed: -1',
+          '0b1111_1111 1111_1111 1111_1111 1111_1111',
+          'bytes: ff ff ff ff  (little-endian)',
+          'ax = 0xffff   al = 0xff   ah = 0xff',
+        ].join('\n'),
+      );
 
       const dl = await client.sendRequest<{ result: string }>('evaluate', { expression: 'dl', context: 'hover' });
-      assert.strictEqual(dl.result, 'dl = 0xab  171  0b1010_1011');
+      assert.strictEqual(dl.result, ['dl  (8-bit register)', '0xab  171  signed: -85', '0b1010_1011', 'bytes: ab  (little-endian)'].join('\n'));
 
       const sil = await client.sendRequest<{ result: string }>('evaluate', { expression: 'sil', context: 'hover' });
-      assert.strictEqual(sil.result, 'sil = 0x7f  127  0b0111_1111');
+      assert.strictEqual(sil.result, ['sil  (8-bit register)', '0x7f  127', '0b0111_1111', 'bytes: 7f  (little-endian)'].join('\n'));
 
-      // A bare "$"-prefixed name (as Watch/REPL users are used to typing) resolves the same way.
+      // Watch (and the inline decorations VS Code asks for under the same context) already show the
+      // expression beside the result, so the value goes back on its own — unsigned, not gdb's raw
+      // signed default, and with the two's-complement reading kept alongside it.
       const dollarEax = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax', context: 'watch' });
-      assert.strictEqual(dollarEax.result, eax.result);
+      assert.strictEqual(dollarEax.result, '0xffffffff  4294967295  -1');
+
+      // The Debug Console has no name column of its own, so there the value says what it is.
+      const replEax = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax', context: 'clipboard' });
+      assert.strictEqual(replEax.result, 'eax = 0xffffffff  4294967295  -1');
 
       // A compound expression is untouched — still falls through to the generic gdb evaluator.
       const compound = await client.sendRequest<{ result: string }>('evaluate', { expression: '$eax + 1', context: 'watch' });
       assert.match(compound.result, /^-?\d+$/);
 
-      // The Registers scope panel gets the identical treatment, not just ad-hoc evaluate/hover —
-      // rax reads back zero-extended from the eax write (standard x86-64 semantics). It lives in
-      // the "General Purpose" group, one level below the scope's own top-level reference.
+      // The Registers panel row carries the value alone — its name column already says "rax" — and
+      // rax reads back zero-extended from the eax write (standard x86-64 semantics).
       const scopes = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
       const rax = await findRegisterValue(client, scopes.scopes[0].variablesReference, 'rax');
-      assert.strictEqual(rax, 'rax = 0x00000000ffffffff  4294967295  0b0000_0000_0000_0000_0000_0000_0000_0000_1111_1111_1111_1111_1111_1111_1111_1111');
+      assert.strictEqual(rax, '0xffffffff  4294967295');
+
+      // r15 is untouched by this program, and it is the case that motivated the whole format: a
+      // register holding nothing now says so in three characters instead of a hundred.
+      const r15 = await findRegisterValue(client, scopes.scopes[0].variablesReference, 'r15');
+      assert.strictEqual(r15, '0x0');
+
+      // Expanding a register row is where the full-width hex, the binary expansion, the byte
+      // breakdown and the sub-register slices went — none of them fetched until asked for.
+      const raxDetail = await findRegisterDetail(client, scopes.scopes[0].variablesReference, 'rax');
+      const byName = new Map(raxDetail.map((v) => [v.name, v.value]));
+      assert.strictEqual(byName.get('hex'), '0x00000000ffffffff');
+      assert.strictEqual(byName.get('unsigned'), '4294967295');
+      assert.strictEqual(byName.get('signed'), '4294967295');
+      assert.strictEqual(byName.get('binary'), '0b0000_0000 0000_0000 0000_0000 0000_0000 1111_1111 1111_1111 1111_1111 1111_1111');
+      assert.strictEqual(byName.get('bytes'), 'ff ff ff ff 00 00 00 00');
+      assert.strictEqual(byName.get('eax'), '0xffffffff  4294967295  -1');
+      assert.strictEqual(byName.get('al'), '0xff  255  -1');
+      assert.strictEqual(byName.get('ah'), '0xff  255  -1');
+
+      // The Flags group answers the question EFLAGS is actually read for: which jumps would go.
+      const flagsRef = await getRegisterGroupRef(client, scopes.scopes[0].variablesReference, 'Flags');
+      const flagRows = await client.sendRequest<{ variables: Array<{ name: string; value: string; variablesReference: number }> }>('variables', {
+        variablesReference: flagsRef,
+      });
+      const eflagsRow = flagRows.variables.find((v) => v.name === 'eflags');
+      assert.ok(eflagsRow, 'expected the eflags register itself to be a row in the Flags group');
+      const conditionsRow = flagRows.variables.find((v) => v.name === 'Conditions')!;
+      assert.ok(conditionsRow, 'expected a "Conditions" row in the Flags group');
+      const conditions = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: conditionsRow.variablesReference,
+      });
+      const je = conditions.variables.find((c) => c.name === 'je / jz')!;
+      const jne = conditions.variables.find((c) => c.name === 'jne / jnz')!;
+      assert.ok(je && jne, 'expected both halves of the equality condition to be listed');
+      assert.notStrictEqual(je.value, jne.value, 'je and jne can never both be taken');
+      assert.ok(['taken', 'not taken'].includes(je.value), je.value);
+      // Whichever ones are taken are exactly the ones summarized on the row itself.
+      const takenNames = conditions.variables.filter((c) => c.value === 'taken').map((c) => c.name.split(' / ')[0]);
+      assert.strictEqual(conditionsRow.value, takenNames.join(', '));
+
+      // Every individual flag bit still reads out by name, now saying set/clear rather than 1/0.
+      const zf = flagRows.variables.find((v) => v.name === 'ZF')!;
+      assert.match(zf.value, /^[01]  (set|clear)$/);
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
@@ -268,10 +347,12 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
         name: 'eax',
         value: '42',
       });
-      assert.strictEqual(viaSetVariable.value, 'eax = 0x0000002a  42  0b0000_0000_0000_0000_0000_0000_0010_1010');
+      // The echoed-back value is the *row's* form, identical to what the next variables request
+      // would paint — a labelled string here would read as the write having done something else.
+      assert.strictEqual(viaSetVariable.value, '0x2a  42');
 
       // The write is real, not just echoed back: re-reading confirms it via a fresh evaluate.
-      const reread = await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' });
+      const reread = await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'watch' });
       assert.strictEqual(reread.result, viaSetVariable.value);
 
       // setExpression (editing a Watch entry), asm-style "h" hex suffix and a "$"-prefixed name.
@@ -287,7 +368,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
         name: 'ebx',
         value: '-1',
       });
-      assert.strictEqual(negative.value, 'ebx = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+      assert.strictEqual(negative.value, '0xffffffff  4294967295  -1');
 
       // An unparseable value is rejected with an error response, not silently ignored.
       await assert.rejects(
@@ -295,28 +376,51 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
         /Could not parse/,
       );
 
-      // The real user-reported bug: VS Code's in-place editor pre-fills the *entire* current
-      // display string ("eax = 0x0000002a  42  0b0000...0010"), not a bare number. Editing only
-      // the decimal or binary column and submitting the whole string back used to silently do
-      // nothing (only the hex column ever took effect) — confirmed here against the real adapter
-      // and a real register write, not just the pure parseUserNumber unit tests.
-      const currentEax = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' })).result;
-      const editedDecimalOnly = currentEax.replace(/\d+(?=\s+0b)/, '100'); // change only the middle (decimal) column
+      // The real user-reported bug: VS Code's in-place editor pre-fills the *entire* current row
+      // value ("0x2a  42"), not a bare number. Editing only the decimal column and submitting the
+      // whole string back used to silently do nothing (only the hex column ever took effect) —
+      // confirmed here against the real adapter and a real register write. The compact row has no
+      // third column to break the tie with, so this specifically exercises the "diff against what
+      // the register currently holds" path.
+      const currentEax = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'watch' })).result;
+      const editedDecimalOnly = currentEax.replace(/(?<=\s)\d+$/, '100'); // change only the decimal column
+      assert.strictEqual(editedDecimalOnly, '0x2a  100');
       const viaDecimalEdit = await client.sendRequest<{ value: string }>('setVariable', {
         variablesReference: registersRef,
         name: 'eax',
         value: editedDecimalOnly,
       });
-      assert.strictEqual(viaDecimalEdit.value, 'eax = 0x00000064  100  0b0000_0000_0000_0000_0000_0000_0110_0100');
+      assert.strictEqual(viaDecimalEdit.value, '0x64  100');
 
-      const currentEaxAgain = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'hover' })).result;
-      const editedBinaryOnly = currentEaxAgain.replace(/0b[01_]+$/, '0b1111_1111_1111_1111_1111_1111_1111_1111'); // change only the last (binary) column
-      const viaBinaryEdit = await client.sendRequest<{ value: string }>('setVariable', {
+      // ...and editing only the hex column of the same two-column string still works too.
+      const editedHexOnly = viaDecimalEdit.value.replace(/^0x[0-9a-f]+/, '0xff');
+      const viaHexEdit = await client.sendRequest<{ value: string }>('setVariable', {
         variablesReference: registersRef,
         name: 'eax',
-        value: editedBinaryOnly,
+        value: editedHexOnly,
       });
-      assert.strictEqual(viaBinaryEdit.value, 'eax = 0xffffffff  4294967295  0b1111_1111_1111_1111_1111_1111_1111_1111');
+      assert.strictEqual(viaHexEdit.value, '0xff  255');
+
+      // Re-submitting a row unedited is a no-op rather than a parse failure or a stale write.
+      const unchanged = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: registersRef,
+        name: 'eax',
+        value: viaHexEdit.value,
+      });
+      assert.strictEqual(unchanged.value, '0xff  255');
+
+      // A sub-register row under an expanded register is a real register gdb can write: setting
+      // "al" from rax's own children changes only the low byte.
+      const scopesAgain = await client.sendRequest<{ scopes: Array<{ variablesReference: number }> }>('scopes', { frameId: 1 });
+      const raxRef = await findRegisterRef(client, scopesAgain.scopes[0].variablesReference, 'rax');
+      const viaSubRegister = await client.sendRequest<{ value: string }>('setVariable', {
+        variablesReference: raxRef,
+        name: 'al',
+        value: '0x7f',
+      });
+      assert.strictEqual(viaSubRegister.value, '0x7f  127');
+      const eaxAfterAl = (await client.sendRequest<{ result: string }>('evaluate', { expression: 'eax', context: 'watch' })).result;
+      assert.strictEqual(eaxAfterAl, '0x7f  127', 'expected writing al to have changed only the low byte of eax');
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
@@ -392,7 +496,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       const eax = await findRegisterValue(client, registersRef, 'eax');
       assert.ok(eax, 'expected "eax" to be a real register on a 32-bit target');
       assert.ok(!eax!.includes('unavailable'), `expected eax to have a real value, got: ${eax}`);
-      assert.match(eax!, /^eax = 0x[0-9a-f]{8}  \d+  0b[01_]+$/);
+      assert.match(eax!, /^0x[0-9a-f]+(  \d+)?(  -\d+)?/);
 
       // rax must NOT appear at all for a 32-bit target — it doesn't exist on this architecture.
       const rax = await findRegisterValue(client, registersRef, 'rax');
@@ -400,7 +504,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
 
       // Segment registers are real, gdb-reported values too, not just a curated GP set.
       const cs = await findRegisterValue(client, registersRef, 'cs');
-      assert.ok(cs && /^cs = 0x[0-9a-f]{4}/.test(cs), `expected a real "cs" segment register value, got: ${cs}`);
+      assert.ok(cs && /^0x[0-9a-f]+/.test(cs), `expected a real "cs" segment register value, got: ${cs}`);
 
       // Flags decode into individual named bits, not just a raw eflags number.
       const flagsGroupRef = await getRegisterGroupRef(client, registersRef, 'Flags');
@@ -409,14 +513,14 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
       });
       const ifFlag = flagsMembers.variables.find((v) => v.name === 'IF');
       assert.ok(ifFlag, 'expected an "IF" flag entry in the Flags group');
-      assert.strictEqual(ifFlag!.value, '1', 'expected the Interrupt Enable flag to read as 1 in a normal running process');
+      assert.strictEqual(ifFlag!.value, '1  set', 'expected the Interrupt Enable flag to read as set in a normal running process');
       assert.ok(ifFlag!.type && ifFlag!.type.length > 10, 'expected a real explanatory description on the flag, not a bare name');
 
       // The actual feature request: hovering/watching "argc" (a label with no gdb symbol at all)
       // shows both its address and, since "dd" makes its size unambiguous, its current value —
       // clearly labeled as distinct things, not just a bare number that could be either.
       const argcHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'argc', context: 'hover' });
-      assert.match(argcHover.result, /^argc {2}\(label, address 0x[0-9a-f]+\)\nvalue = 0x00000001 {2}1 {2}0b[01_]+$/);
+      assert.match(argcHover.result, /^argc {2}\(label, address 0x[0-9a-f]+\)\nvalue = 0x00000001 {2}1\n0b[01_ ]+$/);
 
       // A plain code label (no declared size) shows only the address — never a guessed-at value.
       const startHover = await client.sendRequest<{ result: string }>('evaluate', { expression: 'start', context: 'hover' });
@@ -524,7 +628,7 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
         tableElements.variables.map((v) => v.name),
         ['[0]', '[1]', '[2]', '[3]'],
       );
-      assert.strictEqual(tableElements.variables[2].value, 'value = 0x0000001e  30  0b0000_0000_0000_0000_0000_0000_0001_1110');
+      assert.strictEqual(tableElements.variables[2].value, '0x1e  30');
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');

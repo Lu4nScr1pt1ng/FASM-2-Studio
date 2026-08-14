@@ -31,16 +31,35 @@ import { miData } from './miParser';
 import { OperandResolver, translateMemoryOperand } from './operandExpression';
 import {
   decodeEflags,
+  evaluateJumpConditions,
+  formatBinaryGrouped,
+  formatBytesLittleEndian,
+  formatEflagsSummary,
+  formatHexPadded,
+  formatRegisterDetailed,
   formatRegisterValue,
+  formatRegisterValueCompact,
+  packedAsciiText,
   parseUserNumber,
   REGISTER_WIDTH_BITS,
   RegisterBits,
   RegisterGroups,
   resolveRegisterGroups,
+  subRegisterViews,
   unsignedCastType,
 } from './registers';
 import { defaultEnabledSignals, signalHandlingCommands, SIGNAL_FILTERS } from './signalFilters';
-import { buildConstantMap, buildSymbolAddressMap, ConstantSymbol, DebugSymbol, formatConstantCompact, formatConstantDetailed } from './symbols';
+import {
+  buildConstantMap,
+  buildSymbolAddressMap,
+  buildSymbolSpans,
+  ConstantSymbol,
+  DebugSymbol,
+  describeAddress,
+  formatConstantCompact,
+  formatConstantDetailed,
+  SymbolSpan,
+} from './symbols';
 import directivesData from '@fasm2-studio/server/src/data/directives.json';
 import formatKeywordsData from '@fasm2-studio/server/src/data/formatKeywords.json';
 import instructionsData from '@fasm2-studio/server/src/data/instructions.json';
@@ -131,6 +150,29 @@ const KNOWN_LANGUAGE_TOKENS: ReadonlySet<string> = new Set([
 
 const EMPTY_REGISTER_GROUPS: RegisterGroups = { generalPurpose: [], pointers: [], segment: [], eflagsName: undefined };
 
+/**
+ * How much room the caller has for a register's value, and therefore which of registers.ts's three
+ * renderings it gets:
+ *  - `compact` for anywhere the register's name is already on screen beside the value — a tree row
+ *    whose name column holds it, a Watch entry labelled with the expression that produced it, or an
+ *    inline decoration (VS Code composes those as "<expression> = <result>" itself, so a name in the
+ *    result would be the second one on the line).
+ *  - `labelled` where the value travels alone and has to say what it is: the Debug Console, the
+ *    clipboard.
+ *  - `detailed` for a hover, the one place with room for every reading at once.
+ */
+type RegisterDisplayForm = 'compact' | 'labelled' | 'detailed';
+/** DAP evaluate contexts that already show the expression next to whatever comes back — see
+ * RegisterDisplayForm. VS Code also sends "watch" for the inline-value decorations the extension's
+ * own InlineValuesProvider asks for (confirmed against the VS Code build this repo tests against),
+ * which is the same situation: the expression is already on the line. */
+const NAME_ALREADY_SHOWN_CONTEXTS: ReadonlySet<string> = new Set(['watch', 'variables']);
+
+/** How many bytes to read behind a register that holds an address, to show what it points at.
+ * One qword plus enough trailing bytes for a short string preview — a single gdb round-trip, paid
+ * only when a register row is actually expanded. */
+const POINTEE_PREVIEW_BYTES = 32;
+
 /** Byte widths a single gdb-cast memory read can resolve to a plain scalar (matches
  * REGISTER_WIDTH_BITS' own domain) — a source label declared with a wider size (e.g. `dqword`,
  * `dt`) still resolves to an address, just not a single-number value (see formatSymbolValueDetailed). */
@@ -209,6 +251,9 @@ export class FasmDebugSession extends DebugSession {
   /** Source label name -> runtime address (+ size, when knowable), built from the listing file —
    * see symbols.ts for why this exists at all (fasmg emits no symbol table for gdb to consult). */
   private symbolMap: Map<string, DebugSymbol> = new Map();
+  /** The same labels as symbolMap, as ascending address ranges — the reverse lookup ("this register
+   * holds 0x402008; what is that?"), which a name-keyed map can't answer. See buildSymbolSpans. */
+  private symbolSpans: SymbolSpan[] = [];
   /** Symbolic constant name (e.g. "FD_STDERR" from "FD_STDERR = 2") -> its defined value — these
    * have no runtime address at all, so gdb can't answer "what's the value of FD_STDERR" either
    * (fails with "No symbol table is loaded"); resolved statically instead, same as symbolMap. */
@@ -312,6 +357,7 @@ export class FasmDebugSession extends DebugSession {
     this.addressMap = addressMap;
     this.sortedAddresses = [...this.addressMap.addressToLocation.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     this.symbolMap = buildSymbolAddressMap(listingEntries);
+    this.symbolSpans = buildSymbolSpans(this.symbolMap);
     this.constantMap = buildConstantMap(listingEntries);
 
     this.gdb = new GdbDriver();
@@ -1209,9 +1255,11 @@ export class FasmDebugSession extends DebugSession {
       if (this.registerGroups.generalPurpose.length > 0) variables.push(this.registerGroupVariable('General Purpose', 'registers:gp'));
       if (this.registerGroups.pointers.length > 0) variables.push(this.registerGroupVariable('Pointers', 'registers:pointers'));
       if (this.registerGroups.eflagsName) {
-        const summary = await this.formatRegister(this.registerGroups.eflagsName, REGISTER_WIDTH_BITS[this.registerGroups.eflagsName]);
+        const value = await this.readRegisterBigInt(this.registerGroups.eflagsName, REGISTER_WIDTH_BITS[this.registerGroups.eflagsName]);
         const v = this.registerGroupVariable('Flags', 'registers:flags');
-        v.value = summary ?? '<unavailable>';
+        // The set flags, not the number: "[ ZF PF IF ]" is the whole reason to glance at this row,
+        // and a group header is the one place with no name column to compete with.
+        v.value = value === undefined ? '<unavailable>' : formatEflagsSummary(value);
         variables.push(v);
       }
       if (this.registerGroups.segment.length > 0) variables.push(this.registerGroupVariable('Segment', 'registers:segment'));
@@ -1225,25 +1273,19 @@ export class FasmDebugSession extends DebugSession {
         kind === 'registers:gp' ? this.registerGroups.generalPurpose : kind === 'registers:pointers' ? this.registerGroups.pointers : this.registerGroups.segment;
       const variables: DebugProtocol.Variable[] = [];
       for (const name of names) {
-        const bits = REGISTER_WIDTH_BITS[name];
-        // Read once and format from the result, rather than calling formatRegister: the value
-        // itself is needed below as well, and asking gdb for it twice would double this scope's
-        // round-trips for nothing. (formatRegister's extra work — appending gdb's decoded flag
-        // string — applies only to eflags, which is its own group and never reaches this loop.)
-        const value = await this.readRegisterBigInt(name, bits);
-        const formatted = value !== undefined && bits !== undefined ? formatRegisterValue(name, bits, value) : undefined;
-        const v: DebugProtocol.Variable = new Variable(name, formatted ?? '<unavailable>');
-        v.evaluateName = name;
-        // What a register holds is, very often, an address — and this is the field that decides
-        // whether VS Code offers "View Binary Data" on the row at all, so without it the hex
-        // editor was reachable from a data label but not from the rsi/rdi/rsp actually pointing at
-        // the buffer you want to look at. Segment registers are excluded: a selector (0x33) is a
-        // descriptor-table index, not an address, and offering to open a memory view at it would
-        // only ever lead somewhere unmapped.
-        if (value !== undefined && kind !== 'registers:segment') v.memoryReference = `0x${value.toString(16)}`;
-        variables.push(v);
+        // A selector (0x33) is a descriptor-table index, not an address and not data: annotating it
+        // with the label that happens to sit at 0x33, or offering to open a memory view there, would
+        // only ever point somewhere meaningless.
+        const isSegment = kind === 'registers:segment';
+        variables.push(await this.registerVariable(name, { address: !isSegment, ascii: !isSegment }));
       }
       response.body = { variables };
+      this.sendResponse(response);
+      return;
+    }
+
+    if (kind.startsWith('registers:reg:')) {
+      response.body = { variables: await this.registerDetailVariables(kind.slice('registers:reg:'.length)) };
       this.sendResponse(response);
       return;
     }
@@ -1253,10 +1295,49 @@ export class FasmDebugSession extends DebugSession {
       const bits = eflagsName ? REGISTER_WIDTH_BITS[eflagsName] : undefined;
       const raw = eflagsName ? await this.readRegisterBigInt(eflagsName, bits) : undefined;
       const variables: DebugProtocol.Variable[] = [];
-      if (raw !== undefined) {
+      if (eflagsName !== undefined && bits !== undefined && raw !== undefined) {
+        // The register itself, first: it is the only row here that can actually be *written*
+        // (gdb can set eflags as a whole; it has no way to set one bit in isolation), and without
+        // it there was no way to reach the raw value at all from the panel.
+        const whole: DebugProtocol.Variable = new Variable(eflagsName, formatRegisterValueCompact(bits, raw), this.variableHandles.create(`registers:reg:${eflagsName}`));
+        whole.evaluateName = eflagsName;
+        whole.type = `${bits}-bit register`;
+        variables.push(whole);
+
+        // Which jumps would be taken is the question the flags are read *for* — see
+        // evaluateJumpConditions. Its own row lists the taken ones; expanding shows every condition
+        // with the flag test that decided it.
+        const conditions = evaluateJumpConditions(raw);
+        const taken: DebugProtocol.Variable = new Variable(
+          'Conditions',
+          conditions.filter((c) => c.taken).map((c) => c.mnemonics.split(' / ')[0]).join(', '),
+          this.variableHandles.create('registers:flags:conditions'),
+        );
+        taken.presentationHint = { kind: 'data', attributes: ['readOnly'] };
+        variables.push(taken);
+
         for (const flag of decodeEflags(raw)) {
-          const v: DebugProtocol.Variable = new Variable(flag.name, String(flag.value));
+          // "1  set" rather than a bare "1": scanning a column of sixteen zeroes and ones for the
+          // one that changed is exactly the work the word does for free.
+          const v: DebugProtocol.Variable = new Variable(flag.name, flag.name === 'IOPL' ? `${flag.value}  (ring ${flag.value})` : `${flag.value}  ${flag.value ? 'set' : 'clear'}`);
           v.type = flag.description;
+          v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
+          variables.push(v);
+        }
+      }
+      response.body = { variables };
+      this.sendResponse(response);
+      return;
+    }
+
+    if (kind === 'registers:flags:conditions') {
+      const eflagsName = this.registerGroups.eflagsName;
+      const raw = eflagsName ? await this.readRegisterBigInt(eflagsName, REGISTER_WIDTH_BITS[eflagsName]) : undefined;
+      const variables: DebugProtocol.Variable[] = [];
+      if (raw !== undefined) {
+        for (const condition of evaluateJumpConditions(raw)) {
+          const v: DebugProtocol.Variable = new Variable(condition.mnemonics, condition.taken ? 'taken' : 'not taken');
+          v.type = condition.meaning;
           v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
           variables.push(v);
         }
@@ -1305,7 +1386,8 @@ export class FasmDebugSession extends DebugSession {
         const bits = READABLE_VALUE_BITS[sym.elementSizeBytes];
         if (bytes && bits !== undefined) {
           decodeLittleEndianElements(bytes, sym.elementSizeBytes, shown).forEach((value, i) => {
-            variables.push(new Variable(`[${i}]`, formatRegisterValue('value', bits, value)));
+            // "[3]" is already the row's name — the value column only has to carry the value.
+            variables.push(new Variable(`[${i}]`, formatRegisterValueCompact(bits, value)));
           });
         }
       }
@@ -1320,6 +1402,115 @@ export class FasmDebugSession extends DebugSession {
 
   private registerGroupVariable(label: string, handleKey: string): Variable {
     return new Variable(label, '', this.variableHandles.create(handleKey));
+  }
+
+  /**
+   * One register's row in the Registers panel: a short value (see formatRegisterValueCompact) plus
+   * an expandable child list carrying every fuller reading of the same bits.
+   *
+   * The split is the point. A register row is read at a glance, dozens of times per debugging
+   * session, and what is being looked for is almost always "did this change, and is it the thing I
+   * expect" — a question hex answers and a 79-character binary expansion actively obstructs. The
+   * expansion, the byte breakdown, the sub-register views and whatever the value points at are all
+   * still one click away, and none of them costs a gdb round-trip until that click happens.
+   */
+  private async registerVariable(name: string, options: { address: boolean; ascii: boolean }): Promise<DebugProtocol.Variable> {
+    const bits = REGISTER_WIDTH_BITS[name];
+    const value = await this.readRegisterBigInt(name, bits);
+    if (value === undefined || bits === undefined) {
+      const unavailable: DebugProtocol.Variable = new Variable(name, '<unavailable>');
+      unavailable.evaluateName = name;
+      return unavailable;
+    }
+
+    const pointsTo = options.address ? describeAddress(this.symbolSpans, value) : undefined;
+    const v: DebugProtocol.Variable = new Variable(
+      name,
+      formatRegisterValueCompact(bits, value, { ascii: options.ascii, pointsTo }),
+      this.variableHandles.create(`registers:reg:${name}`),
+    );
+    v.evaluateName = name;
+    v.type = `${bits}-bit register`;
+    // What a register holds is, very often, an address — and this is the field that decides
+    // whether VS Code offers "View Binary Data" on the row at all, so without it the hex
+    // editor was reachable from a data label but not from the rsi/rdi/rsp actually pointing at
+    // the buffer you want to look at.
+    if (options.address) v.memoryReference = `0x${value.toString(16)}`;
+    return v;
+  }
+
+  /** The children of one register row — every reading of the same value that the row itself is too
+   * narrow to carry, plus the one thing that does need gdb: what the value points at, when it
+   * points anywhere readable. */
+  private async registerDetailVariables(name: string): Promise<DebugProtocol.Variable[]> {
+    const bits = REGISTER_WIDTH_BITS[name];
+    const value = await this.readRegisterBigInt(name, bits);
+    if (value === undefined || bits === undefined) return [];
+
+    const readOnly = (label: string, text: string, description?: string): DebugProtocol.Variable => {
+      const v: DebugProtocol.Variable = new Variable(label, text);
+      if (description) v.type = description;
+      v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
+      return v;
+    };
+
+    const signed = value - (((value >> BigInt(bits - 1)) & 1n) === 1n ? 1n << BigInt(bits) : 0n);
+    const variables: DebugProtocol.Variable[] = [
+      readOnly('hex', formatHexPadded(bits, value), 'Zero-padded to the register\'s full width, so two registers line up digit for digit.'),
+      readOnly('unsigned', value.toString()),
+      readOnly('signed', signed.toString(), "Two's-complement reading of the same bits."),
+      readOnly('binary', formatBinaryGrouped(bits, value), 'Grouped into bytes and nibbles, so a bit position can be counted off directly.'),
+      readOnly('bytes', formatBytesLittleEndian(bits, value), 'The individual bytes in memory order — x86 is little-endian, so the low byte comes first.'),
+    ];
+
+    const text = packedAsciiText(bits, value);
+    if (text !== undefined) variables.push(readOnly('as text', `'${text}'`, 'Every byte of this value is printable text — a packed character literal.'));
+
+    // Derived from the value already read: no extra round-trip, and it answers "what is in al"
+    // without anyone having to do the masking in their head.
+    for (const sub of subRegisterViews(name, value)) {
+      const v: DebugProtocol.Variable = new Variable(sub.name, formatRegisterValueCompact(sub.bits, sub.value));
+      v.evaluateName = sub.name;
+      v.type = `${sub.bits}-bit view of ${name}`;
+      variables.push(v);
+    }
+
+    const pointee = await this.pointeeVariable(name, bits, value);
+    if (pointee) variables.push(pointee);
+    return variables;
+  }
+
+  /** What the register points at, for a register that turns out to hold a readable address —
+   * dereferencing by hand ("*(qword*)$rsi" in Watch) is otherwise the only way to see it, and at
+   * this level a register holding an address is the normal case, not the exception. Returns
+   * undefined when the address isn't mapped, which is the answer for most values most of the time
+   * and not worth a row saying so. */
+  private async pointeeVariable(name: string, bits: RegisterBits, value: bigint): Promise<DebugProtocol.Variable | undefined> {
+    if (value === 0n || bits < 32) return undefined;
+    const bytes = await this.readMemoryBytes(`0x${value.toString(16)}`, POINTEE_PREVIEW_BYTES);
+    if (!bytes) return undefined;
+
+    // Read at the pointer's own width — a 32-bit target's pointers address dwords, and showing a
+    // qword there would splice two unrelated values together.
+    const [pointed] = decodeLittleEndianElements(bytes, bits / 8, 1);
+    let text = formatRegisterValueCompact(bits, pointed);
+    // A register pointing at a string is common enough in assembly (every write syscall takes one)
+    // that showing the text alongside the raw qword is worth the zero extra cost — the bytes are
+    // already read.
+    const printable = bytes.slice(0, bytes.findIndex((b) => b === 0) === -1 ? bytes.length : bytes.indexOf(0));
+    if (printable.length >= 2 && printable.every((b) => b >= 0x20 && b < 0x7f)) {
+      const { text: preview } = formatStringPreview(printable);
+      text += `  "${preview}${printable.length === bytes.length ? '...' : ''}"`;
+    }
+    return {
+      name: `[${name}]`,
+      value: text,
+      variablesReference: 0,
+      evaluateName: `*(${unsignedCastType(bits)}*)$${name}`,
+      type: `The ${bits === 64 ? 'qword' : 'dword'} at the address ${name} holds.`,
+      memoryReference: `0x${value.toString(16)}`,
+      presentationHint: { kind: 'data', attributes: ['readOnly'] },
+    };
   }
 
   /** Reads register `name` (already known to be `bits` wide) as a plain unsigned bigint — casts to
@@ -1342,25 +1533,25 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
-  /** Formats register `name` as hex/decimal/binary (see readRegisterBigInt for how the value
-   * itself is obtained). For `eflags`, gdb's own decoded flag-name string (e.g. "[ IF ]") is
-   * appended too — the Flags group's own children (see variablesRequest) break it down bit by bit,
-   * but this one-line summary is what shows next to the group header itself. */
-  private async formatRegister(name: string, bits: RegisterBits | undefined): Promise<string | undefined> {
+  /**
+   * Formats register `name` for one of the three shapes a caller can have room for.
+   *
+   * `eflags` additionally gets its decoded flag names ("[ IF ZF ]"), which is what anyone reading
+   * that register actually wants; they are derived from the value already in hand rather than asked
+   * of gdb as a second round-trip, so the names can never disagree with the number beside them.
+   */
+  private async formatRegister(name: string, bits: RegisterBits | undefined, form: RegisterDisplayForm = 'labelled'): Promise<string | undefined> {
     const value = await this.readRegisterBigInt(name, bits);
-    if (value === undefined || bits === undefined || !this.gdb) return undefined;
+    if (value === undefined || bits === undefined) return undefined;
 
-    let text = formatRegisterValue(name, bits, value);
-    if (name === this.registerGroups.eflagsName) {
-      try {
-        const flagsResult = await this.gdb.sendCommand(`-data-evaluate-expression $${name}`);
-        const flagsValue = miData(flagsResult)?.value;
-        if (typeof flagsValue === 'string') text += `  ${flagsValue}`;
-      } catch {
-        // cosmetic addition only — the numeric formatting above already stands on its own
-      }
+    const isEflags = name === this.registerGroups.eflagsName;
+    const options = { ascii: !isEflags, pointsTo: isEflags ? undefined : describeAddress(this.symbolSpans, value) };
+    if (form === 'detailed') {
+      const text = formatRegisterDetailed(name, bits, value, options);
+      return isEflags ? `${text}\n${formatEflagsSummary(value)}` : text;
     }
-    return text;
+    const text = form === 'compact' ? formatRegisterValueCompact(bits, value, options) : formatRegisterValue(name, bits, value, options);
+    return isEflags ? `${text}  ${formatEflagsSummary(value)}` : text;
   }
 
   /** Reads `count` raw bytes starting at `addressHex` via gdb's own "-data-read-memory-bytes" —
@@ -1444,7 +1635,8 @@ export class FasmDebugSession extends DebugSession {
     }
     const value = await this.readScalarAt(addressHex, bits);
     if (value === undefined) return `${header}\ncould not read a value at this address`;
-    return `${header}\n${formatRegisterValue('value', bits, value)}`;
+    // A hover has room for the full-width and binary readings the compact one-liners drop.
+    return `${header}\nvalue = ${formatHexPadded(bits, value)}  ${value.toString()}\n${formatBinaryGrouped(bits, value)}`;
   }
 
   /**
@@ -1950,7 +2142,8 @@ export class FasmDebugSession extends DebugSession {
     const registerName = trimmed.replace(/^\$/, '').toLowerCase();
     const bits = REGISTER_WIDTH_BITS[registerName];
     if (bits !== undefined) {
-      const formatted = await this.formatRegister(registerName, bits);
+      const form: RegisterDisplayForm = args.context === 'hover' ? 'detailed' : NAME_ALREADY_SHOWN_CONTEXTS.has(args.context ?? '') ? 'compact' : 'labelled';
+      const formatted = await this.formatRegister(registerName, bits, form);
       if (formatted !== undefined) {
         response.body = { result: formatted, variablesReference: 0 };
         this.sendResponse(response);
@@ -2126,17 +2319,27 @@ export class FasmDebugSession extends DebugSession {
     }
   }
 
-  /** Edits a register's value from the Registers panel (VS Code's in-place variable editor). Only
-   * the three groups holding actual whole registers are editable — "registers" (the group headers
-   * themselves) and "registers:flags" (individual decoded bits, marked readOnly in variablesRequest
-   * for the same reason: gdb has no way to set a single EFLAGS bit in isolation) are rejected. */
+  /** Every container that can hold an editable register row: the three whole-register groups, the
+   * Flags group (whose first child is the eflags register itself — the individual decoded bits in it
+   * are marked readOnly instead, since gdb has no way to set one EFLAGS bit in isolation), and a
+   * register's own detail children, whose sub-register views (al, ax, r8d, ...) are real registers
+   * gdb can write. Whether a given *row* in one of these is settable is then decided by setRegister,
+   * which only recognizes actual register names — so "hex" or "binary" is rejected by name. */
+  private static isSettableContainer(kind: string | undefined): boolean {
+    return kind === 'registers:gp' || kind === 'registers:pointers' || kind === 'registers:segment' || kind === 'registers:flags' || (kind?.startsWith('registers:reg:') ?? false);
+  }
+
+  /** Edits a register's value from the Registers panel (VS Code's in-place variable editor). */
   protected async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
     const kind = this.variableHandles.get(args.variablesReference);
-    if (kind !== 'registers:gp' && kind !== 'registers:pointers' && kind !== 'registers:segment') {
+    if (!FasmDebugSession.isSettableContainer(kind)) {
       this.sendErrorResponse(response, 8, 'Only registers can be set');
       return;
     }
-    const formatted = await this.setRegister(args.name.toLowerCase(), args.value, response);
+    // 'compact' so the row VS Code paints from this response is identical to the one the next
+    // variables request would produce — a mismatch here reads as the write having done something
+    // other than what it did.
+    const formatted = await this.setRegister(args.name.toLowerCase(), args.value, response, 'compact');
     if (formatted === undefined) return; // an error response was already sent
     response.body = { value: formatted };
     this.sendResponse(response);
@@ -2146,7 +2349,8 @@ export class FasmDebugSession extends DebugSession {
    * editing its value in place — DAP's setVariable only covers the Variables/Registers tree). */
   protected async setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments): Promise<void> {
     const registerName = args.expression.trim().replace(/^\$/, '').toLowerCase();
-    const formatted = await this.setRegister(registerName, args.value, response);
+    // A Watch row already shows the expression that produced the value in its own name column.
+    const formatted = await this.setRegister(registerName, args.value, response, 'compact');
     if (formatted === undefined) return; // an error response was already sent
     response.body = { value: formatted, variablesReference: 0 };
     this.sendResponse(response);
@@ -2160,7 +2364,7 @@ export class FasmDebugSession extends DebugSession {
    * still has to attach it to `response.body` and call `sendResponse` itself. On failure, sends an
    * error response itself and returns undefined, so the caller knows to stop.
    */
-  private async setRegister(name: string, rawValue: string, response: DebugProtocol.Response): Promise<string | undefined> {
+  private async setRegister(name: string, rawValue: string, response: DebugProtocol.Response, form: RegisterDisplayForm = 'labelled'): Promise<string | undefined> {
     if (!this.gdb) {
       this.sendErrorResponse(response, 2, 'Debug session is not running');
       return undefined;
@@ -2170,7 +2374,11 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 5, `"${name}" is not a register this debugger knows how to set`);
       return undefined;
     }
-    const parsed = parseUserNumber(rawValue, bits);
+    // What the register holds right now is what tells parseUserNumber which column of the pre-filled
+    // display string the user actually edited — every column that still matches this one was left
+    // alone. One extra round-trip, on a keystroke-rate path, in exchange for never guessing.
+    const current = await this.readRegisterBigInt(name, bits);
+    const parsed = parseUserNumber(rawValue, bits, current);
     if (parsed === undefined) {
       this.sendErrorResponse(response, 6, `Could not parse "${rawValue}" as a number (try decimal, 0x.., 0b.., or an asm-style ..h hex literal)`);
       return undefined;
@@ -2183,7 +2391,7 @@ export class FasmDebugSession extends DebugSession {
       return undefined;
     }
 
-    const formatted = await this.formatRegister(name, bits);
+    const formatted = await this.formatRegister(name, bits, form);
     return formatted ?? parsed.toString();
   }
 

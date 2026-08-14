@@ -133,7 +133,7 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     // returning undefined. Attach has no meaning without a debugger, so it is left alone.
     if (config.noDebug && config.request !== 'attach') {
       const exitCode = await runBuildTask(asmFile);
-      if (exitCode === 0) await runOutputBinary(getDefaultOutputPath(asmFile), path.dirname(asmFile));
+      if (exitCode === 0) await runOutputBinary(getDefaultOutputPath(asmFile), path.dirname(asmFile), asmFile);
       return undefined;
     }
 

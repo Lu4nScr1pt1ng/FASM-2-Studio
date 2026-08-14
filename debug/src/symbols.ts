@@ -181,6 +181,62 @@ export function buildSymbolAddressMap(entries: readonly ListingEntry[]): Map<str
   return symbols;
 }
 
+/** How far past its own start a label with no declared size is still credited with covering, when
+ * nothing follows it in the listing to bound it. Generous enough to still name the body of the last
+ * routine in a file, small enough that a stack or heap address — nowhere near the program image —
+ * never gets attributed to it. */
+const MAX_UNBOUNDED_SYMBOL_SPAN = 0x1000n;
+
+export interface SymbolSpan {
+  /** Inclusive start, exclusive end. */
+  start: bigint;
+  end: bigint;
+  name: string;
+}
+
+/**
+ * The same labels buildSymbolAddressMap resolved, as ascending address ranges — the reverse lookup
+ * a name-keyed map cannot do: "a register holds 0x402008, what is that?".
+ *
+ * A label with a declared size covers exactly that size, and no more: the bytes after a `dd 1,2,3`
+ * are whatever the assembler laid down next (very often alignment padding), and claiming them for
+ * the array would report a real out-of-bounds address as if it were in bounds. A label with no
+ * declared size — a code label — is instead credited with everything up to the next label, which is
+ * what makes an instruction pointer resolve to "start+0x12" rather than to nothing at all.
+ */
+export function buildSymbolSpans(symbols: ReadonlyMap<string, DebugSymbol>): SymbolSpan[] {
+  const sorted = [...symbols.values()].sort((a, b) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+  return sorted.map((sym, i) => {
+    // stringLengthBytes when there is one: a "db 'Hello',0" declares two comma-separated *values*
+    // but occupies six bytes, and elementCount alone would stop the label three bytes into its own
+    // text.
+    const declared =
+      sym.stringLengthBytes !== undefined
+        ? BigInt(sym.stringLengthBytes)
+        : sym.elementSizeBytes === undefined
+          ? 0n
+          : BigInt(sym.elementSizeBytes) * BigInt(sym.elementCount ?? 1);
+    const next = sorted[i + 1]?.address;
+    const toNext = next !== undefined && next > sym.address ? next - sym.address : MAX_UNBOUNDED_SYMBOL_SPAN;
+    const span = declared > 0n ? declared : toNext > MAX_UNBOUNDED_SYMBOL_SPAN ? MAX_UNBOUNDED_SYMBOL_SPAN : toNext;
+    return { start: sym.address, end: sym.address + (span > 0n ? span : 1n), name: sym.name };
+  });
+}
+
+/** Names `address` in terms of the label it falls inside — "msg", "msg+0x4", or undefined when it
+ * lands outside every known label (a stack address, a libc pointer, an uninitialized register). */
+export function describeAddress(spans: readonly SymbolSpan[], address: bigint): string | undefined {
+  if (address === 0n) return undefined; // a null pointer is not "whatever label happens to sit at 0"
+  for (const span of spans) {
+    if (address < span.start) break; // ascending, so nothing further can contain it either
+    if (address < span.end) {
+      const offset = address - span.start;
+      return offset === 0n ? span.name : `${span.name}+0x${offset.toString(16)}`;
+    }
+  }
+  return undefined;
+}
+
 export interface ConstantSymbol {
   name: string;
   /** Parsed value, when the definition's right-hand side is a single, directly-parseable numeric

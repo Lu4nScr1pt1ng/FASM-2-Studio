@@ -1,5 +1,143 @@
 # Changelog
 
+## 1.21.0
+
+### Registers you can read at a glance
+
+A register row used to be its own name, then the value zero-padded to the register's full width,
+then the value again in decimal, then the value a third time as binary. On a 64-bit target that is
+about a hundred characters, and for `r15` — a register the program never touched — every one of them
+was spent saying "empty":
+
+```
+r15    r15 = 0x0000000000000000  0  0b0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000
+```
+
+The name was the row's own name column, repeated. The padding was sixteen characters of nothing. And
+the binary expansion pushed everything that actually distinguishes one register from another off the
+visible width of the panel, on every row, whether or not anyone was reading bits that day. The same
+row now reads:
+
+```
+r15    0x0
+```
+
+What a row carries now is what is being scanned for. Hex always — it is the assembly-native base and
+pastes straight back into a Watch expression. A decimal reading only where it says something the hex
+does not: `0x2a  42`, but not `0x9  9`, and not twenty digits of unsigned reading for a stack
+pointer. The two's-complement reading where the sign bit is set, so `-1` and `-2` are legible
+instead of being `18446744073709551615`. Then the two things only assembly needs:
+
+- `0x48544150  1213481296  'PATH'` — the value is printable text end to end, which is what a packed
+  character literal looks like and what no numeric base makes readable.
+- `0x4010e2  → msg` — the value lands inside one of your own labels, resolved from the listing (there
+  is no symbol table to ask). `rip` reads as `→ start+0x25`; a pointer into an array reads as
+  `→ table+0xc`. A sized label ends where its declared size ends, so an address one byte past a
+  `dd 1,2,3,4` is reported as outside it rather than as `table+0x10`.
+
+### Everything the row dropped, one level down
+
+A register row now expands. Its children are the readings the row is too narrow to carry, and none
+of them costs anything until the row is opened:
+
+- `hex` zero-padded to the full width, for comparing two registers digit by digit
+- `binary` grouped into bytes and nibbles — `0b0000_0000 0100_0000 0001_0000 1110_0010` — so a bit
+  position can be counted off against an operand size
+- `bytes` in memory order, `e2 10 40 00 00 00 00 00`, which makes an endianness mistake visible
+- `unsigned` and `signed` in full, with no readability threshold applied
+- the sub-register slices: `eax`, `ax`, `al`, `ah` under `rax`, `r12d`/`r12w`/`r12b` under `r12`.
+  Derived from the value already read, so they cost no round trip — and each one is a real register,
+  so setting `al` from there writes just the low byte.
+- `[rsi]`, what the register points at: the qword at that address, plus the string if that is what is
+  there — `0x77202c6f6c6c6548  "Hello, world!"`. One memory read, paid on expansion.
+
+Hovering a register gives the same thing as a block, since a tooltip has room for all of it at once.
+Sub-registers included: hovering `al` in source that only ever loaded `rax` now answers.
+
+### Flags say which jumps would be taken
+
+The **Flags** group's own row is the set flags — `[ CF PF SF IF ]` — rather than the number they
+came from, and it no longer costs a second round trip to gdb to produce, so the names can never
+disagree with the value beside them. Each bit reads `1  set` / `0  clear` rather than a bare digit,
+which is the difference between scanning a column of sixteen ones and zeroes and reading one.
+
+Added under it: **Conditions**, which answers the question EFLAGS is actually read for.
+
+```
+Conditions   jne, jb, jbe, jl, jle, js, jno, jp
+    je / jz          not taken
+    jne / jnz        taken
+    jb / jc / jnae   taken
+    ja / jnbe        not taken
+    jl / jnge        taken
+    jg / jnle        not taken
+    ...
+```
+
+Every conditional jump, with the flag test that decided it. This is memorised bit algebra — "jg is
+taken when ZF=0 and SF=OF" — that gets re-derived at every single breakpoint and mis-remembered in
+exactly the places it matters, which are the signed/unsigned pairs: `jb` against `jl`, `ja` against
+`jg`. The flags were already read to display them, so deriving it costs nothing.
+
+The `eflags` register itself is now a row in that group too. It always was the only thing there gdb
+could actually write — there is no MI command for setting one EFLAGS bit in isolation — and there
+was previously no way to reach it from the panel at all.
+
+### Editing a register value knows what it is editing
+
+VS Code pre-fills its in-place editor with the whole current row, not a bare number, so editing one
+column submits every column back. Which one moved used to be inferred from the other two agreeing
+with each other, and that inference needs exactly three columns — the shorter rows above do not have
+them. The register's current value is now read before parsing instead: every column that still
+agrees with it was left alone, so whatever is left is the edit. Re-submitting a row unchanged is a
+no-op rather than a guess, and a register name with a digit in it (`r15`) or an annotation with one
+(`→ msg+0x8`) is no longer mistaken for the value.
+
+### Watch and inline values stop saying the name twice
+
+An evaluate result that VS Code is going to render next to the expression that produced it — a Watch
+row, an inline decoration at the end of the stopped line — now comes back as the value alone. The
+Debug Console and the clipboard, which have no such column, still get the labelled form.
+
+### Run, on a program that had not been built yet, opened a terminal and ran nothing
+
+The "FASM" terminal appeared, showed a prompt, and that was the end of it. It looked like a failure
+of the build that had just happened, and it was not: the program was built, and the command to run
+it was handed over — to the terminal's shell, as text, the way `Terminal.sendText` does.
+
+A shell that is still starting up discards whatever was typed before it was ready. Both readline and
+fish switch the terminal to raw mode with `TCSAFLUSH`, which throws away pending input, and a
+terminal profile that reaches the host through a helper (`host-spawn` under a flatpak VS Code, for
+instance) widens that window to seconds. The command was typed into it and dropped on the floor.
+
+Only a *fresh* terminal is in that state, which is what made this look like a rule about compiling:
+a project that had already been run had a warm terminal to reuse and worked, while a project that
+had just been built for the first time got a new terminal and lost the command. The same reuse hid a
+second version of it — a run started while the previous program was still going typed the new
+command into *that program's* stdin.
+
+The program is now the terminal's own process instead of a line typed into a shell running in one.
+There is no shell in the way to be raced, and no command line to be escaped for one: the path and
+`fasm2Studio.runArgs` arrive as argv, so an argument with a space, a quote or a `$` in it reaches
+the program as written. This is the same route the debugged program's terminal has always taken, and
+for the same reason.
+
+Consequences worth knowing about:
+
+- The terminal stays open when the program ends, and says how it ended — `exited with code 3`, or
+  `was killed by SIGSEGV`, which is the more useful half for assembly. Press a key to close it. A
+  program that prints and returns no longer takes its own output off the screen with it.
+- It is the program's terminal, not a shell prompt, so a new run replaces it rather than adding a
+  tab. It opens focused, since a program that reads stdin is waiting to be typed into.
+- The program runs in the editor's own environment rather than under the shell profile configured
+  in `terminal.integrated.profiles` — the environment the debugger has always run it in.
+
+### "Build it now" builds the file you asked about
+
+The warning shown when Run finds nothing built offers to build. It used to build whatever the active
+editor held, which is not necessarily the file Run was invoked on: Run also comes from the Explorer
+context menu and the Entry Points view. It now names the file explicitly.
+
 ## 1.20.0
 
 ### The include line you would have counted `../` levels to write

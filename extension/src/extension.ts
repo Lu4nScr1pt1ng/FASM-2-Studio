@@ -27,7 +27,7 @@ import { FasmEvaluatableExpressionProvider } from './evaluatableExpression';
 import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
 import { registerReportIssue } from './reportIssue';
-import { runOutputBinary } from './runCommand';
+import { disposeRunTerminal, runOutputBinary } from './runCommand';
 import { activeDiagnosticsIssue, activeIndexingIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue, setIndexingIssue } from './statusBar';
 import { registerStatusBarMenu } from './statusBarMenu';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
@@ -151,7 +151,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       noteSingleTarget(entryFile, resource, selection);
       const exitCode = await runBuildTask(entryFile);
       if (exitCode === 0) {
-        await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile));
+        await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile), entryFile);
       }
     }),
 
@@ -162,7 +162,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       // The source file's directory, not the output's: fasm2Studio.buildOutputPath can send the
       // binary off to a "bin/" of its own, and a program's relative paths are written against
       // where its source lives. This is the same directory a debug launch defaults "cwd" to.
-      await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile));
+      await runOutputBinary(getDefaultOutputPath(entryFile), path.dirname(entryFile), entryFile);
     }),
 
     // Resolved through the same entry-point path as Build, so it removes exactly the files that
@@ -323,6 +323,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // the memory operand you were pointing at — see evaluatableExpression.ts.
     vscode.languages.registerEvaluatableExpressionProvider({ language: 'fasm' }, new FasmEvaluatableExpressionProvider()),
     { dispose: disposeInferiorTerminal },
+    { dispose: disposeRunTerminal },
   );
 
   context.subscriptions.push(

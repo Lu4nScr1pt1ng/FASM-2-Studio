@@ -1,13 +1,15 @@
 // Runs a previously built output binary in the integrated terminal. fasm2 (like fasm1) never
 // sets the executable bit on the files it produces, so POSIX platforms need an explicit chmod
 // before exec — skipping it would surface a confusing "Permission denied" on every first run.
+//
+// The program is the terminal's own process (via runner.ts), not a line typed into a shell running
+// in one — see runner.ts for why the typed version ran nothing at all on a freshly opened terminal.
 
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { MESSAGE_PREFIX, stringArraySetting } from './config';
-import { quoteForShell } from './shellQuote';
 
 const TERMINAL_NAME = 'FASM';
 
@@ -16,28 +18,54 @@ async function ensureExecutable(outputFsPath: string): Promise<void> {
   try {
     await fs.chmod(outputFsPath, 0o755);
   } catch {
-    // Output may not exist yet if the build failed; let the terminal command surface that.
+    // Output may not exist yet if the build failed; let the run itself surface that.
   }
 }
 
-/** The directory a terminal was created in, or undefined for one created without an explicit cwd. */
-function terminalCwd(terminal: vscode.Terminal): string | undefined {
-  const cwd = (terminal.creationOptions as vscode.TerminalOptions | undefined)?.cwd;
-  return typeof cwd === 'string' ? cwd : cwd?.fsPath;
+/** The runner bundle (see esbuild.js), resolved from this bundled module's own location so it works
+ * wherever the extension is installed — same as taskProvider.ts's bundledListingIncPath. */
+function runnerModulePath(): string {
+  return path.join(__dirname, 'runner.js');
 }
 
+/** The terminal the last run went to, so a new one replaces it rather than stacking up a tab per
+ * run. */
+let previousTerminal: vscode.Terminal | undefined;
+
 /**
- * The "FASM" terminal, rooted at `cwd`.
+ * A terminal running `argv` in `cwd`, replacing whatever the previous run left behind.
  *
- * A terminal's cwd is fixed when it is created, so one left over from running a different program
- * cannot be reused for this one — a program that opens a relative data file would silently read the
- * previous project's copy, or nothing. Replacing it is the only way to change where it runs.
+ * Never reused: this terminal has a program in it, not a shell, so there is nothing in it to give a
+ * second command to. That is the point — the command reaches the program directly as argv instead of
+ * being escaped for, and typed into, whichever shell the user's terminal profile opens (see
+ * runner.ts). A terminal's cwd is fixed when it is created anyway, so a run of a different program
+ * always needed a new one.
  */
-function getOrCreateTerminal(cwd: string): vscode.Terminal {
-  const existing = vscode.window.terminals.find((t) => t.name === TERMINAL_NAME);
-  if (existing && terminalCwd(existing) === cwd) return existing;
-  existing?.dispose();
-  return vscode.window.createTerminal({ name: TERMINAL_NAME, cwd });
+function openRunTerminal(cwd: string, argv: string[]): vscode.Terminal {
+  previousTerminal?.dispose();
+  // Also anything left named "FASM" by an earlier window state — a stale tab holding a program that
+  // is still running would keep writing over the one this run opens.
+  for (const terminal of vscode.window.terminals) {
+    if (terminal.name === TERMINAL_NAME) terminal.dispose();
+  }
+  previousTerminal = vscode.window.createTerminal({
+    name: TERMINAL_NAME,
+    cwd,
+    // process.execPath is VS Code's own binary, which runs plain Node when told to — so this needs
+    // no Node installed on the user's machine, same as the debug adapter itself.
+    shellPath: process.execPath,
+    shellArgs: [runnerModulePath(), ...argv],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+    iconPath: new vscode.ThemeIcon('play'),
+    isTransient: true,
+  });
+  return previousTerminal;
+}
+
+/** Closes the run terminal, for when the extension itself is going away. */
+export function disposeRunTerminal(): void {
+  previousTerminal?.dispose();
+  previousTerminal = undefined;
 }
 
 /**
@@ -48,7 +76,7 @@ function getOrCreateTerminal(cwd: string): vscode.Terminal {
  * these two disagreed, so a program that opens a relative data file worked under F5 and failed
  * under Run — with nothing on screen to suggest why.
  */
-export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(outputFsPath)): Promise<void> {
+export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(outputFsPath), entryFsPath?: string): Promise<void> {
   // "FASM: Run" deliberately does not build first — it runs whatever was built last. When there is
   // nothing there, sending the command anyway produced a bare shell error ("no such file or
   // directory") against an absolute path the user never typed, which reads as a broken extension
@@ -61,16 +89,17 @@ export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(o
       'Cancel',
     );
     if (choice !== build) return;
-    await vscode.commands.executeCommand('fasm2Studio.buildAndRun');
+    // Named explicitly: Run can be invoked on a file that is not the active editor's (from the
+    // explorer, or the entry points view), and a bare re-dispatch would build and run whatever
+    // happened to be focused instead of the file the user just asked about.
+    await vscode.commands.executeCommand('fasm2Studio.buildAndRun', entryFsPath ? vscode.Uri.file(entryFsPath) : undefined);
     return;
   }
 
   await ensureExecutable(outputFsPath);
-  const terminal = getOrCreateTerminal(cwd);
-  terminal.show(true);
-  // outputFsPath is always absolute (derived from the source file's own absolute path), so it
-  // runs directly on every shell without needing a "./" prefix or PATH lookup.
-  terminal.sendText([outputFsPath, ...runArgs(outputFsPath)].map(quoteForShell).join(' '));
+  // Focused, unlike the debugged program's terminal: nothing else is going on here, and the program
+  // may well be waiting to be typed into — as, at the end, is the runner's own prompt to close.
+  openRunTerminal(cwd, [outputFsPath, ...runArgs(outputFsPath)]).show();
 }
 
 /**
@@ -78,8 +107,8 @@ export async function runOutputBinary(outputFsPath: string, cwd = path.dirname(o
  *
  * The debugger has taken arguments since launch configurations existed (`"args"` in launch.json),
  * so a program that reads argv could be debugged but not simply *run*, which is the more common of
- * the two. Each element is quoted individually, so an argument containing a space stays one
- * argument rather than being re-split by the shell.
+ * the two. Each element becomes one argv entry, so an argument containing a space — or a glob, or a
+ * `;` — reaches the program as written, with no shell in the way to re-split or expand it.
  *
  * An empty element is kept, unlike in fasm2Studio.compilerArgs: an empty string is a perfectly
  * ordinary argv entry for a program to receive, where for the assembler it would only ever be a

@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ListingEntry } from '@fasm2-studio/server/src/listing/listingMap';
-import { buildConstantMap, buildSymbolAddressMap, formatConstantCompact, formatConstantDetailed } from '../src/symbols';
+import { buildConstantMap, buildSymbolAddressMap, buildSymbolSpans, describeAddress, formatConstantCompact, formatConstantDetailed } from '../src/symbols';
 
 function entry(address: number, text: string): ListingEntry {
   return { address: BigInt(address), text };
@@ -195,6 +195,58 @@ describe('buildSymbolAddressMap', () => {
       assert.strictEqual(sym!.stringLengthBytes, 3);
       assert.strictEqual(sym!.elementCount, 1);
     });
+  });
+});
+
+describe('buildSymbolSpans / describeAddress', () => {
+  // A whole small program's worth of labels, in the shape a real listing produces them: a code
+  // label with instructions after it, a string buffer, and a sized array.
+  const spans = buildSymbolSpans(
+    buildSymbolAddressMap([
+      entry(0x401000, 'start:'),
+      entry(0x401000, 'mov eax, 1'),
+      entry(0x401005, 'mov ebx, msg'),
+      entry(0x402000, "msg db 'Hello',0"),
+      entry(0x402006, 'table dd 1,2,3,4'),
+    ]),
+  );
+
+  it('names the label an address lands exactly on', () => {
+    assert.strictEqual(describeAddress(spans, 0x402000n), 'msg');
+    assert.strictEqual(describeAddress(spans, 0x401000n), 'start');
+  });
+
+  it('names an address inside a label as an offset from it, which is what makes rip readable', () => {
+    assert.strictEqual(describeAddress(spans, 0x401005n), 'start+0x5');
+    assert.strictEqual(describeAddress(spans, 0x402003n), 'msg+0x3');
+    assert.strictEqual(describeAddress(spans, 0x402012n), 'table+0xc');
+  });
+
+  it('stops a sized label at its declared size rather than running it into whatever follows', () => {
+    // "table dd 1,2,3,4" is 16 bytes; the byte after it belongs to nothing this listing knows about,
+    // and reporting it as "table+0x10" would present a real out-of-bounds address as in-bounds.
+    assert.strictEqual(describeAddress(spans, 0x402015n), 'table+0xf');
+    assert.strictEqual(describeAddress(spans, 0x402016n), undefined);
+  });
+
+  it('runs a code label (which has no declared size) up to the next label, not past it', () => {
+    assert.strictEqual(describeAddress(spans, 0x401fffn), 'start+0xfff');
+    assert.strictEqual(describeAddress(spans, 0x402000n), 'msg');
+  });
+
+  it('claims nothing for a stack or library address far outside the program image', () => {
+    assert.strictEqual(describeAddress(spans, 0x7ffd1234abcdn), undefined);
+    assert.strictEqual(describeAddress(spans, 0x400000n), undefined);
+  });
+
+  it('never resolves a null pointer to whatever label happens to sit lowest', () => {
+    assert.strictEqual(describeAddress(spans, 0n), undefined);
+  });
+
+  it('bounds the last label in the file instead of letting it swallow the whole address space', () => {
+    const trailing = buildSymbolSpans(buildSymbolAddressMap([entry(0x401000, 'only:')]));
+    assert.strictEqual(describeAddress(trailing, 0x401fffn), 'only+0xfff');
+    assert.strictEqual(describeAddress(trailing, 0x402000n), undefined);
   });
 });
 

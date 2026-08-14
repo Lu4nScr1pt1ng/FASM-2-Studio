@@ -60,15 +60,25 @@ const options = {
   external: ['vscode'],
 };
 
+// The program runner (src/runner.ts) is the process the "FASM" terminal opens with, so it is started
+// as a standalone Node script rather than loaded by the extension host — a second bundle of its own.
+// It cannot be part of the one above: that bundle's "vscode" import is external, resolvable only
+// inside the extension host, so requiring it from a plain Node process fails before it runs a line.
+/** @type {import('esbuild').BuildOptions} */
+const runnerOptions = { ...options, entryPoints: ['src/runner.ts'], outfile: 'dist/runner.js' };
+
 async function run() {
   if (watch) {
     copyServerBundle();
     copyDebugAdapterBundle();
-    const ctx = await esbuild.context(options);
-    await ctx.watch();
+    for (const opts of [options, runnerOptions]) {
+      const ctx = await esbuild.context(opts);
+      await ctx.watch();
+    }
     console.log('[extension] watching for changes...');
   } else {
     await esbuild.build(options);
+    await esbuild.build(runnerOptions);
     copyServerBundle();
     copyDebugAdapterBundle();
   }

@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.21.0
+
+### Registers you can actually read
+
+A register row was its own name, then the value padded to the register's full width, then the value
+in decimal, then the value in binary — about a hundred characters on a 64-bit target, all of which,
+for a register the program never touched, said "empty":
+
+```
+r15    r15 = 0x0000000000000000  0  0b0000_0000_0000_0000_..._0000_0000
+```
+
+It now reads `0x0`. A row carries hex always, a decimal reading only where it adds something the hex
+does not, and the negative reading where the sign bit is set (`-1`, not `18446744073709551615`) —
+plus the two things only assembly needs: `'PATH'` when the bytes are a packed character literal, and
+`→ msg+0x8` when the value lands inside one of your own labels, resolved from the listing.
+
+### The rest of it, one level down
+
+Expand a register for what the row no longer carries — none of it fetched until you do:
+
+- Full-width `hex`, `binary` grouped into bytes and nibbles, `bytes` in memory order, and the
+  unfiltered `unsigned`/`signed` readings
+- Its sub-registers — `eax`, `ax`, `al`, `ah` under `rax` — each of which can be set on its own, so
+  writing `al` changes just the low byte
+- `[rsi]`: what it points at, with the string preview when that is what is there
+
+Hovering a register gives the same thing as a block, sub-registers included — so hovering `al` in
+code that only ever loaded `rax` now answers.
+
+### Flags tell you which jumps would be taken
+
+The **Flags** row is now the set flags (`[ CF PF SF IF ]`) rather than the number, and each bit reads
+`1  set` / `0  clear`. Under it, **Conditions** lists every conditional jump with whether it would be
+taken right now and the flag test that decided it — the bit algebra that gets re-derived at every
+breakpoint and mis-remembered on the signed/unsigned pairs (`jb` against `jl`, `ja` against `jg`).
+
+The `eflags` register itself is a row there too, and can be written — it always was the only thing in
+that group gdb could set, and there was no way to reach it from the panel before.
+
+### Run works on the first run
+
+Running a program that had not been built yet opened the "FASM" terminal and left it at a prompt
+without starting anything. The command was typed into that terminal's shell, and a shell still busy
+starting up throws away input typed before it is ready — so the first run of a project, the one that
+gets a brand new terminal, lost it. A second run reused the warm terminal and worked, which is what
+made this look like it was about compiling.
+
+The program is now the terminal's own process rather than a line typed into a shell:
+
+- It runs, every time, whatever your terminal profile is.
+- Arguments from `fasm2Studio.runArgs` reach it as written — no shell to re-split or expand them.
+- The terminal stays open when the program ends and reports how it ended (`exited with code 3`, or
+  `was killed by SIGSEGV`). Press a key to close it.
+- A new run replaces the previous one's terminal instead of adding a tab, and opens focused, so a
+  program that reads input can just be typed into.
+
+The program now runs in the editor's environment rather than under your configured terminal shell
+profile — the same environment it already ran in under the debugger.
+
+Also: the "nothing built yet" warning's **Build it now** now builds the file Run was invoked on,
+rather than whatever the active editor happened to be — which differed when Run came from the
+Explorer or the Entry Points view.
+
+### Smaller things
+
+- Editing a register value in place now works from any row shape: the current value is read first, so
+  whichever column you changed is the one that takes effect, and re-submitting a row unchanged does
+  nothing rather than guessing.
+- Watch entries and inline value decorations no longer print the register's name twice.
+
 ## 1.20.0
 
 ### Drag a file in to include it

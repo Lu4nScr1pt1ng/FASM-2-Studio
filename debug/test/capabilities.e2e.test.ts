@@ -216,7 +216,7 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
       await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
 
       const value = await client.sendRequest<{ result: string }>('evaluate', { expression: '$ebx', context: 'watch' });
-      assert.match(value.result, /\b4\b/, `expected to stop with ebx == 4, got ${value.result}`);
+      assert.strictEqual(value.result, '0x4', `expected to stop with ebx == 4, got ${value.result}`);
 
       await client.sendRequest('continue', { threadId: 1 });
       await client.waitForEvent('terminated');
@@ -240,7 +240,7 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
 
       // Three hits ignored, so the first stop is on the fourth pass, where ebx == 4.
       const value = await client.sendRequest<{ result: string }>('evaluate', { expression: '$ebx', context: 'watch' });
-      assert.match(value.result, /\b4\b/, `expected the 4th hit (ebx == 4), got ${value.result}`);
+      assert.strictEqual(value.result, '0x4', `expected the 4th hit (ebx == 4), got ${value.result}`);
       // gdb's ignore count only skips the *first* N hits — the fifth pass stops too, so the
       // program needs resuming more than once to reach the end.
       await client.sendRequest('continue', { threadId: 1 });
@@ -402,10 +402,9 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
       assert.ok(rsp.memoryReference, 'rsp carries no memoryReference, so the hex editor is not offered on it');
 
       // The reference has to be the register's *own* value — the whole point is that reading memory
-      // there reads what the register points at. Compared numerically rather than as text, since
-      // the displayed hex is zero-padded to the register's width and a memoryReference is not.
-      const shownDecimal = /=\s+0x[0-9a-f]+\s+(\d+)/.exec(rsp.value)?.[1];
-      assert.strictEqual(BigInt(rsp.memoryReference), BigInt(shownDecimal!), `${rsp.memoryReference} is not the value shown (${rsp.value})`);
+      // there reads what the register points at.
+      const shownHex = /^0x[0-9a-f]+/.exec(rsp.value)?.[0];
+      assert.strictEqual(BigInt(rsp.memoryReference), BigInt(shownHex!), `${rsp.memoryReference} is not the value shown (${rsp.value})`);
 
       // rsp is the one register guaranteed to hold a mapped address here, so this read is a real
       // check that the reference is usable rather than merely present.
@@ -478,7 +477,7 @@ describe('FasmDebugSession capabilities end-to-end (real adapter.js, real gdb, r
         variablesReference: gp.variablesReference,
       });
       const rbx = after.variables.find((v) => v.name === 'rbx')!;
-      assert.match(rbx.value, /^rbx = 0x0*1\s/, `expected rbx to have just been incremented to 1, got "${rbx.value}"`);
+      assert.strictEqual(rbx.value, '0x1', `expected rbx to have just been incremented to 1, got "${rbx.value}"`);
     } catch (err) {
       throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderr()}`);
     } finally {
