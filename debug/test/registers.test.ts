@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import {
+  changeReportingNames,
   decodeEflags,
   decodeExtendedFloat,
   decodeMxcsr,
@@ -307,6 +308,74 @@ describe('evaluateJumpConditions', () => {
     assert.strictEqual(byMnemonics.get('ja / jnbe'), false);
     assert.strictEqual(byMnemonics.get('jae / jnc / jnb'), true);
   });
+
+  it('offers no counter-based rows when the counter register was not read', () => {
+    // The flags alone cannot answer them, and a row guessing at rcx would be worse than no row.
+    const mnemonics = evaluateJumpConditions(0n).map((c) => c.mnemonics);
+    assert.strictEqual(mnemonics.some((m) => m.startsWith('loop') || m === 'jrcxz'), false);
+  });
+
+  it('answers jrcxz from the counter register, which reads no flag at all', () => {
+    const taken = (value: bigint): boolean =>
+      evaluateJumpConditions(0n, { name: 'rcx', value, bits: 64 }).find((c) => c.mnemonics === 'jrcxz')!.taken;
+    assert.strictEqual(taken(0n), true);
+    assert.strictEqual(taken(1n), false);
+  });
+
+  it('names the counter register the way the target spells it', () => {
+    const i386 = evaluateJumpConditions(0n, { name: 'ecx', value: 0n, bits: 32 });
+    assert.ok(i386.some((c) => c.mnemonics === 'jecxz'), 'a 32-bit target has no jrcxz');
+  });
+
+  it('answers loop from the counter *after* its decrement, which is the whole trap', () => {
+    // `loop` decrements first and branches while the result is non-zero, so rcx=1 is the last
+    // iteration and rcx=2 is not — a reading nothing else on screen performs.
+    const loopTaken = (value: bigint): boolean =>
+      evaluateJumpConditions(0n, { name: 'rcx', value, bits: 64 }).find((c) => c.mnemonics === 'loop')!.taken;
+    assert.strictEqual(loopTaken(2n), true, 'decrements to 1, which is non-zero');
+    assert.strictEqual(loopTaken(1n), false, 'decrements to 0, so this is the last iteration');
+  });
+
+  it('calls out the zero counter that makes loop run 2^64 times instead of none', () => {
+    // The worst outcome this instruction has, reached from the most innocent-looking register
+    // value: 0 decrements to all-ones rather than stopping.
+    const loop = evaluateJumpConditions(0n, { name: 'rcx', value: 0n, bits: 64 }).find((c) => c.mnemonics === 'loop')!;
+    assert.strictEqual(loop.taken, true);
+    assert.match(loop.meaning, /2\^64/);
+  });
+
+  it('gates loope and loopne on ZF as well as the decremented counter', () => {
+    const byMnemonics = (zf: boolean): Map<string, boolean> =>
+      new Map(evaluateJumpConditions(zf ? 0x40n : 0n, { name: 'rcx', value: 5n, bits: 64 }).map((c) => [c.mnemonics, c.taken]));
+    assert.strictEqual(byMnemonics(true).get('loope / loopz'), true);
+    assert.strictEqual(byMnemonics(true).get('loopne / loopnz'), false);
+    assert.strictEqual(byMnemonics(false).get('loope / loopz'), false);
+    assert.strictEqual(byMnemonics(false).get('loopne / loopnz'), true);
+  });
+});
+
+describe('changeReportingNames', () => {
+  it('maps a displayed vector register onto every raw name gdb reports a change under', () => {
+    // gdb answers "-data-list-changed-registers" in terms of raw registers, and the ymm0 this panel
+    // displays is a pseudo-register assembled from raw xmm0 and raw ymm0h. Confirmed against gdb
+    // 16.3: a "movdqu xmm0, ..." reports register 40 (xmm0) and never the ymm0 pseudo, so matching
+    // on the displayed name alone would leave the Vector header claiming nothing had moved.
+    const names = changeReportingNames('ymm0');
+    assert.ok(names.includes('xmm0'), 'the low half is what a movdqu reports');
+    assert.ok(names.includes('ymm0h'), 'the upper half is a raw register of its own');
+    assert.ok(names.includes('ymm0'));
+  });
+
+  it('covers the AVX-512 halves for a zmm-width target too', () => {
+    const names = changeReportingNames('zmm7');
+    for (const expected of ['xmm7', 'ymm7', 'zmm7', 'ymm7h', 'zmm7h']) assert.ok(names.includes(expected), expected);
+  });
+
+  it('is the identity for every group that already displays raw registers', () => {
+    for (const name of ['rax', 'rip', 'eflags', 'cs', 'st0', 'fctrl', 'mxcsr', 'fs_base', 'k1']) {
+      assert.deepStrictEqual(changeReportingNames(name), [name]);
+    }
+  });
 });
 
 describe('formatEflagsSummary', () => {
@@ -479,22 +548,40 @@ describe('gdbRegisterName', () => {
 // is what it knows from the live process's XSAVE state, and only that one has the AVX registers.
 // Trimmed to the entries these tests actually exercise, with gdb's empty-string padding kept where
 // it sits, since the *index* of a name in this array is the register number gdb answers to.
+/** gdb leaves unnamed slots in its register-number space. Only their *count* carries information —
+ * an entry's index in this array is the register number gdb answers to — so the runs are written as
+ * counts rather than as a hundred-odd empty strings, and the arrays are otherwise verbatim. */
+const padding = (count: number): string[] => Array.from({ length: count }, () => '');
+
+// Verbatim, not trimmed. An earlier version of this file kept only the entries the assertions
+// mentioned, which quietly weakened the coverage test below into a check against a list no gdb ever
+// produces: the real one also reports every sub-register (al, ah, ax, eax, r8l, r8w, r8d, ...) and
+// the ymm upper halves as top-level entries of their own. Two things only the real list can catch
+// live in here — that a 64-bit target reports "eax" as well as "rax", so slot order rather than
+// mere presence is what picks the right one, and that the low byte of r8-r15 is spelled "r8l".
 const X86_64_BEFORE_RUN = [
-  'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp',
-  'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
-  'rip', 'eflags', 'cs', 'ss', 'ds', 'es', 'fs', 'gs',
-  'st0', 'st1', 'st2', 'st3', 'st4', 'st5', 'st6', 'st7',
-  'fctrl', 'fstat', 'ftag', 'fiseg', 'fioff', 'foseg', 'fooff', 'fop',
-  'xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4', 'xmm5', 'xmm6', 'xmm7',
-  'xmm8', 'xmm9', 'xmm10', 'xmm11', 'xmm12', 'xmm13', 'xmm14', 'xmm15',
-  'mxcsr', '', '', 'fs_base', 'gs_base', 'orig_rax',
+  'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
+  'rip', 'eflags', 'cs', 'ss', 'ds', 'es', 'fs', 'gs', 'st0', 'st1', 'st2', 'st3', 'st4', 'st5', 'st6', 'st7',
+  'fctrl', 'fstat', 'ftag', 'fiseg', 'fioff', 'foseg', 'fooff', 'fop', 'xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4',
+  'xmm5', 'xmm6', 'xmm7', 'xmm8', 'xmm9', 'xmm10', 'xmm11', 'xmm12', 'xmm13', 'xmm14', 'xmm15', 'mxcsr',
+  ...padding(95), 'fs_base', 'gs_base', 'orig_rax', 'al', 'bl', 'cl', 'dl', 'sil', 'dil', 'bpl', 'spl', 'r8l',
+  'r9l', 'r10l', 'r11l', 'r12l', 'r13l', 'r14l', 'r15l', 'ah', 'bh', 'ch', 'dh', 'ax', 'bx', 'cx', 'dx', 'si',
+  'di', 'bp', ...padding(1), 'r8w', 'r9w', 'r10w', 'r11w', 'r12w', 'r13w', 'r14w', 'r15w', 'eax', 'ebx', 'ecx',
+  'edx', 'esi', 'edi', 'ebp', 'esp', 'r8d', 'r9d', 'r10d', 'r11d', 'r12d', 'r13d', 'r14d', 'r15d',
 ];
 
 const X86_64_AFTER_RUN = [
-  ...X86_64_BEFORE_RUN,
-  'ymm0', 'ymm1', 'ymm2', 'ymm3', 'ymm4', 'ymm5', 'ymm6', 'ymm7',
+  'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
+  'rip', 'eflags', 'cs', 'ss', 'ds', 'es', 'fs', 'gs', 'st0', 'st1', 'st2', 'st3', 'st4', 'st5', 'st6', 'st7',
+  'fctrl', 'fstat', 'ftag', 'fiseg', 'fioff', 'foseg', 'fooff', 'fop', 'xmm0', 'xmm1', 'xmm2', 'xmm3', 'xmm4',
+  'xmm5', 'xmm6', 'xmm7', 'xmm8', 'xmm9', 'xmm10', 'xmm11', 'xmm12', 'xmm13', 'xmm14', 'xmm15', 'mxcsr',
+  'ymm0h', 'ymm1h', 'ymm2h', 'ymm3h', 'ymm4h', 'ymm5h', 'ymm6h', 'ymm7h', 'ymm8h', 'ymm9h', 'ymm10h', 'ymm11h',
+  'ymm12h', 'ymm13h', 'ymm14h', 'ymm15h', ...padding(78), 'pkru', 'fs_base', 'gs_base', 'orig_rax', 'al', 'bl',
+  'cl', 'dl', 'sil', 'dil', 'bpl', 'spl', 'r8l', 'r9l', 'r10l', 'r11l', 'r12l', 'r13l', 'r14l', 'r15l', 'ah',
+  'bh', 'ch', 'dh', 'ax', 'bx', 'cx', 'dx', 'si', 'di', 'bp', ...padding(1), 'r8w', 'r9w', 'r10w', 'r11w',
+  'r12w', 'r13w', 'r14w', 'r15w', 'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'r8d', 'r9d', 'r10d',
+  'r11d', 'r12d', 'r13d', 'r14d', 'r15d', 'ymm0', 'ymm1', 'ymm2', 'ymm3', 'ymm4', 'ymm5', 'ymm6', 'ymm7',
   'ymm8', 'ymm9', 'ymm10', 'ymm11', 'ymm12', 'ymm13', 'ymm14', 'ymm15',
-  'pkru',
 ];
 
 describe('resolveRegisterGroups — the vector, x87 and thread groups', () => {
@@ -533,27 +620,58 @@ describe('resolveRegisterGroups — the vector, x87 and thread groups', () => {
   it('leaves no register gdb reports out of every group at once', () => {
     // The real gap this guards: pkru was reported by gdb, had a width entry, resolved in hover and
     // Watch — and appeared in no group, so the panel gave a reader no way to discover it exists.
-    // Every non-padding name gdb reports for a live x86-64 target has to land somewhere reachable.
+    // Every non-padding name gdb reports for a live x86-64 target has to be reachable from the
+    // panel — as a group member, or as a child view of one.
     const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
     const placed = new Set([
       ...groups.generalPurpose, ...groups.pointers, ...groups.segment, ...groups.vector,
       ...groups.x87, ...groups.x87Control, ...groups.mask, ...groups.thread,
       groups.eflagsName, groups.mxcsrName,
     ]);
-    // The one exception, and it is not a gap: xmm0-15 are the low halves of the ymm registers that
-    // *are* placed, and appear as their children rather than as sixteen more top-level rows.
-    const missing = X86_64_AFTER_RUN.filter((name) => name.length > 0 && !placed.has(name) && !/^xmm\d+$/.test(name));
-    assert.deepStrictEqual(missing, []);
+    // Every name reachable by expanding a placed register rather than as a row of its own. The two
+    // kinds are named explicitly rather than skipped by a loose pattern, so that a register gdb
+    // starts reporting which is genuinely *not* covered still fails this test.
+    const asChildView = (name: string): boolean =>
+      // The narrower views of a placed integer register: al/ah/ax/eax under rax, r8l/r8w/r8d under
+      // r8 (gdb spells the low byte "r8l"; fasm spells it "r8b" — see gdbRegisterName).
+      [...groups.generalPurpose, ...groups.pointers].some((parent) =>
+        subRegisterViews(parent, 0n).some((sub) => sub.name === name || gdbRegisterName(sub.name) === name)) ||
+      // The halves of a placed vector register: xmm0 is the low 128 bits of the ymm0 that is
+      // placed, and ymm0h is the upper half gdb assembles it from.
+      groups.vector.some((parent) => changeReportingNames(parent).includes(name));
+
+    const unreachable = X86_64_AFTER_RUN.filter((name) => name.length > 0 && !placed.has(name) && !asChildView(name));
+    assert.deepStrictEqual(unreachable, []);
   });
 
   it('records gdb\'s own register number for each name, counting empty padding slots', () => {
     // st0 sits at index 24 in this list, and "-data-list-register-values x 24" is the only way to
-    // ask for its raw 80 bits — no expression form returns them.
+    // ask for its raw 80 bits — no expression form returns them. The rest are here because the
+    // padding runs between them are exactly what a hand-trimmed fixture gets wrong: fs_base is the
+    // 152nd slot, not the 59th it would be if the empty ones were dropped.
     const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
     assert.strictEqual(groups.numbers.get('st0'), 24);
     assert.strictEqual(groups.numbers.get('mxcsr'), 56);
-    assert.strictEqual(groups.numbers.get('fs_base'), 59);
+    assert.strictEqual(groups.numbers.get('pkru'), 151);
+    assert.strictEqual(groups.numbers.get('fs_base'), 152);
     assert.strictEqual(groups.numbers.get(''), undefined);
+    // Every name resolves back from its number, which is the only form
+    // "-data-list-changed-registers" answers in.
+    assert.strictEqual(groups.namesByNumber.get(24), 'st0');
+    assert.strictEqual(groups.namesByNumber.get(151), 'pkru');
+    // Slots 73-150 are the unnamed run between the ymm upper halves and pkru.
+    assert.strictEqual(groups.namesByNumber.get(100), undefined, 'a padding slot names no register');
+  });
+
+  it('picks the 64-bit name even though the target reports the 32-bit one too', () => {
+    // Not hypothetical, and the reason GP_SLOTS is an ordered candidate list rather than a set: a
+    // real x86-64 gdb reports "eax" and "rax" both, as separate top-level entries. Matching on mere
+    // presence would make which one appears depend on gdb's own array order.
+    assert.strictEqual(X86_64_AFTER_RUN.includes('eax'), true, 'fixture must keep the 32-bit pseudo-registers');
+    const groups = resolveRegisterGroups(X86_64_AFTER_RUN);
+    assert.deepStrictEqual(groups.generalPurpose.slice(0, 4), ['rax', 'rbx', 'rcx', 'rdx']);
+    assert.deepStrictEqual(groups.pointers, ['rbp', 'rsp', 'rip']);
+    assert.strictEqual(groups.generalPurpose.includes('eax'), false);
   });
 
   it('gives a 32-bit target its xmm registers and its x87 stack too', () => {

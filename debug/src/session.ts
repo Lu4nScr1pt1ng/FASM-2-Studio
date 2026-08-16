@@ -1,8 +1,9 @@
 // The DAP session: translates VS Code's debug protocol requests into GdbDriver/MI commands and
 // GdbDriver events into DAP events. Deliberately honest about what a debugger for raw, DWARF-less
 // assembly can offer:
-//   - One stack frame (current PC mapped to source via listingMap), not a real unwound call
-//     stack — there's no frame-pointer/CFI info to unwind with in general.
+//   - A call stack reconstructed from the listing rather than from unwind information, which a
+//     fasmg binary has none of — see unwind.ts. Frames are named by the label they are inside,
+//     since there is no function symbol to name them after.
 //   - "Registers" instead of "variables" — there's no type info, so raw register/memory
 //     inspection (via gdb's own expression evaluator, e.g. "$eax" or "*(dword*)$esp") is the
 //     asm-appropriate equivalent, and what the Watch/evaluate views expose.
@@ -30,6 +31,8 @@ import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from '@f
 import { miData } from './miParser';
 import { OperandResolver, translateMemoryOperand } from './operandExpression';
 import {
+  changeReportingNames,
+  CounterState,
   DecodedBitField,
   decodeEflags,
   decodeExtendedFloat,
@@ -74,6 +77,7 @@ import {
   X87_REGISTER_NAMES,
 } from './registers';
 import { SYSCALL_ARGUMENT_REGISTERS, SyscallAbi, syscallName } from './syscalls';
+import { collectReturnSites, unwindStack, UnwoundFrame } from './unwind';
 import { defaultEnabledSignals, signalHandlingCommands, SIGNAL_FILTERS } from './signalFilters';
 import {
   buildConstantMap,
@@ -177,16 +181,28 @@ const KNOWN_LANGUAGE_TOKENS: ReadonlySet<string> = new Set([
 const EMPTY_REGISTER_GROUPS: RegisterGroups = {
   generalPurpose: [], pointers: [], segment: [], eflagsName: undefined,
   vector: [], x87: [], x87Control: [], mxcsrName: undefined, mask: [], thread: [], numbers: new Map(),
+  namesByNumber: new Map(),
 };
 
-/** How many machine words of stack the Stack group shows.
+/** How many machine words of stack the Stack group shows by default (see TargetArgs.stackWords).
  *
- * There is exactly one stack frame in this adapter (no DWARF, no CFI, nothing to unwind with), so
- * the raw stack is not a convenience here — it is the only way to see a return address, a saved
- * register, or an argument that was pushed rather than passed in a register. Sixteen words is deep
+ * With no DWARF and no types, the raw stack is not a convenience here — it is the only way to see a
+ * saved register or an argument that was pushed rather than passed in one. Sixteen words is deep
  * enough to cover a prologue's worth of pushes plus the return address above them, and shallow
  * enough to stay one screen and one memory read. */
 const STACK_WORDS_SHOWN = 16;
+
+/** How much stack the unwinder reads, in bytes — one read, sized to bound how deep a backtrace can
+ * go rather than to match what the Stack group displays. A chain or scan that runs past this window
+ * stops there, so this is the real limit on frame depth; 4KB is a page, covers any realistic
+ * hand-written call depth, and is a single round-trip either way. */
+const UNWIND_STACK_BYTES = 4096;
+/** Frames beyond this are not reported. Bounds the pathological case (a corrupted frame-pointer
+ * chain that validates at every step) without touching any real program. */
+const MAX_UNWOUND_FRAMES = 64;
+/** The System V red zone: 128 bytes below rsp a leaf function may use without moving the stack
+ * pointer. Shown only when asked for — see TargetArgs.stackRedZone. */
+const RED_ZONE_BYTES = 128;
 
 /** What each x87 environment register is, for the tooltip on its row. The four address fields are
  * one idea split across four registers, so they are described as the one idea. */
@@ -252,6 +268,14 @@ interface TargetArgs {
   /** Extra environment variables for the debugged program. Merged over the adapter's own
    * environment, which gdb passes down to the inferior it starts. */
   env?: Record<string, string>;
+  /** How many machine words at and above the stack pointer the Stack group lists. Worth raising for
+   * a program with deep frames; the whole group is still one memory read however deep it goes. */
+  stackWords?: number;
+  /** Whether to also list the 128 bytes *below* the stack pointer — the System V red zone, which a
+   * leaf function may use as scratch without moving rsp. Off by default because for most code those
+   * words are leftovers rather than data, and on when you are debugging a leaf that uses them,
+   * where nothing else in the UI shows them at all. */
+  stackRedZone?: boolean;
 }
 
 interface AttachArgs extends DebugProtocol.AttachRequestArguments, TargetArgs {
@@ -311,6 +335,14 @@ export class FasmDebugSession extends DebugSession {
   /** The same labels as symbolMap, as ascending address ranges — the reverse lookup ("this register
    * holds 0x402008; what is that?"), which a name-keyed map can't answer. See buildSymbolSpans. */
   private symbolSpans: SymbolSpan[] = [];
+  /** Every address a call in this program pushes — the closed set that makes recognising a return
+   * address on the stack exact rather than a guess. See collectReturnSites. */
+  private returnSites: ReadonlySet<bigint> = new Set();
+  private stackWordsShown = STACK_WORDS_SHOWN;
+  private showRedZone = false;
+  /** The frames of the last stackTraceRequest, by the frame id handed to the client — so a later
+   * scopes/variables request naming a frame can say which one it is. */
+  private frames: UnwoundFrame[] = [];
   /** Symbolic constant name (e.g. "FD_STDERR" from "FD_STDERR = 2") -> its defined value — these
    * have no runtime address at all, so gdb can't answer "what's the value of FD_STDERR" either
    * (fails with "No symbol table is loaded"); resolved statically instead, same as symbolMap. */
@@ -416,6 +448,9 @@ export class FasmDebugSession extends DebugSession {
     this.symbolMap = buildSymbolAddressMap(listingEntries);
     this.symbolSpans = buildSymbolSpans(this.symbolMap);
     this.constantMap = buildConstantMap(listingEntries);
+    this.returnSites = collectReturnSites(listingEntries);
+    this.stackWordsShown = args.stackWords ?? STACK_WORDS_SHOWN;
+    this.showRedZone = args.stackRedZone === true;
 
     this.gdb = new GdbDriver();
     this.gdb.on('console', (text) => {
@@ -693,6 +728,19 @@ export class FasmDebugSession extends DebugSession {
   private registerSnapshot = new Map<string, bigint>();
   private registerPrevious = new Map<string, bigint>();
   private changedRegisterNames = new Set<string>();
+  /** Whether anything may have moved since the snapshot was taken — a resume, or a write from any
+   * of the several paths that can perform one. Starts true because there is no snapshot at all
+   * yet, and the first stop has to take one for the first step to have something to differ from. */
+  private registerValuesStale = true;
+  /** Whether gdb's "everything changed" report for the session's first stop has been consumed yet.
+   * Tracked rather than inferred from the snapshot being empty, so that a client which expands a
+   * register group before ever reading the Registers scope cannot leave that report to surface
+   * later as a step that appeared to move every register in the target. */
+  private changedRegistersBaselineTaken = false;
+  /** Whether gdb has already been asked which registers changed, at this stop. The query is
+   * consuming (see readChangedRegisterNames), so this is what holds the answer steady across the
+   * several reads a client makes of one stop. Cleared at every resume. */
+  private changedRegistersReadAtThisStop = false;
 
   /**
    * Re-reads the integer registers and works out which moved since the last time this ran.
@@ -704,34 +752,135 @@ export class FasmDebugSession extends DebugSession {
    * so it is readable with everything collapsed.
    *
    * Called from the Registers scope's own top-level fetch rather than from the stop handler, which
-   * makes the cost exactly zero for a session where nobody opens the panel — and one batched
-   * "-data-list-register-values" for a session where somebody does, regardless of how many
-   * registers the target has. The comparison is therefore "since the last time this panel was
-   * read", which for the case that matters (stepping with it open) is precisely per-step.
+   * makes the cost exactly zero for a session where nobody opens the panel — and two MI commands
+   * for a session where somebody does, regardless of how many registers the target has. The
+   * comparison is therefore "since the last time this panel was read", which for the case that
+   * matters (stepping with it open) is precisely per-step.
+   *
+   * Two commands rather than one because the two questions genuinely differ. *Which* registers
+   * moved comes from gdb (readChangedRegisterNames), which knows about every register class
+   * including the ones with no integer reading to diff. *What they held before* has to be kept
+   * here, because gdb reports only names and the "previous" row shows a value and a delta.
    */
   private async refreshChangedRegisters(): Promise<void> {
-    // The second condition is what establishes the baseline. The first stop of a session is reached
-    // without passing through any resume request — configurationDone's own "-exec-run" starts the
-    // program — so without it nothing would be recorded until the *second* stop, and the first step
-    // a user took would report no change at all.
-    if (!this.inferiorRanSinceSnapshot && this.registerSnapshot.size > 0) return;
-    const names = [...this.registerGroups.generalPurpose, ...this.registerGroups.pointers];
-    const values = await this.readRegisterValues(names, 'x');
+    if (this.changedRegistersReadAtThisStop) return;
+    await this.refreshRegisterValuesIfStale();
     // A failed read leaves both snapshots and the diff in place: "the panel could not be read just
-    // now" and "nothing changed" are very different claims, and only one of them is true.
-    if (values.size === 0) return;
-    this.inferiorRanSinceSnapshot = false;
+    // now" and "nothing changed" are very different claims, and only one of them is true. Left
+    // un-consumed too, so the next reader at this stop tries again.
+    if (this.registerSnapshot.size === 0) return;
+    this.changedRegisterNames = await this.readChangedRegisterNames();
+  }
 
-    this.registerPrevious = this.registerSnapshot;
-    this.registerSnapshot = values;
-    const changed = new Set<string>();
-    for (const [name, value] of values) {
-      const before = this.registerPrevious.get(name);
-      // A name with no earlier reading is one this is the first look at — new, not changed. That is
-      // what keeps the very first stop from reporting all sixteen registers as having moved.
-      if (before !== undefined && before !== value) changed.add(name);
+  /**
+   * Every register the panel reads as a plain integer, which one batched MI command covers.
+   *
+   * The SIMD registers are the only exclusion, and not an arbitrary one: asked for a vector
+   * register in `x` format gdb answers with a whole struct of lane vectors ("{v8_bfloat16 = {...},
+   * v4_float = {...}, ...}") rather than a number, so they go through readVectorRegister instead.
+   * Everything else here — including the x87 environment words and the 80-bit stack registers —
+   * comes back as one integer literal, verified against gdb 16.3 to be bit-for-bit the same value
+   * the per-register cast read produces.
+   */
+  private scalarRegisterNames(): string[] {
+    const groups = this.registerGroups;
+    return [
+      ...groups.generalPurpose, ...groups.pointers, ...groups.segment,
+      ...groups.mask, ...groups.thread, ...groups.x87Control,
+      ...(groups.eflagsName ? [groups.eflagsName] : []),
+      ...(groups.mxcsrName ? [groups.mxcsrName] : []),
+    ];
+  }
+
+  /**
+   * A scalar register's value at this stop, from the batched snapshot when it holds one.
+   *
+   * The snapshot was taken by refreshChangedRegisters at the top of this same panel read, from the
+   * same stop, so it is not a cache in the sense that can go stale on its own — the program cannot
+   * have run in between. The one thing that *can* invalidate it is an in-place edit, which is what
+   * registerValuesStale tracks.
+   *
+   * Falling back to an individual read matters more than the batching does: hover and Watch resolve
+   * names the panel never lists (al, r8d, ah), and those are legitimately not in the snapshot.
+   */
+  private async registerValue(name: string, bits: RegisterBits | undefined): Promise<bigint | undefined> {
+    await this.refreshRegisterValuesIfStale();
+    return this.registerSnapshot.get(name) ?? this.readRegisterBigInt(name, bits);
+  }
+
+  /**
+   * Re-reads the batched snapshot when anything may have moved since it was taken.
+   *
+   * Called from registerValue rather than only from refreshChangedRegisters, and that is the point:
+   * a client can fetch a register *group* at a fresh stop without ever fetching the Registers scope
+   * that owns it, so the group readers cannot assume anyone has refreshed anything for them.
+   *
+   * It never asks gdb which registers changed — that question is consuming (see
+   * readChangedRegisterNames), and asking it here would throw away the answer belonging to the last
+   * actual step, on a path that runs for every group expansion.
+   */
+  private async refreshRegisterValuesIfStale(): Promise<void> {
+    if (!this.registerValuesStale) return;
+    const values = await this.readRegisterValues(this.scalarRegisterNames(), 'x');
+    // Left stale on a failed read, so the next reader tries again rather than serving values from
+    // before whatever just happened.
+    if (values.size === 0) return;
+    this.registerValuesStale = false;
+    // "What it held before the last step" only shifts when there was a step. A refresh triggered by
+    // an in-place edit updates what the rows show without rewriting the step history underneath it.
+    if (this.inferiorRanSinceSnapshot) {
+      this.registerPrevious = this.registerSnapshot;
+      this.inferiorRanSinceSnapshot = false;
     }
-    this.changedRegisterNames = changed;
+    this.registerSnapshot = values;
+  }
+
+  /**
+   * Which registers gdb says have changed since it last answered this question.
+   *
+   * Asked of gdb rather than diffed here, and that is the whole point: a diff can only cover
+   * registers with an integer reading to compare, which silently excluded every register class
+   * where "did that instruction touch it" is hardest to answer by eye. gdb's own answer covers all
+   * of them — verified against gdb 16.3, where a single `fld` reports st0, fstat and ftag changed,
+   * and a `movdqu xmm0` reports xmm0, none of which the old general-purpose-only diff could see.
+   *
+   * Two properties of this command drive the shape of everything around it, both confirmed against
+   * real gdb rather than assumed:
+   *
+   *  - It is *consuming*. Asking twice in a row returns an empty list the second time, because
+   *    answering resets gdb's own baseline. That is why this is reached only through
+   *    refreshChangedRegisters' once-per-stop guard, and why its result is cached in
+   *    changedRegisterNames rather than re-fetched per group — VS Code reads the panel more than
+   *    once at a single stop, and the second read would otherwise report that nothing had moved.
+   *  - Reading register *values* does not consume it, so refreshChangedRegisters is free to take
+   *    its value snapshot first.
+   *
+   * The answer is asked for and thrown away at the session's first stop, where gdb reports every
+   * register in the target as changed — true, in that they went from unknown to known, and useless
+   * as a report of what the last instruction did. Asked for anyway rather than skipped, because not
+   * asking would leave that report sitting in gdb to be collected by the next step, which would
+   * then appear to have moved the entire machine.
+   */
+  private async readChangedRegisterNames(): Promise<Set<string>> {
+    const changed = new Set<string>();
+    if (!this.gdb) return changed;
+    const baseline = !this.changedRegistersBaselineTaken;
+    this.changedRegistersBaselineTaken = true;
+    this.changedRegistersReadAtThisStop = true;
+    try {
+      const result = await this.gdb.sendCommand('-data-list-changed-registers');
+      const numbers = miData(result)?.['changed-registers'];
+      if (baseline || !Array.isArray(numbers)) return changed;
+      for (const entry of numbers) {
+        if (typeof entry !== 'string') continue;
+        const name = this.registerGroups.namesByNumber.get(Number(entry));
+        if (name !== undefined) changed.add(name);
+      }
+    } catch {
+      // A target that does not implement this leaves every group header without its "changed"
+      // note, which is a missing annotation rather than a broken panel.
+    }
+    return changed;
   }
 
   /**
@@ -743,7 +892,33 @@ export class FasmDebugSession extends DebugSession {
    * what it moved by, where that is a fact about this step rather than a constant.
    */
   private changedAmong(names: readonly string[]): string[] {
-    return names.filter((name) => name !== 'rip' && name !== 'eip' && this.changedRegisterNames.has(name));
+    return names.filter(
+      (name) =>
+        name !== 'rip' &&
+        name !== 'eip' &&
+        // Matched through every spelling gdb might have reported, since the Vector group displays a
+        // pseudo-register whose changes are reported against its raw halves — see
+        // changeReportingNames.
+        changeReportingNames(name).some((alias) => this.changedRegisterNames.has(alias)),
+    );
+  }
+
+  /**
+   * A group header's value column: whatever the group says about its own state, plus what moved in
+   * it at the last step.
+   *
+   * The two belong together rather than competing for the column. A collapsed Flags group wants to
+   * say both "[ ZF PF IF ]" and "and one of those just changed" — the second is what tells a reader
+   * scanning a stepped instruction that this group is the one worth opening, and the first is what
+   * they came to read once they did.
+   */
+  private groupHeader(base: string, names: readonly string[]): string {
+    const changed = this.changedAmong(names);
+    if (changed.length === 0) return base;
+    // Naming the register that moved is pointless when the group holds exactly one — the header is
+    // already that register's own row.
+    const note = names.length === 1 ? 'changed' : formatChangedSummary(changed);
+    return base.length === 0 ? note : `${base}  ${note}`;
   }
   /** The in-flight register-set resolution, which the Registers scope waits on before reading
    * anything. Without that wait the *first* stop would race it and render whatever groups the
@@ -891,8 +1066,9 @@ export class FasmDebugSession extends DebugSession {
       breakMode: 'always',
       details: {
         message: signal?.meaning ?? '',
-        // No stack trace to give: there is no unwind information in a DWARF-less assembly binary,
-        // which is the same reason stackTraceRequest reports a single frame.
+        // Left to the Call Stack view rather than duplicated as prose in the exception dialog:
+        // this field wants a formatted trace string, and the frames are already on screen beside
+        // it with their source lines clickable, which a string here would not be.
         stackTrace: undefined,
       },
     };
@@ -944,6 +1120,16 @@ export class FasmDebugSession extends DebugSession {
       // Marking it for a *pause* too is not a miss: the program has been running freely up to the
       // moment it is interrupted, so its registers have moved as surely as after any step.
       this.inferiorRanSinceSnapshot = true;
+      // The batched value snapshot is invalidated by the same event, and separately from the
+      // change bookkeeping above: a client may fetch a *group* at the next stop without fetching
+      // the Registers scope that owns it, which is the only place the change bookkeeping runs. The
+      // e2e regression that pinned this down set a register watchpoint, continued, and read the
+      // General Purpose group straight from the stop — every row still showing the values from
+      // before the continue.
+      this.registerValuesStale = true;
+      // gdb's "which registers changed" answer belongs to one stop, and the program is about to
+      // reach a different one.
+      this.changedRegistersReadAtThisStop = false;
       return true;
     }
     this.sendErrorResponse(
@@ -1195,18 +1381,73 @@ export class FasmDebugSession extends DebugSession {
     this.sendResponse(response);
   }
 
+  /**
+   * The call stack — reconstructed here rather than asked of gdb, which reports one frame for a
+   * binary with no unwind information however deep the program is (see unwind.ts).
+   *
+   * Frames are named by the label they are executing inside ("print_hex+0x12"), because that is the
+   * answer a fasm reader wants and the only one available: there is no function symbol to name a
+   * frame after, and naming every frame after its *file* — which is what the single-frame version
+   * did — says nothing once there is more than one.
+   */
   protected async stackTraceRequest(response: DebugProtocol.StackTraceResponse): Promise<void> {
     const pc = await this.currentPc();
-    const loc = pc !== undefined ? this.addressMap?.addressToLocation.get(pc) : undefined;
-    const frame = loc
-      ? new StackFrame(MAIN_FRAME_ID, path.basename(loc.fsPath), new Source(path.basename(loc.fsPath), loc.fsPath), loc.line)
-      : new StackFrame(MAIN_FRAME_ID, '<unmapped address>');
-    // Needed even when `loc` resolved fine: this is what tells VS Code a Disassembly View exists
-    // for this frame at all (the "Open Disassembly View" affordance), not just what backs it once
-    // opened.
-    if (pc !== undefined) frame.instructionPointerReference = `0x${pc.toString(16)}`;
-    response.body = { stackFrames: [frame], totalFrames: 1 };
+    if (pc === undefined) {
+      response.body = { stackFrames: [], totalFrames: 0 };
+      this.sendResponse(response);
+      return;
+    }
+    this.frames = await this.unwind(pc);
+    const stackFrames = this.frames.map((frame, index) => {
+      const loc = this.addressMap?.addressToLocation.get(frame.pc);
+      const label = describeAddress(this.symbolSpans, frame.pc) ?? `0x${frame.pc.toString(16)}`;
+      const stackFrame = loc
+        ? new StackFrame(MAIN_FRAME_ID + index, label, new Source(path.basename(loc.fsPath), loc.fsPath), loc.line)
+        : new StackFrame(MAIN_FRAME_ID + index, `${label} <unmapped address>`);
+      // Needed even when `loc` resolved fine: this is what tells VS Code a Disassembly View exists
+      // for this frame at all (the "Open Disassembly View" affordance), not just what backs it once
+      // opened.
+      stackFrame.instructionPointerReference = `0x${frame.pc.toString(16)}`;
+      // A caller frame is shown at the instruction it will *return to*, which is the one after its
+      // call — so the source line highlighted for it is the line after the one that called. Saying
+      // "subtle" here would be underselling it: this is the one place the frame list can mislead,
+      // and DAP has no field that means "this frame is mid-call".
+      if (index > 0) stackFrame.presentationHint = 'subtle';
+      return stackFrame;
+    });
+    response.body = { stackFrames, totalFrames: stackFrames.length };
     this.sendResponse(response);
+  }
+
+  /**
+   * Reads the stack once and hands it to the unwinder.
+   *
+   * One memory read for the whole backtrace, sized by UNWIND_STACK_BYTES rather than by the Stack
+   * group's own (user-configurable, usually much smaller) depth: a chain walk that runs off the end
+   * of the window stops there, so the window is what bounds how deep a backtrace can go.
+   */
+  private async unwind(pc: bigint): Promise<UnwoundFrame[]> {
+    const spName = this.stackPointerName();
+    const bits = spName === undefined ? undefined : REGISTER_WIDTH_BITS[spName];
+    const sp = spName === undefined ? undefined : await this.registerValue(spName, bits);
+    if (spName === undefined || bits === undefined || sp === undefined) return [{ pc, via: 'stop' }];
+
+    const wordBytes = bits / 8;
+    const bytes = await this.readMemoryBytes(`0x${sp.toString(16)}`, UNWIND_STACK_BYTES);
+    if (!bytes) return [{ pc, via: 'stop' }];
+    const values = decodeLittleEndianElements(bytes, wordBytes, Math.floor(bytes.length / wordBytes));
+    const stack = values.map((value, i) => ({ address: sp + BigInt(i * wordBytes), value }));
+
+    const bpName = this.framePointerName();
+    return unwindStack({
+      pc,
+      stackPointer: sp,
+      framePointer: bpName === undefined ? undefined : await this.registerValue(bpName, REGISTER_WIDTH_BITS[bpName]),
+      wordBytes,
+      stack,
+      isReturnSite: (address) => this.returnSites.has(address),
+      maxFrames: MAX_UNWOUND_FRAMES,
+    });
   }
 
   private async currentLocation(): Promise<{ fsPath: string; line: number } | undefined> {
@@ -1437,23 +1678,23 @@ export class FasmDebugSession extends DebugSession {
       const variables: Variable[] = [];
       if (groups.generalPurpose.length > 0) {
         const v = this.registerGroupVariable('General Purpose', 'registers:gp');
-        v.value = formatChangedSummary(this.changedAmong(groups.generalPurpose));
+        v.value = this.groupHeader('', groups.generalPurpose);
         variables.push(v);
       }
       if (groups.pointers.length > 0) {
         const v = this.registerGroupVariable('Pointers', 'registers:pointers');
-        v.value = formatChangedSummary(this.changedAmong(groups.pointers));
+        v.value = this.groupHeader('', groups.pointers);
         variables.push(v);
       }
       // Directly under Pointers, because it is the same question continued: rsp says where the
       // stack is, and this says what is in it.
       if (this.stackPointerName() !== undefined) variables.push(this.registerGroupVariable('Stack', 'registers:stack'));
       if (groups.eflagsName) {
-        const value = await this.readRegisterBigInt(groups.eflagsName, REGISTER_WIDTH_BITS[groups.eflagsName]);
+        const value = await this.registerValue(groups.eflagsName, REGISTER_WIDTH_BITS[groups.eflagsName]);
         const v = this.registerGroupVariable('Flags', 'registers:flags');
         // The set flags, not the number: "[ ZF PF IF ]" is the whole reason to glance at this row,
         // and a group header is the one place with no name column to compete with.
-        v.value = value === undefined ? '<unavailable>' : formatEflagsSummary(value);
+        v.value = value === undefined ? '<unavailable>' : this.groupHeader(formatEflagsSummary(value), [groups.eflagsName]);
         variables.push(v);
       }
       if (groups.vector.length > 0) {
@@ -1463,29 +1704,47 @@ export class FasmDebugSession extends DebugSession {
         const widest = VECTOR_WIDTH_BITS[groups.vector[0]];
         const label = widest === 512 ? 'Vector (SSE/AVX/AVX-512)' : widest === 256 ? 'Vector (SSE/AVX)' : 'Vector (SSE)';
         const v = this.registerGroupVariable(label, 'registers:vector');
-        v.value = `${groups.vector.length} x ${widest}-bit`;
+        v.value = this.groupHeader(`${groups.vector.length} x ${widest}-bit`, groups.vector);
         variables.push(v);
       }
       if (groups.mxcsrName) {
-        const value = await this.readRegisterBigInt(groups.mxcsrName, PSEUDO_REGISTER_WIDTH_BITS[groups.mxcsrName]);
+        const value = await this.registerValue(groups.mxcsrName, PSEUDO_REGISTER_WIDTH_BITS[groups.mxcsrName]);
         const v = this.registerGroupVariable('MXCSR', 'registers:mxcsr');
-        v.value = value === undefined ? '<unavailable>' : formatBitFieldSummary(decodeMxcsr(value));
+        v.value = value === undefined ? '<unavailable>' : this.groupHeader(formatBitFieldSummary(decodeMxcsr(value)), [groups.mxcsrName]);
         variables.push(v);
       }
       if (groups.x87.length > 0 || groups.x87Control.length > 0) {
         const v = this.registerGroupVariable('x87 FPU', 'registers:x87');
         // TOP is what makes st0 mean a particular physical register, so it belongs on the header:
         // it is the one number that changes what every row underneath is naming.
-        const status = await this.readRegisterBigInt('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
+        const status = await this.registerValue('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
+        let base = '';
         if (status !== undefined) {
-          const top = decodeX87Status(status).find((f) => f.name === 'TOP');
-          if (top) v.value = `st0 = R${top.value}  ${formatBitFieldSummary(decodeX87Status(status).filter((f) => f.name !== 'TOP'))}`;
+          const decoded = decodeX87Status(status);
+          const top = decoded.find((f) => f.name === 'TOP');
+          if (top) base = `st0 = R${top.value}  ${formatBitFieldSummary(decoded.filter((f) => f.name !== 'TOP'))}`;
         }
+        // The stack registers only. fstat and ftag move on *every* x87 instruction (TOP rotates, the
+        // tag word follows it), so including the environment words here would mark the group changed
+        // whenever it was touched at all — which is the same as never marking it.
+        v.value = this.groupHeader(base, groups.x87);
         variables.push(v);
       }
-      if (groups.mask.length > 0) variables.push(this.registerGroupVariable('Mask (AVX-512)', 'registers:mask'));
-      if (groups.thread.length > 0) variables.push(this.registerGroupVariable('Thread / Syscall', 'registers:thread'));
-      if (groups.segment.length > 0) variables.push(this.registerGroupVariable('Segment', 'registers:segment'));
+      if (groups.mask.length > 0) {
+        const v = this.registerGroupVariable('Mask (AVX-512)', 'registers:mask');
+        v.value = this.groupHeader('', groups.mask);
+        variables.push(v);
+      }
+      if (groups.thread.length > 0) {
+        const v = this.registerGroupVariable('Thread / Syscall', 'registers:thread');
+        v.value = this.groupHeader('', groups.thread);
+        variables.push(v);
+      }
+      if (groups.segment.length > 0) {
+        const v = this.registerGroupVariable('Segment', 'registers:segment');
+        v.value = this.groupHeader('', groups.segment);
+        variables.push(v);
+      }
       response.body = { variables };
       this.sendResponse(response);
       return;
@@ -1593,7 +1852,7 @@ export class FasmDebugSession extends DebugSession {
 
     if (kind === 'registers:mxcsr') {
       const name = this.registerGroups.mxcsrName;
-      const raw = name === undefined ? undefined : await this.readRegisterBigInt(name, PSEUDO_REGISTER_WIDTH_BITS[name]);
+      const raw = name === undefined ? undefined : await this.registerValue(name, PSEUDO_REGISTER_WIDTH_BITS[name]);
       const variables: DebugProtocol.Variable[] = [];
       if (name !== undefined && raw !== undefined) {
         variables.push(this.wholeWordVariable(name, PSEUDO_REGISTER_WIDTH_BITS[name], raw));
@@ -1631,7 +1890,7 @@ export class FasmDebugSession extends DebugSession {
     if (kind === 'registers:flags') {
       const eflagsName = this.registerGroups.eflagsName;
       const bits = eflagsName ? REGISTER_WIDTH_BITS[eflagsName] : undefined;
-      const raw = eflagsName ? await this.readRegisterBigInt(eflagsName, bits) : undefined;
+      const raw = eflagsName ? await this.registerValue(eflagsName, bits) : undefined;
       const variables: DebugProtocol.Variable[] = [];
       if (eflagsName !== undefined && bits !== undefined && raw !== undefined) {
         // The register itself, first: it is the only row here that can actually be *written*
@@ -1645,12 +1904,13 @@ export class FasmDebugSession extends DebugSession {
         // Which jumps would be taken is the question the flags are read *for* — see
         // evaluateJumpConditions. Its own row lists the taken ones; expanding shows every condition
         // with the flag test that decided it.
-        const conditions = evaluateJumpConditions(raw);
+        const conditions = evaluateJumpConditions(raw, await this.counterState());
         const taken: DebugProtocol.Variable = new Variable(
           'Conditions',
           conditions.filter((c) => c.taken).map((c) => c.mnemonics.split(' / ')[0]).join(', '),
           this.variableHandles.create('registers:flags:conditions'),
         );
+        taken.type = 'Which conditional branches would be taken if one were executed right now. The same conditions govern cmovcc and setcc — a cmovg moves exactly when a jg would jump.';
         taken.presentationHint = { kind: 'data', attributes: ['readOnly'] };
         variables.push(taken);
 
@@ -1663,10 +1923,10 @@ export class FasmDebugSession extends DebugSession {
 
     if (kind === 'registers:flags:conditions') {
       const eflagsName = this.registerGroups.eflagsName;
-      const raw = eflagsName ? await this.readRegisterBigInt(eflagsName, REGISTER_WIDTH_BITS[eflagsName]) : undefined;
+      const raw = eflagsName ? await this.registerValue(eflagsName, REGISTER_WIDTH_BITS[eflagsName]) : undefined;
       const variables: DebugProtocol.Variable[] = [];
       if (raw !== undefined) {
-        for (const condition of evaluateJumpConditions(raw)) {
+        for (const condition of evaluateJumpConditions(raw, await this.counterState())) {
           const v: DebugProtocol.Variable = new Variable(condition.mnemonics, condition.taken ? 'taken' : 'not taken');
           v.type = condition.meaning;
           v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
@@ -1748,6 +2008,24 @@ export class FasmDebugSession extends DebugSession {
     return this.registerGroups.pointers.find((name) => name === 'rsp' || name === 'esp');
   }
 
+  /** Which register holds the frame pointer, if this target has one. Only a *convention* in
+   * assembly — nothing obliges a fasm program to maintain rbp as a frame pointer — which is why the
+   * unwinder validates the chain it finds rather than trusting it (see walkFramePointers). */
+  private framePointerName(): string | undefined {
+    return this.registerGroups.pointers.find((name) => name === 'rbp' || name === 'ebp');
+  }
+
+  /** The counter register and what it holds, for the `loop`/`jrcxz` conditions the flags alone
+   * cannot answer (see counterConditions). Undefined when the target reports no counter register
+   * or the read fails — which drops those four rows rather than failing the whole Flags group. */
+  private async counterState(): Promise<CounterState | undefined> {
+    const name = this.registerGroups.generalPurpose.find((n) => n === 'rcx' || n === 'ecx');
+    const bits = name === undefined ? undefined : REGISTER_WIDTH_BITS[name];
+    const value = name === undefined ? undefined : await this.registerValue(name, bits);
+    if (name === undefined || bits === undefined || value === undefined) return undefined;
+    return { name, value, bits };
+  }
+
   /** Which of the two Linux syscall conventions this target uses. Decided by the register set gdb
    * reported rather than by the host: a 32-bit binary debugged on a 64-bit machine makes i386
    * syscalls, and numbering it as x86-64 would name every call wrong. */
@@ -1777,7 +2055,7 @@ export class FasmDebugSession extends DebugSession {
   private async segmentBase(segmentName: string): Promise<bigint | undefined> {
     const baseName = `${segmentName}_base`;
     if (!this.registerGroups.thread.includes(baseName)) return undefined;
-    return this.readRegisterBigInt(baseName, PSEUDO_REGISTER_WIDTH_BITS[baseName]);
+    return this.registerValue(baseName, PSEUDO_REGISTER_WIDTH_BITS[baseName]);
   }
 
   /** One decoded bit or field of a control/status word as a read-only row. Read-only because the
@@ -1920,8 +2198,8 @@ export class FasmDebugSession extends DebugSession {
     const [raws, decimals] = await Promise.all([this.readRegisterValues(names, 'x'), this.readRegisterValues(names, 'N')]);
     // Which physical register st0 currently names — the whole reason the tag word cannot be read
     // as "st0's tag is at index 0".
-    const status = await this.readRegisterBigInt('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
-    const tagWord = await this.readRegisterBigInt('ftag', PSEUDO_REGISTER_WIDTH_BITS['ftag']);
+    const status = await this.registerValue('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
+    const tagWord = await this.registerValue('ftag', PSEUDO_REGISTER_WIDTH_BITS['ftag']);
     const top = status === undefined ? undefined : decodeX87Status(status).find((f) => f.name === 'TOP')?.value;
     const tags = tagWord === undefined ? undefined : decodeX87Tags(tagWord);
 
@@ -1948,7 +2226,7 @@ export class FasmDebugSession extends DebugSession {
 
     for (const name of this.registerGroups.x87Control) {
       const bits = PSEUDO_REGISTER_WIDTH_BITS[name];
-      const value = await this.readRegisterBigInt(name, bits);
+      const value = await this.registerValue(name, bits);
       if (value === undefined) continue;
       const decoded = name === 'fctrl' ? decodeX87Control(value) : name === 'fstat' ? decodeX87Status(value) : undefined;
       // Every one of these is a bit pattern rather than a quantity, tag word and opcode included.
@@ -1997,7 +2275,7 @@ export class FasmDebugSession extends DebugSession {
    * word is the tag word (whose eight two-bit entries are not a flag list). */
   private async controlWordVariables(name: string): Promise<DebugProtocol.Variable[]> {
     const bits = PSEUDO_REGISTER_WIDTH_BITS[name];
-    const value = bits === undefined ? undefined : await this.readRegisterBigInt(name, bits);
+    const value = bits === undefined ? undefined : await this.registerValue(name, bits);
     if (value === undefined || bits === undefined) return [];
 
     // No whole-register row here, unlike the Flags and MXCSR groups: the row that was expanded to
@@ -2007,7 +2285,7 @@ export class FasmDebugSession extends DebugSession {
     if (name === 'fctrl') variables.push(...FasmDebugSession.bitFieldVariables(decodeX87Control(value)));
     else if (name === 'fstat') variables.push(...FasmDebugSession.bitFieldVariables(decodeX87Status(value)));
     else if (name === 'ftag') {
-      const status = await this.readRegisterBigInt('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
+      const status = await this.registerValue('fstat', PSEUDO_REGISTER_WIDTH_BITS['fstat']);
       const top = status === undefined ? undefined : decodeX87Status(status).find((f) => f.name === 'TOP')?.value;
       for (const { physical, state } of decodeX87Tags(value)) {
         // Named by both the physical register and the st(n) that currently means it, because the
@@ -2024,7 +2302,7 @@ export class FasmDebugSession extends DebugSession {
     const variables: DebugProtocol.Variable[] = [];
     for (const name of this.registerGroups.thread) {
       const bits = PSEUDO_REGISTER_WIDTH_BITS[name];
-      const value = await this.readRegisterBigInt(name, bits);
+      const value = await this.registerValue(name, bits);
       if (value === undefined || bits === undefined) continue;
 
       if (name === 'orig_rax' || name === 'orig_eax') {
@@ -2080,11 +2358,15 @@ export class FasmDebugSession extends DebugSession {
   /**
    * The Stack group: the machine words sitting at and above the stack pointer.
    *
-   * This adapter reports one frame and never unwinds — there is no CFI to unwind with in a fasmg
-   * binary — so nothing else in the UI can answer "what called this" or "what did the prologue just
-   * push". The raw words can, and each one is run through the same label resolution every register
-   * row gets, which is what turns the return address a `call` pushed into "→ start+0x25" rather
-   * than a bare number.
+   * The Call Stack view now answers "what called this" (see unwind.ts), but it answers only that.
+   * What the prologue just pushed, which saved register is in which slot, and what an argument
+   * passed on the stack actually holds are all still questions only the raw words can settle, and
+   * each one is run through the same label resolution every register row gets — which is what turns
+   * a pushed return address into "→ start+0x25" rather than a bare number.
+   *
+   * The two annotations that make this a picture of a frame rather than a column of numbers come
+   * free from state already in hand: the frame pointer says where the current frame begins, and the
+   * listing-derived return sites say which words are return addresses.
    *
    * One register read plus one memory read for the whole group, however deep it goes.
    */
@@ -2092,25 +2374,48 @@ export class FasmDebugSession extends DebugSession {
     const spName = this.stackPointerName();
     if (spName === undefined) return [];
     const bits = REGISTER_WIDTH_BITS[spName];
-    const sp = await this.readRegisterBigInt(spName, bits);
+    const sp = await this.registerValue(spName, bits);
     if (sp === undefined || bits === undefined) return [];
 
     const wordBytes = bits / 8;
-    const bytes = await this.readMemoryBytes(`0x${sp.toString(16)}`, STACK_WORDS_SHOWN * wordBytes);
+    // The red zone sits *below* the stack pointer, so reading it means starting lower and listing
+    // the negative offsets first — the whole group stays one read and one ascending list of
+    // addresses either way.
+    const redZoneWords = this.showRedZone ? RED_ZONE_BYTES / wordBytes : 0;
+    const start = sp - BigInt(redZoneWords * wordBytes);
+    const bytes = await this.readMemoryBytes(`0x${start.toString(16)}`, (redZoneWords + this.stackWordsShown) * wordBytes);
     if (!bytes) return [];
 
+    const bpName = this.framePointerName();
+    const bp = bpName === undefined ? undefined : await this.registerValue(bpName, REGISTER_WIDTH_BITS[bpName]);
     const words = decodeLittleEndianElements(bytes, wordBytes, Math.floor(bytes.length / wordBytes));
-    return words.map((word, i) => {
-      const offset = i * wordBytes;
+    const rows = words.map((word, i) => ({ word, offset: i * wordBytes - redZoneWords * wordBytes }));
+    // Ordered by what is worth reading first rather than by address: the stack pointer is where the
+    // program is, so it leads, and the red zone follows with the slot nearest rsp first. Listing
+    // the whole thing in address order instead — which is the obvious way, and what this did until
+    // the output was actually looked at — opens the group with sixteen rows of untouched scratch
+    // and pushes the return address off the bottom.
+    rows.sort((a, b) => (a.offset < 0) === (b.offset < 0) ? Math.abs(a.offset) - Math.abs(b.offset) : a.offset < 0 ? 1 : -1);
+    return rows.map(({ word, offset }) => {
       const address = sp + BigInt(offset);
+      const sign = offset < 0 ? '-' : '+';
       // The row's name is where it is relative to the stack pointer, because that is how the
       // source addresses it — "[rsp+8]" is a thing you write, "0x7ffd3c40" is not.
-      const v: DebugProtocol.Variable = new Variable(
-        `[${spName}+0x${offset.toString(16)}]`,
-        formatRegisterValueCompact(bits, word, { ascii: true, pointsTo: describeAddress(this.symbolSpans, word) }),
-      );
-      v.evaluateName = `*(${unsignedCastType(bits)}*)($${gdbRegisterName(spName)}+${offset})`;
-      v.type = `The ${sizeName(wordBytes)} at 0x${address.toString(16)}.`;
+      const name = `[${spName}${sign}0x${Math.abs(offset).toString(16)}]`;
+      const notes: string[] = [];
+      // What makes the raw stack readable as a *structure* rather than a column of numbers: where
+      // the current frame begins, and which words are the return addresses that got us here.
+      if (bp !== undefined && address === bp) notes.push(`← ${bpName}`);
+      if (this.returnSites.has(word)) notes.push('return address');
+      if (offset < 0) notes.push('red zone');
+
+      const value = formatRegisterValueCompact(bits, word, { ascii: true, pointsTo: describeAddress(this.symbolSpans, word) });
+      const v: DebugProtocol.Variable = new Variable(name, notes.length > 0 ? `${value}  ${notes.join('  ')}` : value);
+      v.evaluateName = `*(${unsignedCastType(bits)}*)($${gdbRegisterName(spName)}${sign}${Math.abs(offset)})`;
+      v.type =
+        offset < 0
+          ? `The ${sizeName(wordBytes)} at 0x${address.toString(16)}, below the stack pointer — System V lets a leaf function use these 128 bytes as scratch without moving ${spName}.`
+          : `The ${sizeName(wordBytes)} at 0x${address.toString(16)}.`;
       v.memoryReference = `0x${address.toString(16)}`;
       v.presentationHint = { kind: 'data', attributes: ['readOnly'] };
       return v;
@@ -2180,7 +2485,7 @@ export class FasmDebugSession extends DebugSession {
     options: { address: boolean; ascii: boolean; decimal?: boolean; suffix?: (value: bigint) => Promise<string | undefined> },
   ): Promise<DebugProtocol.Variable> {
     const bits = registerWidthBits(name);
-    const value = await this.readRegisterBigInt(name, bits);
+    const value = await this.registerValue(name, bits);
     if (value === undefined || bits === undefined) {
       const unavailable: DebugProtocol.Variable = new Variable(name, '<unavailable>');
       unavailable.evaluateName = name;
@@ -2210,7 +2515,7 @@ export class FasmDebugSession extends DebugSession {
    * points anywhere readable. */
   private async registerDetailVariables(name: string): Promise<DebugProtocol.Variable[]> {
     const bits = registerWidthBits(name);
-    const value = await this.readRegisterBigInt(name, bits);
+    const value = await this.registerValue(name, bits);
     if (value === undefined || bits === undefined) return [];
 
     const readOnly = (label: string, text: string, description?: string): DebugProtocol.Variable => this.readOnlyVariable(label, text, description);
@@ -2315,7 +2620,7 @@ export class FasmDebugSession extends DebugSession {
    * of gdb as a second round-trip, so the names can never disagree with the number beside them.
    */
   private async formatRegister(name: string, bits: RegisterBits | undefined, form: RegisterDisplayForm = 'labelled'): Promise<string | undefined> {
-    const value = await this.readRegisterBigInt(name, bits);
+    const value = await this.registerValue(name, bits);
     if (value === undefined || bits === undefined) return undefined;
 
     // A control/status word is a set of named bits, not a quantity: its decoded summary is what
@@ -2950,6 +3255,14 @@ export class FasmDebugSession extends DebugSession {
       await this.evaluateRequestUnsafe(response, args);
     } catch (err) {
       this.sendErrorResponse(response, 3, (err as Error).message);
+    } finally {
+      // Any evaluated expression may have *written* to the machine — "set $orig_rax = 59" in the
+      // Debug Console is a register write that never passes through setRegister, and a Watch entry
+      // is just as free to contain an assignment. Rather than trying to tell a reading expression
+      // from a writing one (gdb's evaluator accepts far more than this file could classify), the
+      // batched snapshot is simply dropped afterwards. The cost is one extra MI command on the next
+      // panel read; the alternative is a row that reports a value the user has already changed.
+      this.registerValuesStale = true;
     }
   }
 
@@ -3256,6 +3569,10 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 7, (err as Error).message);
       return undefined;
     }
+    // The batched snapshot every row is drawn from was taken before this write and no longer
+    // describes the machine. Writing a sub-register makes this wider than it looks — a "set al" is a
+    // change to rax — so the whole snapshot is dropped rather than the one name patched.
+    this.registerValuesStale = true;
 
     const formatted = await this.formatRegister(name, bits, form);
     return formatted ?? parsed.toString();
@@ -3293,6 +3610,7 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 7, (err as Error).message);
       return undefined;
     }
+    this.registerValuesStale = true;
     return (await this.formatVectorRegister(name, bits, form)) ?? `0x${parsed.toString(16)}`;
   }
 
@@ -3320,6 +3638,9 @@ export class FasmDebugSession extends DebugSession {
       this.sendErrorResponse(response, 7, (err as Error).message);
       return undefined;
     }
+    // An x87 write is never confined to the register named: pushing a value rotates TOP and retags
+    // the stack, so fstat and ftag — both in the snapshot — have moved too.
+    this.registerValuesStale = true;
     return (await this.formatX87Register(name, form)) ?? trimmed;
   }
 

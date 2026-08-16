@@ -1598,4 +1598,115 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('reconstructs a real nested call stack for a binary with no unwind information at all', async function () {
+    // gdb on its own reports exactly one frame here, however deep the program is: a fasmg binary
+    // carries no DWARF, no .eh_frame and no symbol table. The frames below come from the listing —
+    // every call's own encoding says where it returns to, which makes recognising a return address
+    // on the stack exact rather than a guess. See debug/src/unwind.ts.
+    this.timeout(30000);
+
+    const callDir = makeTempDir('fasm2-studio-dap-e2e-callstack-');
+    const callAsmPath = path.join(callDir, 'callstack.asm');
+    const callProgramPath = path.join(callDir, 'callstack');
+    const callListingPath = path.join(callDir, 'callstack.lst');
+    // Deliberately mixes the two shapes real assembly comes in: `outer` keeps a frame pointer, so
+    // the chain walk has something to follow, while `inner` is frameless — which is what most
+    // hand-written assembly looks like, and what the scan fallback exists for.
+    const CALL_SRC = [
+      'format ELF64 executable 3', // 1
+      'entry start', // 2
+      '', // 3
+      'segment readable executable', // 4
+      '', // 5
+      'start:', // 6
+      '\tpush rbp', // 7
+      '\tmov rbp, rsp', // 8
+      '\tcall outer', // 9
+      '\tmov eax, 60', // 10
+      '\txor edi, edi', // 11
+      '\tsyscall', // 12
+      '', // 13
+      'outer:', // 14
+      '\tpush rbp', // 15
+      '\tmov rbp, rsp', // 16
+      '\tcall inner', // 17
+      '\tpop rbp', // 18
+      '\tret', // 19
+      '', // 20
+      'inner:', // 21
+      '\tnop', // 22
+      '\tret', // 23
+      '', // 24
+    ].join('\n');
+    fs.writeFileSync(callAsmPath, CALL_SRC, 'utf8');
+    const build = spawnSync('fasm2', ['-i', "include 'listing.inc'", callAsmPath, callProgramPath], { cwd: callDir, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+    fs.chmodSync(callProgramPath, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: callProgramPath, asmFile: callAsmPath, listingFile: callListingPath, cwd: callDir });
+      // The `nop` inside the innermost routine — two calls deep from the entry point.
+      await client.sendRequest('setBreakpoints', { source: { path: callAsmPath }, breakpoints: [{ line: 22 }] });
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const trace = await client.sendRequest<{
+        stackFrames: Array<{ id: number; name: string; line: number; instructionPointerReference?: string; presentationHint?: string }>;
+        totalFrames: number;
+      }>('stackTrace', { threadId: 1 });
+
+      assert.strictEqual(trace.stackFrames.length, 3, `expected start -> outer -> inner, got ${JSON.stringify(trace.stackFrames.map((f) => f.name))}`);
+      assert.strictEqual(trace.totalFrames, 3);
+
+      // Innermost first, each named by the label it is executing inside — there is no function
+      // symbol to name a frame after, so the label is the answer.
+      assert.match(trace.stackFrames[0].name, /^inner/, 'the innermost frame is where the program is stopped');
+      assert.match(trace.stackFrames[1].name, /^outer/);
+      assert.match(trace.stackFrames[2].name, /^start/);
+
+      // A caller frame resumes at the instruction *after* its call, so it maps to the line after
+      // the one that called — line 18 for outer's "call inner" on 17, line 10 for start's on 9.
+      assert.strictEqual(trace.stackFrames[0].line, 22, 'the innermost frame is at the breakpoint itself');
+      assert.strictEqual(trace.stackFrames[1].line, 18);
+      assert.strictEqual(trace.stackFrames[2].line, 10);
+
+      // Every frame is disassemblable, and the callers are marked as the mid-call frames they are.
+      for (const frame of trace.stackFrames) assert.match(frame.instructionPointerReference ?? '', /^0x[0-9a-f]+$/);
+      assert.strictEqual(trace.stackFrames[0].presentationHint, undefined);
+      assert.strictEqual(trace.stackFrames[1].presentationHint, 'subtle');
+
+      // The Stack group reads the same return addresses out of the raw words, and says so — which
+      // is what makes the stack legible as a frame rather than a column of numbers.
+      const scopes = await client.sendRequest<{ scopes: Array<{ name: string; variablesReference: number }> }>('scopes', { frameId: trace.stackFrames[0].id });
+      const registersRef = scopes.scopes.find((s) => s.name === 'Registers')!.variablesReference;
+      const groups = await client.sendRequest<{ variables: Array<{ name: string; variablesReference: number }> }>('variables', { variablesReference: registersRef });
+      const stackGroup = groups.variables.find((v) => v.name === 'Stack')!;
+      const stackRows = await client.sendRequest<{ variables: Array<{ name: string; value: string }> }>('variables', {
+        variablesReference: stackGroup.variablesReference,
+      });
+      // [rsp+0x0] holds the return address inner was called with, since inner pushes nothing.
+      assert.match(stackRows.variables[0].name, /^\[rsp\+0x0\]$/);
+      assert.match(stackRows.variables[0].value, /return address/, `expected the word at rsp to be flagged: ${stackRows.variables[0].value}`);
+      // ...and it resolves to a label, the same way every other address in this UI does.
+      assert.match(stackRows.variables[0].value, /→ outer\+0x/);
+      // The frame pointer still addresses outer's frame, and the row it points at says so.
+      const framePointerRow = stackRows.variables.find((v) => /← rbp/.test(v.value));
+      assert.ok(framePointerRow, `expected one row marked as the frame pointer: ${JSON.stringify(stackRows.variables.map((v) => v.value))}`);
+
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+      await removeTempDir(callDir);
+    }
+  });
+
 });

@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.23.0",
+  "version": "1.24.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -596,6 +596,16 @@
                 },
                 "description": "Environment variables for the debugged program, merged over the inherited environment.",
                 "default": {}
+              },
+              "stackWords": {
+                "type": "number",
+                "description": "How many machine words at and above the stack pointer the Registers panel's Stack group lists. The whole group is one memory read however deep it goes, so raise it freely for code with deep frames.",
+                "default": 16
+              },
+              "stackRedZone": {
+                "type": "boolean",
+                "description": "Also list the 128 bytes below the stack pointer — the System V red zone, which a leaf routine may use as scratch without moving rsp. Off by default because for most code those words are leftovers rather than data; on when you are debugging a leaf that uses them, where nothing else shows them.",
+                "default": false
               }
             }
           },
@@ -636,6 +646,16 @@
               "cwd": {
                 "type": "string",
                 "description": "Working directory for gdb itself."
+              },
+              "stackWords": {
+                "type": "number",
+                "description": "How many machine words at and above the stack pointer the Registers panel's Stack group lists. The whole group is one memory read however deep it goes, so raise it freely for code with deep frames.",
+                "default": 16
+              },
+              "stackRedZone": {
+                "type": "boolean",
+                "description": "Also list the 128 bytes below the stack pointer — the System V red zone, which a leaf routine may use as scratch without moving rsp. Off by default because for most code those words are leftovers rather than data; on when you are debugging a leaf that uses them, where nothing else shows them.",
+                "default": false
               }
             }
           }

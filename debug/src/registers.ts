@@ -229,6 +229,28 @@ export interface RegisterGroups {
    * "-data-list-register-values" takes. Needed for the x87 stack, whose raw 80-bit bit pattern has
    * no expression form to ask for (`p/x $st0` is not something -data-evaluate-expression accepts). */
   numbers: ReadonlyMap<string, number>;
+  /** The same mapping the other way, for reading gdb's answers back: "-data-list-changed-registers"
+   * replies with register *numbers* and nothing else. */
+  namesByNumber: ReadonlyMap<number, string>;
+}
+
+/**
+ * Every name gdb might report a change under, for a register the panel displays as `name`.
+ *
+ * Needed because "-data-list-changed-registers" answers in terms of the target's *raw* registers,
+ * and the Vector group is the one place those are not what is on screen: a machine with AVX has raw
+ * `xmm0` plus a raw `ymm0h` upper half, and the `ymm0` this panel shows is a pseudo-register gdb
+ * assembles from the two. So a `movdqu xmm0, ...` reports xmm0 changed and ymm0 not — verified
+ * against gdb 16.3, which reports register 40 (xmm0) and never the ymm0 pseudo — and a Vector
+ * header matching on the displayed name alone would sit there saying nothing had moved while the
+ * row underneath it visibly changed.
+ *
+ * Every other group displays raw registers already, so for them this is the identity.
+ */
+export function changeReportingNames(name: string): string[] {
+  const index = /^[xyz]mm(\d+)$/.exec(name)?.[1];
+  if (index === undefined) return [name];
+  return [`xmm${index}`, `ymm${index}`, `zmm${index}`, `ymm${index}h`, `zmm${index}h`];
 }
 
 // Each "slot" is a list of name candidates for one logical register, in priority order — a target
@@ -273,10 +295,12 @@ export function resolveRegisterGroups(registerNames: readonly string[]): Registe
   const lowered = registerNames.map((n) => n.toLowerCase());
   const available = new Set(lowered.filter((n) => n.length > 0));
   const numbers = new Map<string, number>();
+  const namesByNumber = new Map<number, string>();
   lowered.forEach((name, index) => {
     // First occurrence wins — a name never repeats in a real target description, and a malformed
     // one that did would otherwise leave the *later* number in the map for no reason.
     if (name.length > 0 && !numbers.has(name)) numbers.set(name, index);
+    if (name.length > 0) namesByNumber.set(index, name);
   });
   return {
     generalPurpose: pickAvailable(GP_SLOTS, available),
@@ -290,6 +314,7 @@ export function resolveRegisterGroups(registerNames: readonly string[]): Registe
     mask: pickAvailable(MASK_SLOTS, available),
     thread: pickAvailable(THREAD_SLOTS, available),
     numbers,
+    namesByNumber,
   };
 }
 
@@ -605,6 +630,16 @@ export interface JumpCondition {
   meaning: string;
 }
 
+/** The counter register the `loop`/`jrcxz` family implicitly reads — rcx on x86-64, ecx on i386.
+ * Passed in rather than assumed, for the same reason every register name here is (see the file
+ * header): the two architectures spell it differently and only one of them exists on a given
+ * target. */
+export interface CounterState {
+  name: string;
+  value: bigint;
+  bits: RegisterBits;
+}
+
 /**
  * Which conditional jumps would be taken if one were executed right now.
  *
@@ -613,8 +648,15 @@ export interface JumpCondition {
  * re-derives at every single breakpoint while stepping through a comparison, and gets wrong in
  * exactly the places it matters (the signed/unsigned pairs: jb vs jl, ja vs jg). The flags are
  * already read to display them; deriving this costs nothing more.
+ *
+ * The same table answers `cmovcc` and `setcc`, which test the identical conditions — a `cmovg` is
+ * taken exactly when a `jg` would be.
+ *
+ * `counter` adds the branches that read no flag at all (see counterConditions). Optional because
+ * the caller has to have read the counter register to supply it, and a flags display with no
+ * counter beside it is still worth showing.
  */
-export function evaluateJumpConditions(eflags: bigint): JumpCondition[] {
+export function evaluateJumpConditions(eflags: bigint, counter?: CounterState): JumpCondition[] {
   const bit = (n: number): boolean => ((eflags >> BigInt(n)) & 1n) === 1n;
   const cf = bit(0), pf = bit(2), zf = bit(6), sf = bit(7), of = bit(11);
   return [
@@ -634,6 +676,41 @@ export function evaluateJumpConditions(eflags: bigint): JumpCondition[] {
     { mnemonics: 'jno', taken: !of, meaning: 'no signed overflow — OF=0' },
     { mnemonics: 'jp / jpe', taken: pf, meaning: 'even parity in the low byte — PF=1' },
     { mnemonics: 'jnp / jpo', taken: !pf, meaning: 'odd parity in the low byte — PF=0' },
+    ...(counter ? counterConditions(counter, zf) : []),
+  ];
+}
+
+/**
+ * The conditional branches that read the counter register instead of EFLAGS.
+ *
+ * They belong beside the flag-based ones because they answer the same question — "would a branch
+ * here be taken" — and they are the two an assembly reader is least able to answer by eye, for
+ * opposite reasons. `jrcxz` is easy but sits nowhere near the flags in the UI, so it gets checked
+ * against a stale mental note of what rcx held. `loop` is genuinely counter-intuitive: it
+ * *decrements first*, so whether it branches depends on rcx-1, not rcx, and the reading that
+ * matters is one nothing else on screen performs.
+ *
+ * The rcx=0 case is called out by name rather than left to the arithmetic. `loop` with a zero
+ * counter decrements to all-ones and branches, so it runs 2^64 more times — the single worst
+ * outcome available from this instruction, reached from the most innocent-looking register value,
+ * and it is invisible in a display that shows only "rcx = 0x0".
+ */
+function counterConditions({ name, value, bits }: CounterState, zf: boolean): JumpCondition[] {
+  const zero = value === 0n;
+  // What the decrement leaves behind, wrapped at the register's own width — the value `loop`
+  // actually tests, and the whole reason it cannot be read off `value` directly.
+  const afterDecrement = (value - 1n) & ((1n << BigInt(bits)) - 1n);
+  const willRepeat = afterDecrement !== 0n;
+  const wrapNote = zero ? ` — ${name} is 0, so the decrement wraps and this repeats 2^${bits} times` : '';
+  const shortName = name === 'rcx' ? 'jrcxz' : 'jecxz';
+  return [
+    // Worded as the condition rather than as a state ("taken when rcx is 0", not "rcx=0"), because
+    // this row sits in a column of flag conditions whose meanings read "ZF=1" — and there the "=1"
+    // is a definition, while here the same shape would look like a reading of the register.
+    { mnemonics: shortName, taken: zero, meaning: `taken when ${name} is 0 — reads no flag at all` },
+    { mnemonics: 'loop', taken: willRepeat, meaning: `${name} decrements to 0x${afterDecrement.toString(16)} first, then branches while it is non-zero${wrapNote}` },
+    { mnemonics: 'loope / loopz', taken: willRepeat && zf, meaning: `as loop, and only while ZF=1${wrapNote}` },
+    { mnemonics: 'loopne / loopnz', taken: willRepeat && !zf, meaning: `as loop, and only while ZF=0${wrapNote}` },
   ];
 }
 

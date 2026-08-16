@@ -1,5 +1,150 @@
 # Changelog
 
+## 1.24.0
+
+### How you got here
+
+gdb reports one stack frame for a fasm2 program, however deep it actually is. That is not gdb being
+unhelpful: a fasmg binary carries no DWARF, no `.eh_frame` and no symbol table, so there is nothing
+to unwind with. "What called this" was the question a large project asked most often and the one
+thing the debugger could not answer at all.
+
+It can now, and the answer comes from the listing that was already being read for source-line
+mapping. A listing entry records an address *and the bytes that statement assembled to*, which
+between them name the exact address every `call` in the program pushes. Collected once at launch,
+that is a closed set of the only values a return address can have — so recognising one on the stack
+is an exact membership test rather than the "does this look like it points into the text segment"
+guess a scanning unwinder normally has to make.
+
+```
+inner+0x2      demo.asm:23
+outer+0x9      demo.asm:19
+start+0x21     demo.asm:12
+```
+
+Frames are named by the label they are executing inside, because there is no function symbol to name
+them after and naming every frame after its *file* — which is what the single-frame version did —
+says nothing once there is more than one.
+
+Detection reads the encoding, not the listing's statement text, and that is load-bearing rather than
+fastidious: a `call` emitted from inside a macro shows the **macro invocation** as its text. Against
+a real listing, a statement reading `emitcall outer` assembles to `E8 12 00 00 00` — a direct near
+call that any text-matching rule would miss, in exactly the macro-heavy code this extension exists
+for. The `FF` opcode group is decoded down to its ModRM reg field for the same reason in reverse:
+`inc`, `dec`, `jmp` and `push` are all spelled `FF` too, and calling one of them a call would invent
+a return site and then invent whole frames out of leftover stack.
+
+Routines that keep a frame pointer are walked through their saved-`rbp` chain, which gives the calls
+in their true nesting order. Frameless ones — most hand-written assembly, since nothing makes a
+prologue necessary — are recovered by scanning for those known return addresses instead. Both are
+needed, and the end-to-end test is what established it: a leaf that skips its prologue leaves `rbp`
+still addressing its *caller's* frame, so a chain walk starting there steps straight over the caller
+and reports it as though the leaf had been called from one level higher. Its return address is
+sitting between `rsp` and `rbp`, in the one region the chain never looks at. That region is scanned
+first and the chain walked from `rbp` up; they are disjoint by construction.
+
+Every frame records which of the two found it, because they do not carry the same confidence: a scan
+cannot tell a live frame from a dead one left behind by a call that already returned.
+
+### The changed-register summary now covers the whole machine
+
+The group headers said which registers the last step moved, and they were computed by diffing two
+consecutive reads — which quietly meant "the registers with an integer reading to diff", i.e. the
+general-purpose and pointer ones. Every class where "did that instruction touch it" is *hardest* to
+answer by eye was excluded.
+
+gdb can simply be asked instead, and now is. A single `fld` reports `st0`, `fstat` and `ftag`
+changed; a `movdqu xmm0` reports `xmm0`. Neither was visible before, and every group carries the
+summary now rather than two of them:
+
+```
+Flags               [ CF AF IF ]  changed
+Vector (SSE/AVX)    16 x 256-bit  changed: ymm0
+x87 FPU             st0 = R7  [ ]  changed: st0
+```
+
+Two properties of that query shape everything around it, both confirmed against real gdb rather than
+assumed. It is *consuming* — asking twice in a row returns an empty list the second time, because
+answering resets gdb's own baseline — so it is asked at most once per stop and its answer cached,
+since VS Code reads the panel more than once at a single stop and the second read would otherwise
+report that nothing had moved. And reading register *values* does not consume it, which is what lets
+the value snapshot be taken first.
+
+The Vector group needed one more thing. gdb answers in terms of the target's *raw* registers, and
+`ymm0` is not one: on a machine with AVX the raw registers are `xmm0` and a separate `ymm0h` upper
+half, and the `ymm0` on screen is a pseudo-register gdb assembles from the two. A `movdqu xmm0`
+reports xmm0 and never ymm0, so matching on the displayed name alone left the header claiming
+nothing had moved while the row beneath it visibly changed.
+
+### The Stack group as a picture of a frame
+
+The words at and above `rsp` were already resolved against your labels. They are now annotated with
+the two things that make them a structure rather than a column of numbers — where the frame pointer
+points, and which words are return addresses, using the same listing-derived set the call stack is
+built from:
+
+```
+[rsp+0x0]     0x4000e3  → outer+0x9  return address
+[rsp+0x8]     0x7fffffffd0d8  ← rbp
+[rsp+0x10]    0x4000d1  → start+0x21  return address
+```
+
+`stackWords` sets how deep it goes. `stackRedZone` adds the 128 bytes *below* `rsp` — the System V
+scratch area a leaf routine may use without moving the stack pointer, off by default because for
+most code those words are leftovers rather than data, and available because when you do need them
+nothing else shows them at all. They are listed after the words at and above `rsp` rather than in
+address order: putting them first is the obvious thing and it opens the group with sixteen rows of
+untouched scratch, pushing the return address off the bottom.
+
+### The branches that read no flag
+
+**Conditions** listed every conditional jump that tests EFLAGS. `jrcxz` and the `loop` family test
+the counter register instead, and were missing — the only conditional branches not covered.
+
+`loop` is the one worth having computed. It decrements *first* and branches while the result is
+non-zero, so what decides it is `rcx-1` rather than `rcx`: at `rcx = 1` this is the last iteration
+and at `rcx = 2` it is not, a reading nothing else on screen performs. And a `loop` reached with
+`rcx` at zero decrements to all-ones and branches, running 2^64 more times — the worst outcome this
+instruction has, reached from the most innocent-looking register value, and invisible in a display
+showing `rcx = 0x0`. The row says so in words.
+
+The header also now says out loud that the same conditions govern `cmovcc` and `setcc`: a `cmovg`
+moves exactly when a `jg` would jump.
+
+### One batched read behind the panel
+
+Every register row fetched its own value, one `-data-evaluate-expression` at a time, while a batched
+read of all of them had just been taken at the top of the same panel refresh. The rows are served
+from that snapshot now — one MI command covers every register with an integer reading, which is all
+of them but the SIMD ones, where gdb answers with a struct of lane vectors instead of a number.
+
+This is a tidiness fix rather than a speed one, and worth saying so: measured against a local gdb,
+seventeen sequential reads cost 0.59 ms against 0.13 ms batched. It matters over a remote gdbserver
+and not much otherwise.
+
+Correctness needed more care than the batching did. A snapshot is only good for the stop it was
+taken at, and three things can invalidate it: the program running, a register edited in the panel,
+and — the one that is easy to miss — `set $orig_rax = 59` typed into the Debug Console, which is a
+register write that never passes through the panel's own write path. Rather than trying to tell a
+reading expression from a writing one, any evaluated expression drops the snapshot. Two end-to-end
+tests caught the first two cases before this shipped; both now guard them.
+
+### Test fixtures that are what gdb actually says
+
+`registers.test.ts` carried a hand-trimmed copy of gdb's `-data-list-register-names` output, keeping
+only the entries its assertions mentioned. That quietly weakened the test named "leaves no register
+gdb reports out of every group at once" into a check against a list no gdb ever produces: the real
+one has 223 entries, including every sub-register (`al`, `ah`, `ax`, `eax`, `r8l`, `r8w`, `r8d`) and
+the `ymm` upper halves as top-level entries of their own.
+
+The fixtures are now verbatim, with the runs of unnamed padding written as counts so the register
+*numbers* stay exact — `fs_base` is the 152nd slot, not the 59th it looked like with the empty ones
+dropped. The coverage test checks each unplaced name against an explicit allowlist of what is
+reachable as a child view, so a register gdb starts reporting that genuinely is not covered still
+fails it. Two facts only the real list can carry now have tests of their own: that a 64-bit target
+reports `eax` *as well as* `rax`, so slot order rather than mere presence is what picks the right
+one, and that the low byte of `r8`-`r15` is spelled `r8l` by gdb where fasm spells it `r8b`.
+
 ## 1.23.0
 
 ### Which registers that step actually changed

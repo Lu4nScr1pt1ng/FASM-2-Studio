@@ -378,10 +378,31 @@ perfectly well and people do deliberately.
 
 `FASM: Debug` assembles the active file with an injected listing macro (your source file is never
 modified) and launches it under gdb (or lldb-mi). Since fasm2 doesn't emit DWARF/CodeView debug
-info, source-line mapping comes from that listing rather than a standard debug format, and there's
-no call-stack unwinding or typed variables — what you get instead is a live register view and
-gdb-expression evaluation (`$eax`, `*(unsigned int*)$esp`, and so on), which is the right level of detail
-for raw assembly anyway.
+info, source-line mapping comes from that listing rather than a standard debug format, and there are
+no typed variables — what you get instead is a live register view and gdb-expression evaluation
+(`$eax`, `*(unsigned int*)$esp`, and so on), which is the right level of detail for raw assembly
+anyway.
+
+There *is* a call stack, and it comes from the same listing. A fasmg binary carries no DWARF, no
+`.eh_frame` and no symbol table, so gdb on its own reports a single frame however deep your program
+is. But the listing records what every statement assembled to, and that names the exact address each
+`call` in your program pushes — which turns recognising a return address on the stack from a guess
+into an exact check. Frames are named by the label they are executing inside, since there is no
+function symbol to name them after:
+
+```
+inner+0x2      demo.asm:23
+outer+0x9      demo.asm:19
+start+0x21     demo.asm:12
+```
+
+Detection reads the encoding rather than the listing text, which is what makes it work in
+macro-heavy code: a `call` emitted from inside a macro shows the *macro invocation* as its text, and
+anything matching on the word `call` would miss it. Routines that keep a frame pointer are walked
+through their saved-`rbp` chain; frameless ones — most hand-written assembly, since nothing makes a
+prologue necessary — are recovered by scanning for those known return addresses instead. Caller
+frames are shown at the instruction they will return *to*, which is the line after the one that
+called.
 
 A register row in that view carries the value and nothing else, because the row already has the
 register's name on it and the panel is only so wide: `0x2a  42`, or `0x0` for a register holding
@@ -393,18 +414,28 @@ bytes in memory order, its `eax`/`ax`/`al`/`ah` slices — each of which can be 
 the qword at the address it holds, with the string preview if that is what is there. None of it is
 fetched until the row is expanded.
 
-The **General Purpose** and **Pointers** headers say which registers the last step actually moved —
-`changed: rax, rcx` — so the question you step to answer is readable with every group collapsed.
-`rip` is deliberately never named there: it changes at every stop, which is what executing an
-instruction *is*, and a marker that is always lit is one nobody reads. A register that did move
-carries a `previous` row with the arithmetic already done, which is what turns two twelve-digit
-addresses into the fact you wanted: `-8` is a push, `-0x28` is a prologue reserving space.
+Every group header says which of its registers the last step actually moved — `changed: rax, rcx` —
+so the question you step to answer is readable with every group collapsed. That answer comes from
+gdb itself rather than from comparing values here, which is what lets it cover the registers with no
+integer reading to compare: a single `fld` reports `st0` moved, a `movdqu` reports `xmm0`, and
+neither is something a numeric diff could have seen. `rip` is deliberately never named: it changes
+at every stop, which is what executing an instruction *is*, and a marker that is always lit is one
+nobody reads. A register that did move carries a `previous` row with the arithmetic already done,
+which is what turns two twelve-digit addresses into the fact you wanted: `-8` is a push, `-0x28` is
+a prologue reserving space.
 
 Under **Flags**, the individual bits decode as usual, and **Conditions** answers the question the
-flags are actually read for: which conditional jumps would be taken right now, `je`/`jb`/`jl` and
+flags are actually read for: which conditional branches would be taken right now, `je`/`jb`/`jl` and
 their opposites listed with the flag test that decided each one. It is the bit algebra that gets
 re-derived at every breakpoint and mis-remembered in exactly the places that matter — `jb` versus
 `jl`, `ja` versus `jg` — and the flags have already been read to display them, so it costs nothing.
+The same conditions govern `cmovcc` and `setcc`: a `cmovg` moves exactly when a `jg` would jump.
+
+`jrcxz` and the `loop` family are in that list too, even though they read no flag at all. `loop` is
+the one worth having computed for you: it decrements *first* and branches while the result is
+non-zero, so what decides it is `rcx-1` rather than `rcx` — and a `loop` reached with `rcx` at zero
+wraps to all-ones and runs 2^64 more times, which the row says in as many words rather than leaving
+you to notice.
 
 The rest of the machine is there too, grouped the same way, and every group only appears when the
 connected target actually reports it:
@@ -422,9 +453,13 @@ connected target actually reports it:
 - **MXCSR** — the SSE control word, decoded the way EFLAGS is. Its low six bits are sticky: a float
   operation that went wrong leaves a record there that nothing clears, so the NaN that appeared out
   of nowhere has its cause still sitting in `IE` or `ZE` when you look.
-- **Stack** — the words at and above `rsp`, each resolved against your labels. There is one frame
-  here and no CFI to unwind with, so this is the only place a return address or a prologue's saved
-  registers are visible at all.
+- **Stack** — the words at and above `rsp`, each resolved against your labels, and annotated with
+  the two things that make them a *frame* rather than a column of numbers: the slot `rbp` points at,
+  and which words are return addresses (the same listing-derived set the call stack is built from).
+  The Call Stack view answers "what called this"; this is still the only place a prologue's saved
+  registers or an argument pushed rather than passed in a register are visible. `stackWords` sets
+  how deep it goes, and `stackRedZone` adds the 128 bytes *below* `rsp` that a leaf routine may use
+  as scratch without moving the stack pointer.
 - **Mask** — `k0`-`k7` on an AVX-512 target, read in binary rather than hex, because a mask
   register's value is positional: bit *n* says whether lane *n* gets written, and `0b1111_1111`
   shows that where `0xff` makes you expand it yourself.
