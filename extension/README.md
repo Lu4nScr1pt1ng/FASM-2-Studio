@@ -60,10 +60,12 @@ that, a language server parses your project and gives you:
 - **Call hierarchy** on a label: what reaches it, and what it reaches, as a tree. Tail calls written
   as `jmp` and jump-table entries count, because that's how the routine is actually reached.
 - **Format Document** aligns labels, mnemonics, operands and trailing comments into columns, and
-  indents block bodies. It never reorders or rewrites a token, never touches string contents, and
-  leaves your line endings alone. Turning on VS Code's own `editor.formatOnType` also aligns each
-  line the moment Enter finishes it — only ever the line you just left, never the one you are
-  still typing.
+  indents block bodies — both fasmg's `macro` ... `end macro` and fasm 1's `macro name {` ... `}`.
+  A run of trailing comments keeps the column you aligned it to as long as that column still clears
+  the code, so a file laid out by hand comes back the way you wrote it. It never reorders or
+  rewrites a token, never touches string contents, and leaves your line endings alone. Turning on
+  VS Code's own `editor.formatOnType` also aligns each line the moment Enter finishes it — only
+  ever the line you just left, never the one you are still typing.
 
 `FASM: New File` writes a program that already builds, with the `format` line, the entry point and
 the exit filled in — so there is something to press play on straight away. Six to pick from: hello
@@ -273,7 +275,7 @@ To use the debugger:
 | `fasm2Studio.runArgs` | Command-line arguments `FASM: Run` and `FASM: Build and Run` pass to your program. Each entry is one argument and is quoted as written, so a value containing a space stays one argument. The debug side has taken these all along as `"args"` in `launch.json`. |
 | `fasm2Studio.format.mnemonicColumn` | Column Format Document aligns mnemonics to, measured from the current indent. `0` disables mnemonic alignment. |
 | `fasm2Studio.format.operandColumn` | Column Format Document aligns operands to, measured from the current indent. `0` leaves one space after the mnemonic. |
-| `fasm2Studio.format.commentColumn` | Absolute column Format Document aligns trailing `;` comments to. `0` leaves them one space after the code. |
+| `fasm2Studio.format.commentColumn` | Absolute column Format Document aligns trailing `;` comments to. `0` aligns each run of commented lines together instead, keeping the column you gave it whenever the code still fits inside it. |
 | `fasm2Studio.trace.server` | Logs the traffic between VS Code and the language server into its output channel (`off`/`messages`/`verbose`). Turn it on when reporting a bug about hover, completion, navigation or live error checking. |
 
 Every setting except the executable paths and `trace.server` is `resource`-scoped, and the paths

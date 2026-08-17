@@ -304,6 +304,18 @@ block bodies, driven by the same tokenizer as everything else — so a `;` insid
 comment, and a line it can't confidently parse is left exactly as written. It never reorders,
 inserts or rewrites a token, and it preserves your line endings.
 
+Trailing comments are aligned as a column rather than pushed up against the code: a run of commented
+lines keeps the column you aligned it to whenever that column still clears the code, and only moves —
+to the next tab stop past the longest line in the run — when the code has outgrown it. A comment
+continuing the one above it travels with the column it is part of, while a banner comment on its own
+line stays exactly where you put it. Both of fasm's block syntaxes indent: fasmg's `macro` ... `end
+macro` and fasm 1's `macro name {` ... `}`, including a `{` written on the line after its keyword,
+and `calminstruction` bodies are laid out as the flat instruction lists they are. A block the file
+never closes indents nothing — every project has some construct this can't know, from a
+`endif equ end if` alias to a macro pair of its own, and one of them should not indent everything
+after it. Lines continued with a trailing `\` are passed through, since only the first of them is a
+statement.
+
 `FASM: Build`, `FASM: Build and Run`, and `FASM: Run` compile and execute the active file, from the
 palette, the editor title bar, the editor context menu, or the explorer — and they are ordinary VS
 Code build tasks, so `Ctrl+Shift+B` reaches them too. The extension finds your compiler

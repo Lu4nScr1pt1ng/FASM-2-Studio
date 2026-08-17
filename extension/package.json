@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -274,7 +274,7 @@
           "default": 0,
           "minimum": 0,
           "scope": "resource",
-          "markdownDescription": "Absolute column that Format Document aligns trailing `;` comments to. 0 leaves them one space after the code."
+          "markdownDescription": "Absolute column that Format Document aligns trailing `;` comments to. 0 aligns each run of commented lines to a column of its own instead: the column you aligned them to is kept whenever it still clears the code, and only moves to the next tab stop past the longest line in the run when the code has outgrown it."
         },
         "fasm2Studio.trace.server": {
           "type": "string",

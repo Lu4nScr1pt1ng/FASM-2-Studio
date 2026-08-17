@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.26.0
+
+### The column your comments were aligned to
+
+Format Document put every trailing comment one space after the code:
+
+```
+        mov     rbp, rsp        ; freeze the argument vector before pushing
+                                ; anything; see includes/args.inc for offsets
+```
+
+came back as
+
+```
+        mov     rbp, rsp ; freeze the argument vector before pushing
+                                ; anything; see includes/args.inc for offsets
+```
+
+with the first line collapsed and the second — a comment on a line of its own, which the formatter
+would not touch — left at column 32, so the two halves of one comment no longer lined up with each
+other or with anything else. A formatter that destroys a column an author aligned by hand is worse
+than no formatter, and this one was documented as being conservative precisely because in assembly
+the visual column of a thing is load-bearing.
+
+Trailing comments are now placed as a column. Each run of commented lines gets one, and the column
+the author gave it is kept whenever it still clears the code — so a file laid out by hand comes back
+byte for byte. It moves only when the code has outgrown it, to the next tab stop past the longest
+line in the run, which is also what a run of comments that were never aligned gets. A comment
+continuing the one above it at the same column travels with that column; a banner comment on its own
+line still stays exactly where it was put. `fasm2Studio.format.commentColumn` still pins comments to
+one absolute column across the whole file if that is what you want.
+
+### The half of fasm's block syntax that was missing
+
+fasm has two ways to write a block and both are in daily use: fasmg's `macro` ... `end macro`, and
+fasm 1's `macro name {` ... `}`, which fasmg accepts too. Only the first was understood. A `}` ended
+nothing, so every braced macro in a file added a level of indentation that was never given back —
+fasm 1's own `proc32.inc` came out with 144 columns of leading whitespace, and KolibriOS' uFMOD with
+288. Braces now open and close blocks, counted off the tokenizer so a `}` inside a string or a
+comment is not one, including fasm 1's escaped `\{`/`\}` and the `{` written on the line after its
+keyword, which is a body delimiter rather than a level of its own.
+
+Three other things drove the same runaway:
+
+- **`calminstruction` bodies.** calm's `match` tests its arguments; it opens nothing and there is no
+  `end match`. Read as a block opener, it indented fasmg's own `80386.inc` to 96 columns. A calm body
+  is now laid out as the flat instruction list it is.
+- **Lines continued with a trailing `\`.** Only the first physical line of one of those is a
+  statement; the rest carry wrapped operands. Reading each as a fresh statement turned
+  `hlt,0F4h, cmc,0F5h` into a mnemonic whose operand began with a comma. They are passed through.
+- **Blocks the file never closes.** Every project has a construct this cannot know — an
+  `endif equ end if` alias, a macro pair of its own invention, a fragment meant to be included inside
+  something it never opens. The file is now surveyed before it is laid out, and an opener nothing
+  ever closes indents nothing. `endif` itself is recognized as the `end if` alias 74 KolibriOS files
+  define it to be, rather than flattening the nesting out of all of them.
+
+`match =dup? value, definitions` — ordinary fasmg, out of fasm2's own `dd.inc` — was read as the
+definition of a symbol called `match`, because the `=` that begins a match pattern looks like the one
+in `COUNT = 10`.
+
+Checked against 4,599 real fasm files — fasm2 and fasmg's own sources and packages, fasm 1's
+examples and includes, and KolibriOS — with no token in any of them reordered, dropped or rewritten,
+and every file unchanged by a second pass. Against how those files' authors actually laid them out,
+the formatter now agrees with 28% of lines in fasm2/fasmg sources where it agreed with 12%.
+
 ## 1.25.0
 
 ### The feature nobody could find

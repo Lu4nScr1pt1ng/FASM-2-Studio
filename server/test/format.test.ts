@@ -5,9 +5,15 @@ function format(text: string, options = DEFAULT_FORMAT_OPTIONS): string {
   return formatLines(text, options).join('\n');
 }
 
+/** The statement a line was read as, without the brace/continuation bookkeeping alongside it. */
+function statement(text: string): Record<string, unknown> {
+  const { label, mnemonic, operands, comment, verbatim } = lineShape(text);
+  return { label, mnemonic, operands, comment, verbatim };
+}
+
 describe('lineShape', () => {
   it('splits a label, mnemonic, operands and comment', () => {
-    assert.deepStrictEqual(lineShape('start:  mov eax, 1   ; set it'), {
+    assert.deepStrictEqual(statement('start:  mov eax, 1   ; set it'), {
       label: 'start:',
       mnemonic: 'mov',
       operands: 'eax, 1',
@@ -36,7 +42,7 @@ describe('lineShape', () => {
   });
 
   it('reads a colon-less data label as a label, not as a mnemonic', () => {
-    assert.deepStrictEqual(lineShape("msg db 'hi', 0"), {
+    assert.deepStrictEqual(statement("msg db 'hi', 0"), {
       label: 'msg',
       mnemonic: 'db',
       operands: "'hi', 0",
@@ -164,6 +170,120 @@ describe('formatLines', () => {
     const [first, second] = output.split('\n');
     assert.strictEqual(visualWidth(first.slice(0, first.indexOf('; one')), 4), 32);
     assert.strictEqual(visualWidth(second.slice(0, second.indexOf('; two')), 4), 32);
+  });
+
+  it('keeps the column an author aligned their trailing comments to', () => {
+    // The whole point of the comment column: a file laid out by hand comes back unchanged, rather
+    // than with every comment yanked to one space after the code and the alignment destroyed.
+    const input = [
+      'main:',
+      '        mov     rbp, rsp        ; freeze the argument vector before pushing',
+      '                                ; anything; see includes/args.inc for offsets',
+      '',
+      '        call    check_args      ; rax = path, or the program ends right here',
+      '        mov     r12, rax        ; keep it: callee-saved, survives the syscalls',
+    ].join('\n');
+    assert.strictEqual(format(input), input);
+  });
+
+  it('carries a wrapped comment continuation along with the column it belongs to', () => {
+    const input = ['mov eax, 1     ; the first line of the note', '               ; and the rest of it'].join('\n');
+    const [first, second] = format(input).split('\n');
+    assert.strictEqual(visualWidth(second.slice(0, second.indexOf(';')), 4), visualWidth(first.slice(0, first.indexOf(';')), 4));
+  });
+
+  it('aligns a run of comments to one column once the code has outgrown their old one', () => {
+    const input = ['mov eax, 1 ; one', 'nop', 'lea rsi, [a_rather_long_symbol] ; two', 'ret ; three'].join('\n');
+    const columns = format(input)
+      .split('\n')
+      .filter((line) => line.includes(';'))
+      .map((line) => visualWidth(line.slice(0, line.indexOf(';')), 4));
+    assert.deepStrictEqual(columns, [columns[0], columns[0], columns[0]], 'comments in one run should share a column');
+    assert.ok(columns[0] % 4 === 0, `expected a tab stop, got column ${columns[0]}`);
+  });
+
+  it('leaves a banner comment at the margin out of the run below it', () => {
+    const input = ['mov eax, 1      ; note', '; a banner', 'nop             ; other'].join('\n');
+    assert.strictEqual(format(input).split('\n')[1], '; a banner');
+  });
+
+  it('indents a fasm 1 brace block once and closes it on the "}"', () => {
+    const input = ['macro save reg {', 'push reg', '}', 'ret'].join('\n');
+    assert.strictEqual(format(input), ['macro save reg {', '            push    reg', '}', '        ret'].join('\n'));
+  });
+
+  it('does not count a brace opening the body on the line after its keyword twice', () => {
+    // fasm 1's own include tree is written this way; counting both cost a level per macro and
+    // never gave it back.
+    const input = ['macro stdcall proc', '{', 'push proc', '}', 'ret'].join('\n');
+    assert.strictEqual(format(input), ['macro stdcall proc', '{', '            push    proc', '}', '        ret'].join('\n'));
+  });
+
+  it('leaves the depth alone for a block opened and closed on one line', () => {
+    assert.strictEqual(format(['rept 4 { db 0 }', 'ret'].join('\n')), ['rept 4 { db 0 }', '        ret'].join('\n'));
+  });
+
+  it('closes a nested macro definition written with escaped braces', () => {
+    const input = ['macro outer {', 'macro inner \\{', 'nop', '\\}', '}', 'ret'].join('\n');
+    assert.strictEqual(format(input).split('\n').at(-1), '        ret');
+  });
+
+  it('passes a "\\"-continued line through instead of reading it as a new statement', () => {
+    // "hlt,0F4h" on a continuation line is a wrapped operand list, not a mnemonic and an operand
+    // starting with a comma — fasmg's own 80386.inc wraps its iterate headers exactly this way.
+    const input = ['iterate <instr,opcode>, daa,27h, \\', '\t\thlt,0F4h, cmc,0F5h', 'nop'].join('\n');
+    const output = format(input).split('\n');
+    assert.strictEqual(output[1], '\t\thlt,0F4h, cmc,0F5h');
+    assert.strictEqual(output[2], '        nop', 'the continuation line must not have opened anything');
+  });
+
+  it('treats a calminstruction body as the flat instruction list it is', () => {
+    // calm's `match` tests its arguments; it opens nothing and has no `end match`. Reading it as a
+    // block gave fasmg's own 80386.inc 96 columns of indentation.
+    const input = ['calminstruction dd? definitions&', 'local n', 'match =dup? value, definitions', 'jyes duplicate', 'end calminstruction', 'ret'].join('\n');
+    assert.strictEqual(
+      format(input),
+      [
+        'calminstruction dd? definitions&',
+        '            local   n',
+        '            match   =dup? value, definitions',
+        '            jyes    duplicate',
+        'end calminstruction',
+        '        ret',
+      ].join('\n'),
+    );
+  });
+
+  it('does not indent a file on the strength of a block it never closes', () => {
+    // Every codebase has these: a `endif equ end if` alias, a macro pair a project invented, a
+    // fragment meant to be included inside a construct it never opens. One of them used to indent
+    // every line after it, to 288 columns in KolibriOS' uFMOD.
+    const input = ['if DEBUG', 'nop', 'ret'].join('\n');
+    assert.strictEqual(format(input), ['if DEBUG', '        nop', '        ret'].join('\n'));
+  });
+
+  it('reads "endif" as the "end if" alias that fasm 1 projects define it to be', () => {
+    const input = ['if DEBUG', 'nop', 'endif', 'ret'].join('\n');
+    assert.strictEqual(format(input), ['if DEBUG', '            nop', 'endif', '        ret'].join('\n'));
+  });
+
+  it('is idempotent over blocks, continuations and comment columns together', () => {
+    const input = [
+      'macro save reg {',
+      'push reg  ; keep it',
+      '}',
+      'calminstruction emit? bytes&',
+      'match a=,b, bytes',
+      'end calminstruction',
+      'iterate x, 1, \\',
+      '        2, 3',
+      'start:',
+      'mov eax, 1        ; go',
+      '                  ; and keep going',
+      'end iterate',
+    ].join('\n');
+    const once = format(input);
+    assert.strictEqual(format(once), once, 'second pass changed the output');
   });
 
   it('does not indent past zero when a file starts with a block terminator', () => {
