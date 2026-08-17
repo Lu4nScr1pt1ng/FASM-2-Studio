@@ -14,6 +14,7 @@ import { registerOpenBuildOutput } from './openBuildOutput';
 import { registerSelectCompiler } from './selectCompiler';
 import { registerSelectDebugger } from './selectDebugger';
 import { registerSelectDialect } from './selectDialect';
+import { registerSelectInlayHints } from './selectInlayHints';
 import { registerShowListing } from './showListing';
 import { registerCodeLens } from './codeLens';
 import { FasmDebugAdapterDescriptorFactory, FasmDebugConfigurationProvider } from './debugAdapter';
@@ -288,6 +289,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerSelectCompiler(context);
   registerSelectDebugger(context);
   registerSelectDialect(context);
+  registerSelectInlayHints(context);
   registerNewFile(context);
   registerPickProcess(context);
   registerReportIssue(context);

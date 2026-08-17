@@ -26,7 +26,19 @@ interface Manifest {
       configurationSnippets?: Array<{ label: string }>;
       configurationAttributes?: Record<string, { properties: Record<string, { description?: string; default?: unknown }> }>;
     }>;
-    configuration: { properties: Record<string, { description?: string; type?: string }> };
+    configuration: {
+      properties: Record<
+        string,
+        {
+          description?: string;
+          markdownDescription?: string;
+          type?: string;
+          enum?: string[];
+          enumDescriptions?: string[];
+          markdownEnumDescriptions?: string[];
+        }
+      >;
+    };
     languages: Array<{ id: string; extensions: string[] }>;
     taskDefinitions: Array<{ type: string }>;
     semanticTokenScopes: Array<{ language: string; scopes: Record<string, string[]> }>;
@@ -169,10 +181,65 @@ describe('extension manifest', () => {
   });
 
   describe('settings', () => {
+    const settings = Object.entries(manifest.contributes.configuration.properties);
+
     it('describes every setting, since the description is all the settings UI shows', () => {
-      for (const [name, schema] of Object.entries(manifest.contributes.configuration.properties)) {
-        assert.ok(schema.description && schema.description.trim().length > 0, `${name} has no description`);
+      for (const [name, schema] of settings) {
+        const text = schema.markdownDescription ?? schema.description;
+        assert.ok(text && text.trim().length > 0, `${name} has no description`);
         assert.ok(schema.type, `${name} has no type`);
+      }
+    });
+
+    // The two are alternatives, not a pair: VS Code renders markdownDescription and ignores
+    // description entirely when both are present, so carrying both is a second copy that nothing
+    // displays and nothing keeps in step with the first.
+    it('describes each setting once, in one field or the other', () => {
+      for (const [name, schema] of settings) {
+        assert.ok(
+          !(schema.description && schema.markdownDescription),
+          `${name} has both description and markdownDescription; only the markdown one is rendered`,
+        );
+      }
+    });
+
+    // A plain `description` is displayed verbatim, so the backticks around `format ELF64` render as
+    // backticks rather than as code — which is what shipped until these were converted. The
+    // settings here are unusually prose-heavy and quote fasm syntax constantly, so the markup is
+    // load-bearing rather than decorative.
+    it('uses markdownDescription wherever the text contains markup, so it is not rendered literally', () => {
+      for (const [name, schema] of settings) {
+        if (!schema.description) continue;
+        assert.ok(!schema.description.includes('`'), `${name} has backticks in a plain description, which render literally`);
+      }
+      for (const [name, schema] of settings) {
+        for (const entry of schema.enumDescriptions ?? []) {
+          assert.ok(!entry.includes('`'), `${name} has backticks in a plain enumDescription, which render literally`);
+        }
+      }
+    });
+
+    // `#some.setting#` renders as a link to that setting's own row, and only in a markdown field.
+    // A typo in one is not reported by VS Code — it simply renders as the literal text — so the
+    // only thing that catches a renamed target is a check here.
+    it('only links to settings that exist, since a broken link renders as raw text', () => {
+      const names = new Set(Object.keys(manifest.contributes.configuration.properties));
+      for (const [name, schema] of settings) {
+        for (const match of (schema.markdownDescription ?? '').matchAll(/`#([^#`]+)#`/g)) {
+          assert.ok(names.has(match[1]), `${name} links to ${match[1]}, which is not a setting this extension contributes`);
+        }
+      }
+    });
+
+    // A short list leaves the trailing enum values with no explanation at all, and the settings UI
+    // pairs them by position rather than by name, so a missing entry silently shifts every
+    // description onto the wrong value.
+    it('explains every enum value, in the same field the value list is paired with', () => {
+      for (const [name, schema] of settings) {
+        if (!schema.enum) continue;
+        const descriptions = schema.markdownEnumDescriptions ?? schema.enumDescriptions;
+        assert.ok(descriptions, `${name} is an enum with no descriptions for its values`);
+        assert.strictEqual(descriptions.length, schema.enum.length, `${name} describes ${descriptions.length} of ${schema.enum.length} values`);
       }
     });
 

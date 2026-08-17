@@ -1,5 +1,62 @@
 # Changelog
 
+## 1.25.0
+
+### The feature nobody could find
+
+`fasm2Studio.inlayHints` annotates every line that produces code with the address it lands at and
+the bytes it encodes to — the single most fasm-specific thing this extension does, and the one
+feature with no presence in the UI at all. It is off by default, it is a six-valued enum rather than
+a switch, and until now the only place it appeared was its own row in the settings editor. Anyone
+who never went looking for it had no way to learn that the encoding of every instruction was one
+setting away.
+
+`FASM: Annotate Instructions Inline` is now a command, and the fourth entry in the status bar menu —
+which is the part that matters, since that menu is what a click on the always-visible item opens.
+The entry says which mode is in effect, so it doubles as the answer to "is this on?". It sits after
+whatever is currently broken and before the log and restart entries: it offers something rather than
+fixing something, so it must never displace an entry that names a standing problem.
+
+The picker shows each mode as what it renders rather than as a description of it, against the same
+instruction throughout:
+
+```
+Address                mov eax, 60   →   0x00401000
+Encoding               mov eax, 60   →   B8 3C 00 00 00
+Address and encoding   mov eax, 60   →   0x00401000 · B8 3C 00 00 00
+```
+
+Off is last rather than first. The list is reached from an entry that already says what the current
+mode is, so someone opening it has decided to change something, and leading with the one answer that
+removes the feature would put it under the cursor.
+
+The hints ride on the listing from the background compile behind live error checking, so three
+things have to hold for them to appear: a trusted workspace, `fasm2Studio.diagnosticsEnabled`, and a
+fasm2/fasmg project. Choosing a mode when one of them is missing now names the missing one. Without
+that the feature simply appears not to work — the setting reads as the mode you picked and the
+editor shows nothing, with nothing to distinguish the three causes. The untrusted workspace is
+reported ahead of the diagnostics switch, since an untrusted workspace runs no compiler at all and
+flipping that switch there changes nothing.
+
+The setup walkthrough gains a fifth step for it, and the mode is written globally rather than into
+the project: it is a preference about how you read assembly rather than a fact about the code, so it
+should follow you between projects, and writing it per-workspace would put a personal display choice
+into a `.vscode/settings.json` diff.
+
+### Settings that render as written
+
+Every setting whose description quotes fasm syntax now uses `markdownDescription`, so the backticks
+around `include 'foo.inc'`, `["-p", "300"]` and `B8 3C 00 00 00` render as code instead of as
+literal backtick characters — which is what the settings editor had been showing. The descriptions
+here are unusually prose-heavy and quote the assembler constantly, so the markup was load-bearing
+rather than decorative. Where one setting names another, it is now a link to that setting's own row:
+`fasm2Studio.inlayHints` points at `diagnosticsEnabled`, and `fasm2Preload` and `compilerArgs` point
+at each other and at `includePath`.
+
+`fasm2Studio.defaultDialect` had a two-value dropdown with nothing explaining either value, found by
+a new test asserting every enum setting describes all of its values. It now carries the same wording
+`FASM: Select Dialect` has always used.
+
 ## 1.24.0
 
 ### How you got here

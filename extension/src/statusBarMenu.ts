@@ -14,6 +14,7 @@ import * as vscode from 'vscode';
 import { dialectForDocument } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { configurationTargetLabel, fasmConfig, hasWorkspaceFolder, MESSAGE_PREFIX, projectConfigurationTarget } from './config';
+import { INLAY_HINTS_SETTING, InlayHintsMode } from './inlayHintsChoices';
 import { menuItems, TOGGLE_DIAGNOSTICS_ACTION } from './statusBarMenuItems';
 import { Dialect, DIALECT_LABEL } from './types';
 
@@ -53,6 +54,7 @@ export function registerStatusBarMenu(
           dialect,
           compilerPath: compiler?.path,
           diagnosticsEnabled,
+          inlayHints: fasmConfig(resource).get<InlayHintsMode>(INLAY_HINTS_SETTING, 'off'),
           diagnosticsIssue: getDiagnosticsIssue(),
           indexingIssue: getIndexingIssue(),
         }),

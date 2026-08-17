@@ -3,6 +3,7 @@
 // statusBarMenu.ts turns these into a real QuickPick. The shape below is structurally a
 // vscode.QuickPickItem, which is all showQuickPick asks for.
 
+import { InlayHintsMode, inlayHintsSummary } from './inlayHintsChoices';
 import { Dialect, DIALECT_LABEL } from './types';
 
 export interface MenuState {
@@ -10,6 +11,8 @@ export interface MenuState {
   /** Resolved compiler path, or undefined when none could be found. */
   compilerPath: string | undefined;
   diagnosticsEnabled: boolean;
+  /** Current fasm2Studio.inlayHints mode. */
+  inlayHints: InlayHintsMode;
   /** Set when the server reported it cannot run the compiler for this file (see statusBar.ts). */
   diagnosticsIssue: string | undefined;
   /** Set when the workspace scan behind every cross-file feature did not finish (see
@@ -62,6 +65,17 @@ export function menuItems(state: MenuState): MenuItem[] {
     action: TOGGLE_DIAGNOSTICS_ACTION,
   };
 
+  // The one entry here that offers a feature rather than a setting to correct. It earns the space
+  // because nothing else in the UI mentions the annotations at all: they are off by default and
+  // were reachable only from their own row in the settings editor, so the single most fasm-specific
+  // thing this extension does was invisible to anyone who never went looking for it.
+  const inlayHints: MenuItem = {
+    label: '$(symbol-numeric) Annotate instructions inline',
+    description: inlayHintsSummary(state.inlayHints),
+    detail: 'Show the address each instruction lands at and the bytes it encodes to, without building a listing.',
+    action: 'fasm2Studio.selectInlayHints',
+  };
+
   const restart: MenuItem = {
     label: '$(debug-restart) Restart language server',
     description: state.indexingIssue ? `index incomplete: ${state.indexingIssue}` : undefined,
@@ -70,6 +84,10 @@ export function menuItems(state: MenuState): MenuItem[] {
   };
 
   const rest: MenuItem[] = [
+    // Ahead of the log and the restart, and behind everything above: it is the only entry that
+    // offers something rather than fixing something, so it belongs after whatever is wrong and
+    // before the entries you reach for only when writing a bug report.
+    inlayHints,
     {
       label: '$(output) Show language server log',
       detail: 'The extension’s own output channel — start here for a bug report.',

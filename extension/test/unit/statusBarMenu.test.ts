@@ -2,12 +2,13 @@
 // is what a click lands on, so "what is currently broken comes first" is a behaviour worth pinning
 // down rather than re-deriving from the rendered list.
 import * as assert from 'assert';
-import { menuItems, TOGGLE_DIAGNOSTICS_ACTION } from '../../src/statusBarMenuItems';
+import { MenuState, menuItems, TOGGLE_DIAGNOSTICS_ACTION } from '../../src/statusBarMenuItems';
 
-const HEALTHY = {
-  dialect: 'fasm2' as const,
+const HEALTHY: MenuState = {
+  dialect: 'fasm2',
   compilerPath: '/usr/bin/fasm2',
   diagnosticsEnabled: true,
+  inlayHints: 'off',
   diagnosticsIssue: undefined,
   indexingIssue: undefined,
 };
@@ -66,9 +67,45 @@ describe('status bar menu', () => {
         'fasm2Studio.restartLanguageServer',
         'fasm2Studio.selectCompiler',
         'fasm2Studio.selectDialect',
+        'fasm2Studio.selectInlayHints',
         'fasm2Studio.showOutput',
         'fasm2Studio.reportIssue',
       ].sort());
     }
+  });
+
+  describe('the inline annotations entry', () => {
+    const entry = (state: MenuState) => menuItems(state).find((i) => i.action === 'fasm2Studio.selectInlayHints')!;
+
+    // This entry exists to be found by someone who does not know the feature exists, so it has to
+    // survive the reorderings that promote whatever is currently broken.
+    it('is offered whatever else is wrong', () => {
+      for (const state of [
+        HEALTHY,
+        { ...HEALTHY, compilerPath: undefined },
+        { ...HEALTHY, diagnosticsIssue: 'no compiler' },
+        { ...HEALTHY, indexingIssue: 'interrupted' },
+      ]) {
+        assert.ok(entry(state), 'the inline annotations entry is missing');
+      }
+    });
+
+    // It offers something rather than fixing something, so it must never displace an entry that
+    // names a standing problem — the first entry is what a click lands on.
+    it('never leads, since anything broken outranks a feature', () => {
+      for (const state of [
+        HEALTHY,
+        { ...HEALTHY, compilerPath: undefined },
+        { ...HEALTHY, diagnosticsIssue: 'no compiler' },
+        { ...HEALTHY, indexingIssue: 'interrupted' },
+      ]) {
+        assert.notStrictEqual(menuItems(state)[0].action, 'fasm2Studio.selectInlayHints');
+      }
+    });
+
+    it('says which mode is in effect, so the entry doubles as the answer to "is this on?"', () => {
+      assert.strictEqual(entry(HEALTHY).description, 'off');
+      assert.strictEqual(entry({ ...HEALTHY, inlayHints: 'addressAndBytes' }).description, 'address and encoding');
+    });
   });
 });

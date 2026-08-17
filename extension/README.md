@@ -111,6 +111,13 @@ file belongs to. `FASM: Check All Entry Points` (`Ctrl+Alt+Shift+B`) assembles e
 workspace and fills the Problems panel with what the compiler says, including for files you have
 never opened.
 
+`FASM: Annotate Instructions Inline` turns on the address/size/encoding annotations described under
+`fasm2Studio.inlayHints` below, offering each mode as what it actually renders next to a line rather
+than as a description of it. It is also in the status bar menu, which is where the feature is
+findable without knowing it exists. Choosing a mode a project cannot produce — an untrusted
+workspace, live error checking off, or a fasm1 project — says which of the three is in the way,
+instead of leaving a setting that reads as on and an editor that shows nothing.
+
 Debug configurations are offered in the Run and Debug panel's dropdown without needing a
 `launch.json` — both a launch and an attach entry.
 

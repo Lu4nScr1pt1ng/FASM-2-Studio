@@ -2,7 +2,7 @@
   "name": "fasm2-studio",
   "displayName": "FASM2 Studio",
   "description": "Syntax highlighting, autocomplete, hover docs, cross-file navigation, live diagnostics, build tasks, and real gdb-based debugging (experimental lldb-mi on macOS) for flat assembler 2 (fasmg), compatible with classic flat assembler 1 sources.",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "publisher": "Lu4nScr1pt1ng",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -136,6 +136,10 @@
             "fasm2",
             "fasm1"
           ],
+          "enumDescriptions": [
+            "flat assembler 2 / fasmg. Also the right answer for a bare fasmg project.",
+            "Classic flat assembler 1. Choose this for a project fasm1 builds, since its syntax is not auto-detected."
+          ],
           "default": "fasm2",
           "scope": "resource",
           "description": "Dialect assumed for source files where the dialect cannot be auto-detected from their contents. Scoped per folder, so a workspace holding both a fasm1 and a fasm2 project can give each the right answer."
@@ -169,19 +173,19 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Output path for Build/Run/Debug, relative to the source file's directory (e.g. \"../bin/cc\" to keep build output out of the source tree). FASM: Debug's .lst listing is placed alongside it. Leave empty to use the source file name with its extension stripped, next to the source."
+          "markdownDescription": "Output path for Build/Run/Debug, relative to the source file's directory (e.g. `../bin/cc` to keep build output out of the source tree). `FASM: Debug`'s `.lst` listing is placed alongside it. Leave empty to use the source file name with its extension stripped, next to the source."
         },
         "fasm2Studio.includePath": {
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that isn't found next to the including file, passed as the compiler's INCLUDE environment variable. Many real fasmg projects need this to build at all (e.g. fasmg's own Windows examples require setting it to their \"include\" package directory, exactly as their bundled make.bat does with `set include=...`). Leave empty to only use whatever INCLUDE (if any) your system environment already provides."
+          "markdownDescription": "Semicolon-separated list of extra directories to search for a bare `include 'foo.inc'` that isn't found next to the including file, passed as the compiler's `INCLUDE` environment variable. Many real fasmg projects need this to build at all (e.g. fasmg's own Windows examples require setting it to their `include` package directory, exactly as their bundled `make.bat` does with `set include=...`). Leave empty to only use whatever `INCLUDE` (if any) your system environment already provides."
         },
         "fasm2Studio.fasm2Preload": {
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Include file assembled before the source itself (via fasmg's -i flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with fasm2Studio.includePath and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use \"fasm2.inc\", with fasm2Studio.includePath pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
+          "markdownDescription": "Include file assembled before the source itself (via fasmg's `-i` flag), for projects whose instruction set is preloaded by a wrapper script rather than written in the source. `fasm2` is only `fasmg` plus a wrapper that preloads the x86 package this way, and instruction-set ports commonly ship the same arrangement. Set this together with `#fasm2Studio.includePath#` and the language server follows the preload too — giving hover, completion and go-to-definition for that instruction set, and letting it tell a non-x86 project from an x86 one. Nothing here is x86-specific: it will load a 68000 or Z80 instruction set just as readily. Use `fasm2.inc`, with `#fasm2Studio.includePath#` pointing at fasm2's `include` directory, to drive a bare `fasmg` binary as if it were `fasm2`. Leave empty for a normal `fasm2` install."
         },
         "fasm2Studio.compilerArgs": {
           "type": "array",
@@ -190,7 +194,7 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Extra command-line arguments for the assembler, used by everything that runs it: Build, Run, Debug, and the background compile behind live error checking. Some projects do not assemble without one — fasmg gives up after 100 passes, which a macro-heavy project genuinely exceeds ([\"-p\", \"300\"]), and a build-time definition is supplied as [\"-i\", \"define TARGET_LINUX 1\"], since fasmg has no -d the way fasm1 does. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument. They are passed after fasm2Studio.fasm2Preload and before the listing macro a debug build injects, and fasmg takes the last occurrence of a repeated flag, so a flag set here overrides the same flag set by this extension."
+          "markdownDescription": "Extra command-line arguments for the assembler, used by everything that runs it: Build, Run, Debug, and the background compile behind live error checking. Some projects do not assemble without one — fasmg gives up after 100 passes, which a macro-heavy project genuinely exceeds (`[\"-p\", \"300\"]`), and a build-time definition is supplied as `[\"-i\", \"define TARGET_LINUX 1\"]`, since fasmg has no `-d` the way fasm1 does. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument. They are passed after `#fasm2Studio.fasm2Preload#` and before the listing macro a debug build injects, and fasmg takes the last occurrence of a repeated flag, so a flag set here overrides the same flag set by this extension."
         },
         "fasm2Studio.updateIncludesOnFileMove": {
           "type": "string",
@@ -199,20 +203,20 @@
             "always",
             "never"
           ],
-          "enumDescriptions": [
+          "markdownEnumDescriptions": [
             "Ask before rewriting anything, showing how many paths in how many files would change.",
             "Rewrite the affected `include` paths without asking.",
             "Leave `include` paths alone; renaming a file that others include will break their paths."
           ],
           "default": "prompt",
           "scope": "window",
-          "description": "Keeps `include` paths pointing at the right file when you rename or move one in the explorer — both the paths that named the moved file and the moved file's own relative paths, which are now resolved from a different directory. fasm has no module system, so a path in a string literal is the only thing tying two files together, and nothing about a stale one looks wrong until the assembler fails on it."
+          "markdownDescription": "Keeps `include` paths pointing at the right file when you rename or move one in the explorer — both the paths that named the moved file and the moved file's own relative paths, which are now resolved from a different directory. fasm has no module system, so a path in a string literal is the only thing tying two files together, and nothing about a stale one looks wrong until the assembler fails on it."
         },
         "fasm2Studio.codeLens": {
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "description": "Shows Run / Debug / Build actions above the `format` directive of a file that is a program in its own right. Only entry points get them: an included fragment builds through whichever program includes it, which is not something a lens on the fragment could name. Needs the language server, since which files are entry points is read from the same include graph that go-to-definition uses."
+          "markdownDescription": "Shows Run / Debug / Build actions above the `format` directive of a file that is a program in its own right. Only entry points get them: an included fragment builds through whichever program includes it, which is not something a lens on the fragment could name. Needs the language server, since which files are entry points is read from the same include graph that go-to-definition uses."
         },
         "fasm2Studio.inlayHints": {
           "type": "string",
@@ -224,17 +228,17 @@
             "bytes",
             "addressAndBytes"
           ],
-          "enumDescriptions": [
+          "markdownEnumDescriptions": [
             "No inline annotations.",
             "The address each instruction is assembled at.",
             "How many bytes each instruction encodes to.",
-            "Both, as \"0x00401000 · 5 bytes\".",
-            "The machine code each instruction encodes to, as \"B8 3C 00 00 00\".",
-            "Both, as \"0x00401000 · B8 3C 00 00 00\"."
+            "Both, as `0x00401000 · 5 bytes`.",
+            "The machine code each instruction encodes to, as `B8 3C 00 00 00`.",
+            "Both, as `0x00401000 · B8 3C 00 00 00`."
           ],
           "default": "off",
           "scope": "resource",
-          "description": "Annotates each line that produces machine code with where it lands in memory, how large it is, and the bytes it encodes to — the information you would otherwise have to build and read a .lst file to see. The byte modes show the encoding itself, which is the thing a .lst is usually opened for; an encoding longer than 16 bytes (a `format` directive emitting a whole ELF header, a `db` of a string) is elided inline, and every hint carries its full dump as a tooltip whatever the mode. The data comes from the same background compile that live error checking already runs, so this needs fasm2Studio.diagnosticsEnabled, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
+          "markdownDescription": "Annotates each line that produces machine code with where it lands in memory, how large it is, and the bytes it encodes to — the information you would otherwise have to build and read a `.lst` file to see. The byte modes show the encoding itself, which is the thing a `.lst` is usually opened for; an encoding longer than 16 bytes (a `format` directive emitting a whole ELF header, a `db` of a string) is elided inline, and every hint carries its full dump as a tooltip whatever the mode. The data comes from the same background compile that live error checking already runs, so this needs `#fasm2Studio.diagnosticsEnabled#`, a trusted workspace, and a fasm2/fasmg project (fasm1's listing format is not supported). Off by default: it annotates most lines of a typical file, and generating the listing adds a little to every background compile."
         },
         "fasm2Studio.runArgs": {
           "type": "array",
@@ -243,13 +247,13 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Command-line arguments passed to your program by FASM: Run and FASM: Build and Run. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument rather than being split by the shell. The debugger has taken these since launch configurations existed (\"args\" in launch.json); this is the same thing for the two commands that run the program without one."
+          "markdownDescription": "Command-line arguments passed to your program by `FASM: Run` and `FASM: Build and Run`. Each entry is one argument and is quoted as written, so a value containing a space stays a single argument rather than being split by the shell. The debugger has taken these since launch configurations existed (`args` in `launch.json`); this is the same thing for the two commands that run the program without one."
         },
         "fasm2Studio.gdbPath": {
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "description": "Path to the MI-speaking debugger used by FASM: Debug — gdb on Linux/Windows, lldb-mi on macOS. Leave empty to use \"gdb\" from PATH (\"lldb-mi\" on macOS; e.g. gdb from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
+          "markdownDescription": "Path to the MI-speaking debugger used by `FASM: Debug` — `gdb` on Linux/Windows, `lldb-mi` on macOS. Leave empty to use `gdb` from `PATH` (`lldb-mi` on macOS; e.g. gdb from MSYS2/MinGW-w64 on Windows, or your distro's package on Linux)."
         },
         "fasm2Studio.format.mnemonicColumn": {
           "type": "number",
@@ -270,7 +274,7 @@
           "default": 0,
           "minimum": 0,
           "scope": "resource",
-          "description": "Absolute column that Format Document aligns trailing `;` comments to. 0 leaves them one space after the code."
+          "markdownDescription": "Absolute column that Format Document aligns trailing `;` comments to. 0 leaves them one space after the code."
         },
         "fasm2Studio.trace.server": {
           "type": "string",
@@ -341,6 +345,11 @@
       {
         "command": "fasm2Studio.selectDialect",
         "title": "Select Dialect",
+        "category": "FASM"
+      },
+      {
+        "command": "fasm2Studio.selectInlayHints",
+        "title": "Annotate Instructions Inline",
         "category": "FASM"
       },
       {
@@ -953,6 +962,19 @@
             },
             "completionEvents": [
               "onCommand:fasm2Studio.debug"
+            ]
+          },
+          {
+            "id": "inlineMachineCode",
+            "title": "See the machine code inline",
+            "description": "Every line that produces code can be annotated with the address it lands at and the bytes it encodes to — `mov eax, 60` alongside `B8 3C 00 00 00` — instead of building and reading a `.lst` file.\n\nIt rides on the background compile that live error checking already runs, so it costs no second pass. Off by default, since it annotates most lines of a typical file.\n[Annotate Instructions Inline](command:fasm2Studio.selectInlayHints)",
+            "media": {
+              "markdown": "walkthroughs/inline-machine-code.md",
+              "altText": "Annotating instructions with their address and encoding"
+            },
+            "completionEvents": [
+              "onSettingChanged:fasm2Studio.inlayHints",
+              "onCommand:fasm2Studio.selectInlayHints"
             ]
           }
         ]

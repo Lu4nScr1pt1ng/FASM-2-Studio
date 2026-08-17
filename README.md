@@ -223,7 +223,9 @@ runs, so it costs one extra flag rather than a second pass, and with it off noth
 compile at all. An encoding longer than 16 bytes is shortened inline with its real length, since
 x86's longest legal instruction is 15 and anything past that is a header or a string whose point is
 that it is large; every hint carries its full dump as a tooltip whatever the mode. Off by default,
-fasm2/fasmg only.
+fasm2/fasmg only. `FASM: Annotate Instructions Inline` — also the fourth entry in the status bar
+menu — picks between the modes by showing what each renders next to the same instruction, and says
+which of the three prerequisites is missing when a project cannot produce them at all.
 
 Hovering an instruction says what it does to the flags: which it writes, which it only tests, and
 which it leaves alone. The answer is written out rather than given as a set of letters, because it
