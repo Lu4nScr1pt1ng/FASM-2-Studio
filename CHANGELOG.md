@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.27.0
+
+### The `${workspaceFolder}` in your launch.json
+
+A launch configuration written the way every VS Code launch configuration is written:
+
+```json
+{ "type": "fasm", "request": "launch", "name": "Debug FASM program",
+  "asmFile": "${workspaceFolder}/hexdump/main.asm", "args": ["/bin/ls"] }
+```
+
+never started a session. It was turned away with
+
+```
+FASM2 Studio: no such source file: ${workspaceFolder}/hexdump/main.asm.
+```
+
+— the path reported back as the literal text that was typed, because that is exactly what the
+extension was given. VS Code substitutes `${...}` in a debug configuration *between* the two hooks
+an extension can hang off: `resolveDebugConfiguration` runs before substitution and sees what you
+wrote, `resolveDebugConfigurationWithSubstitutedVariables` runs after it and sees what you meant.
+Everything here lived in the first one — the existence check, the entry-point resolution, the build,
+the listing, gdb — so `${workspaceFolder}`, `${file}`, `${fileDirname}`, `${env:HOME}` and
+`${command:...}` all reached the filesystem as themselves.
+
+The only configuration that could start a session was one with an absolute path written out in full,
+which is what `FASM: Debug`, the code lens and the status bar all pass — which is how this went
+unnoticed. It also means the two configurations *this extension writes for you* were among the
+casualties: both the entries offered by "create a launch.json file" and the ones in the Run and
+Debug dropdown use `"asmFile": "${file}"`, as does every `attach` example in the README, right down
+to `"coreFile": "${workspaceFolder}/core"`.
+
+Resolution now happens after substitution, and a real debug session is driven end to end from
+`${workspaceFolder}/…`, from `${file}`, and from a relative path, so this cannot come back quietly.
+
+### Relative paths, resolved against something you can point at
+
+`"asmFile": "../hexdump/main.asm"` was resolved against neither the workspace folder nor the
+`.vscode` directory the file is written in, but against the working directory the extension host
+happens to have been started with — for a launch from the desktop, `/`. Relative paths in
+`asmFile`, `program`, `listingFile`, `coreFile` and `cwd` are now anchored to the workspace folder
+the configuration came from, and a path that still resolves to nothing is reported as the place it
+actually looked rather than as what was typed.
+
 ## 1.26.0
 
 ### The column your comments were aligned to

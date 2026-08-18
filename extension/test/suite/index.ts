@@ -3,7 +3,7 @@ import * as path from 'path';
 import Mocha from 'mocha';
 
 export async function run(): Promise<void> {
-  const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 30000 });
+  const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 30000, grep: process.env.FASM_TEST_GREP });
   const testsRoot = __dirname;
 
   for (const entry of fs.readdirSync(testsRoot, { recursive: true } as { recursive: true }) as string[]) {

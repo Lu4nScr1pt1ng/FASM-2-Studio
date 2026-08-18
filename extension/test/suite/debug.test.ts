@@ -175,6 +175,51 @@ describe('FASM2 Studio debugger (real VS Code host, real gdb, real fasm2 binary)
     }
   });
 
+  it('resolves ${...} variables and workspace-relative paths in "asmFile"', async function () {
+    if (!isAvailable('gdb') || !isAvailable('fasm2') || os.platform() !== 'linux') {
+      this.skip();
+      return;
+    }
+    this.timeout(90000);
+
+    // Regression test for launches that could never start: "asmFile" was validated from
+    // resolveDebugConfiguration, which VS Code calls *before* substituting ${...}, so every one of
+    // the spellings below arrived as the literal text the user typed and was turned away with "no
+    // such source file: ${workspaceFolder}/…". That included this extension's own generated
+    // configurations, whose asmFile is `${file}` — so the entries offered in the Run and Debug
+    // dropdown failed their own existence check.
+    //
+    // Only a real startDebugging can prove this: the substitution under test is VS Code's own, and
+    // it happens between the two provider hooks. The program lives inside the fixture workspace
+    // because that is what ${workspaceFolder} and a relative path are relative *to*.
+    const folder = vscode.workspace.workspaceFolders![0];
+    const dir = fs.mkdtempSync(path.join(folder.uri.fsPath, 'tmp-debug-vars-'));
+    const asmPath = path.join(dir, 'prog.asm');
+    fs.writeFileSync(asmPath, PROGRAM_SRC, 'utf8');
+    const relative = path.relative(folder.uri.fsPath, asmPath);
+
+    try {
+      const doc = await vscode.workspace.openTextDocument(asmPath);
+      await vscode.window.showTextDocument(doc);
+
+      for (const asmFile of ['${workspaceFolder}/' + relative, relative, '${file}']) {
+        const stoppedAtLines = await runDebugSessionAndCollectStops(doc.uri, 8, () =>
+          vscode.debug.startDebugging(folder, {
+            type: 'fasm',
+            request: 'launch',
+            name: 'Debug FASM program',
+            asmFile,
+            stopOnEntry: true,
+          }),
+        );
+
+        assert.ok(stoppedAtLines.includes(9), `"asmFile": "${asmFile}" never reached the breakpoint at line 9; stops: ${stoppedAtLines.join(', ')}`);
+      }
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
   it('gives the program a real terminal of its own, in the terminal VS Code actually opens', async function () {
     if (!isAvailable('gdb') || !isAvailable('fasm2') || os.platform() !== 'linux') {
       this.skip();

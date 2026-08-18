@@ -30,6 +30,20 @@ async function waitForFile(filePath: string, timeoutMs = 2000): Promise<boolean>
   return true;
 }
 
+/**
+ * A launch.json path, anchored. VS Code substitutes `${...}` variables but leaves relative paths
+ * exactly as written, resolving them against neither the workspace folder nor launch.json's own
+ * directory — so a hand-written "../other-project/main.asm" reached `fs` relative to the extension
+ * host's working directory, which is to say nothing. Anchored here against the folder the
+ * configuration came from, which is what such a path plainly means. Absolute paths and non-strings
+ * (a hand-edited config can hold anything) are returned untouched.
+ */
+function anchorToFolder(value: unknown, folder: vscode.WorkspaceFolder | undefined): unknown {
+  if (typeof value !== 'string' || value === '' || path.isAbsolute(value)) return value;
+  const base = (folder ?? vscode.workspace.workspaceFolders?.[0])?.uri.fsPath;
+  return base ? path.resolve(base, value) : value;
+}
+
 export class FasmDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -78,6 +92,12 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     return waitForFile(listingFile);
   }
 
+  /**
+   * The one stage that has to run before variables are substituted: the trust gate, and the
+   * fallback for "F5 with no launch.json at all", which supplies the configuration the rest of the
+   * substitution pass then works on. Everything that reads a *value* out of the configuration is
+   * in resolveDebugConfigurationWithSubstitutedVariables below instead — see the note there.
+   */
   async resolveDebugConfiguration(
     _folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
@@ -87,7 +107,8 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
     if (!(await ensureTrusted('Debugging'))) return undefined;
 
     if (!config.type && !config.request) {
-      // Launched via F5 with no launch.json at all: fall back to the active editor.
+      // Launched via F5 with no launch.json at all: fall back to the active editor. An absolute
+      // path, so the substitution pass that follows has nothing left to do to it.
       const editor = activeFasmEditor();
       if (!editor) {
         void vscode.window.showErrorMessage(NO_ACTIVE_FASM_FILE_MESSAGE);
@@ -99,6 +120,25 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
       config.asmFile = file;
     }
 
+    return config;
+  }
+
+  /**
+   * Everything else, and deliberately *not* resolveDebugConfiguration: VS Code calls that hook
+   * before substituting `${workspaceFolder}`, `${file}`, `${command:...}` and friends, so a
+   * launch.json entry arrived there as the literal text the user typed. Every step below needs
+   * real values — the existence check, entry-point resolution, the build, gdb — and this
+   * extension's own generated configurations use `${file}`, so they failed their own existence
+   * check with "no such source file: ${file}".
+   */
+  async resolveDebugConfigurationWithSubstitutedVariables(
+    folder: vscode.WorkspaceFolder | undefined,
+    config: vscode.DebugConfiguration,
+  ): Promise<vscode.DebugConfiguration | undefined> {
+    for (const key of ['asmFile', 'program', 'listingFile', 'coreFile', 'cwd'] as const) {
+      if (config[key] !== undefined) config[key] = anchorToFolder(config[key], folder);
+    }
+
     let asmFile = config.asmFile as string;
     if (!asmFile) {
       void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no source file specified (set "asmFile" in launch.json).`);
@@ -107,11 +147,11 @@ export class FasmDebugConfigurationProvider implements vscode.DebugConfiguration
 
     // Everything downstream — entry-point resolution, the build, gdb — assumes a real file. A
     // launch.json whose "asmFile" is `${file}` while an unsaved buffer is focused substitutes the
-    // buffer's label rather than a path, and a hand-written relative path is resolved against the
-    // filesystem root rather than the workspace. Both used to reach the server as a path that
-    // resolves to nothing, which surfaced as the "which project is this for?" quick pick.
+    // buffer's label rather than a path, which used to reach the server as a path that resolves to
+    // nothing and surfaced as the "which project is this for?" quick pick. The path is reported as
+    // resolved rather than as written, so that a relative one says where it actually looked.
     if (!fs.existsSync(asmFile)) {
-      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no such source file: ${asmFile}. "asmFile" must be an absolute path to a saved file.`);
+      void vscode.window.showErrorMessage(`${MESSAGE_PREFIX}no such source file: ${asmFile}. "asmFile" must name a saved file — an absolute path, or one relative to the workspace folder.`);
       return undefined;
     }
 
