@@ -12,11 +12,14 @@ import { runTerminalAgent } from './terminalAgent';
 const agentFlagIndex = process.argv.indexOf(TERMINAL_AGENT_FLAG);
 if (agentFlagIndex >= 0) {
   const endpoint = process.argv[agentFlagIndex + 1];
+  // Present only on Windows — see inferiorTerminal.ts's own top comment — where the program has no
+  // tty to be pointed at and this agent instead hosts a pipe of its own for gdb to point it at.
+  const ioEndpoint = process.argv[agentFlagIndex + 2];
   if (!endpoint) {
     process.stderr.write(`${TERMINAL_AGENT_FLAG} needs the address of the debug session to report to.\n`);
     process.exit(2);
   }
-  void runTerminalAgent(endpoint).then((code) => process.exit(code));
+  void runTerminalAgent(endpoint, ioEndpoint).then((code) => process.exit(code));
 } else {
   FasmDebugSession.run(FasmDebugSession);
 }

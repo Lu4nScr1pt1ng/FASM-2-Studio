@@ -212,6 +212,25 @@ export class SettingsStore {
     return [...all];
   }
 
+  /**
+   * Every folder's configured compiler path for `dialect`, plus the window-wide value, deduplicated
+   * and with blanks dropped — mirrors allIncludeSearchPaths's own union-across-folders reasoning.
+   * Used to derive fasm2's own bundled include directory per install (compilerDiscovery.ts's
+   * detectBundledIncludeDir) without requiring fasm2Studio.includePath to be set by hand for the
+   * common case of one official install used by every folder.
+   */
+  configuredCompilerPaths(dialect: Dialect): string[] {
+    const key: 'fasm2CompilerPath' | 'fasm1CompilerPath' = dialect === 'fasm2' ? 'fasm2CompilerPath' : 'fasm1CompilerPath';
+    const all = new Set<string>();
+    const add = (settings: FasmSettings): void => {
+      const value = settings[key].trim();
+      if (value) all.add(value);
+    };
+    add(this.windowSettings);
+    for (const settings of this.byFolder.values()) add(settings);
+    return [...all];
+  }
+
   /** The preload include to use for index-wide analysis. Folder values win over the window-wide
    * one when any folder sets it, since a project that needs a preload is unusable without it. */
   indexPreloadInclude(): string {

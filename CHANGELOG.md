@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.28.0
+
+### fasm2's own includes — `win64a.inc`, `invoke`, `library`, `import` and everything else it ships — are now found automatically
+
+Hover, go-to-definition and completion already followed `include` statements fully, and
+`fasm2Studio.includePath` already existed for pointing that at a directory outside the workspace —
+but nothing ever filled it in for you. A fresh `include 'win64a.inc'` resolved to nothing: no
+hover, no definition, `invoke`/`library`/`import` sitting there as plain unknown words, because
+fasm2's own `include/` directory lives in the install, not the workspace, and the analysis has no
+compiler process of its own to ask where that is.
+
+It doesn't need to ask, though — the official fasm2 distribution ships one zip for every platform,
+and `include/` always sits directly beside the binary (`fasm2.cmd`/`fasmg.exe` on Windows,
+`fasm2`/`fasmg.x64` elsewhere). fasm2's own wrapper script already relies on exactly that layout to
+find its includes at build time, on both platforms, which is why a real compile already worked
+without any of this — only the editor side, which never shells out to that wrapper, was blind to
+it. The server now derives that directory itself, for whatever compiler path is configured or
+found on PATH, confirmed real by checking for `fasm2.inc` (the file this extension already treats
+as fasm2's own signature) rather than trusting a same-named folder on faith. Added on top of
+whatever `fasm2Studio.includePath` already searches, never in place of it.
+
+Confirmed against a real install with nothing configured by hand: `invoke`, `library` and `import`
+now all hover with their full signatures, modifier docs and source file.
+
+### Fixed: stepping into code gdb never finished single-stepping through froze the Registers view and disabled every action, permanently
+
+A second bug in the area 1.27.2 already fixed once. That release stopped a step from *flooding* the
+client with stray events; it did nothing about a step that never sends the one event it owes at
+all. Statement-granularity stepping single-steps one machine instruction at a time internally,
+waiting after each one for gdb's asynchronous confirmation that it actually stopped — and that wait
+had no timeout. Stepping into a Windows API call with no debug symbols is exactly the case where
+gdb can, in practice, acknowledge a single-step and then never deliver the stop it implied.
+Whatever was waiting on it waited forever, and because the same flag that guards against duplicate
+events was never released, every later request — Continue, another step, even a plain register read
+— silently did nothing from then on: frozen Registers view, dead toolbar, no error, no way back
+short of ending the session.
+
+The wait is now bounded. A step that doesn't complete within it is treated as stuck rather than
+slow: the session sends `-exec-interrupt` to try to reclaim gdb (the same command Pause already
+used), explains what happened in the Debug Console, and — only if even the interrupt gets no answer
+— forces the UI back to a usable state itself, rather than leaving it waiting on an event nothing
+will ever send.
+
+### Fixed: a Windows debug session's program never showed its output anywhere, in the Integrated Terminal or the Debug Console
+
+Windows has no pty for gdb's `-inferior-tty-set` to be pointed at, so the fallback there was giving
+the program its own separate console window instead. Confirmed directly against a real build: that
+window, when it opens at all, has nothing else attached to it, so Windows closes it the instant a
+program exits — instant for anything that runs in microseconds, "Hello, world!" included, which is
+indistinguishable from no output ever appearing. The Debug Console fared no better: gdb on Windows
+was confirmed, by actually running a program through it, to never forward the debuggee's stdout
+through its own MI protocol at all, with or without that console-window setting.
+
+`-inferior-tty-set` turns out not to be the dead end it looked like, though — it accepts an ordinary
+Windows named pipe just as well as a POSIX pty path, and wires the debuggee's stdin/stdout/stderr to
+it the same way, confirmed with a real gdb and a real program answering on the other end of a real
+pipe, both directions. The terminal agent already running inside the program's own Integrated
+Terminal now hosts that pipe itself and relays it directly to its own stdin/stdout — no different in
+spirit from what the POSIX side already does with a real pty, just built out of the piece Windows
+actually has. Verified end to end with a real PE program, gdb and fasm2: typed input reaches the
+program, its output comes back through the terminal, and none of it leaks into the Debug Console.
+
 ## 1.27.3
 
 ### Fixed: "FASM: Debug" on Windows failed with "the expected listing file was not found"

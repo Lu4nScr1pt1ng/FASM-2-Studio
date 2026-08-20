@@ -110,6 +110,66 @@ export function resolveCompilerOnPath(dialect: Dialect): Promise<string | undefi
 export function invalidateCompilerCache(): void {
   cache.clear();
   preloadCache.clear();
+  bundledIncludeDirCache.clear();
+}
+
+// --- bundled include directory detection -----------------------------------------------------
+//
+// The official fasm2 distribution ships one zip for every platform, unpacked wherever the user
+// puts it: the binary (fasm2.cmd/fasmg.exe on Windows, fasm2/fasmg.x64 elsewhere) sits directly
+// beside an `include/` directory holding win64a.inc, fasm2.inc and everything else fasm2 bundles —
+// confirmed against a real install, not assumed from documentation. fasm2's own wrapper script
+// already relies on exactly this layout (`set include=%~dp0include;...` in fasm2.cmd, the `$DIR`
+// equivalent in the POSIX fasm2 script) to find its own includes at *build* time, on both
+// platforms, which is why `include 'win64a.inc'` already just works when the extension runs the
+// real compiler. Analysis (hover/definition/completion) never shells out to that wrapper, though —
+// it walks the include graph itself (workspace.ts) — so without this, the exact same layout the
+// build already resolves silently is invisible to the editor unless the user duplicates it by hand
+// into fasm2Studio.includePath.
+
+/** Resolves a bare command name to the absolute path a shell would actually run, the way `where`
+ * (Windows) or `which` (POSIX) would — needed because a compiler found via plain PATH lookup
+ * (candidatePaths above) is often just the bare name "fasm2", which has no directory to derive
+ * "beside the binary" from. An already-absolute path (found via extraSearchDirs, or configured by
+ * the user) is returned as-is once confirmed to exist. */
+export function resolveAbsolutePath(command: string): string | undefined {
+  if (path.isAbsolute(command)) return fs.existsSync(command) ? command : undefined;
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter((d) => d.length > 0);
+  // PATHEXT is what cmd.exe itself consults to turn a bare "fasm2" into "fasm2.cmd" — mirroring it
+  // here (rather than trying every extension) is what keeps this landing on the same file the
+  // shell-based probe above actually ran. POSIX has no such notion: an exact name match is the
+  // whole of it.
+  const exts = process.platform === 'win32' ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';') : [''];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, command + ext);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+const bundledIncludeDirCache = new Map<string, string | undefined>();
+
+/**
+ * The `include` directory fasm2 ships beside `compilerPath`, or undefined where there isn't one —
+ * `compilerPath` may be a bare command name (resolved via resolveAbsolutePath first), an absolute
+ * path the user configured, or one of extraSearchDirs's own absolute candidates.
+ *
+ * Verified by content, not just by the directory existing: fasm2.inc is the one file this whole
+ * extension already treats as fasm2's own signature (it's literally what fasm2Studio.fasm2Preload
+ * defaults readers toward), so requiring it here is what stops a same-named but unrelated
+ * "include" folder next to some other tool from being handed to the analysis as a search path.
+ */
+export function detectBundledIncludeDir(compilerPath: string): string | undefined {
+  const cached = bundledIncludeDirCache.get(compilerPath);
+  if (cached !== undefined) return cached;
+
+  const absolute = resolveAbsolutePath(compilerPath);
+  const dir = absolute ? path.join(path.dirname(absolute), 'include') : undefined;
+  const result = dir && fs.existsSync(path.join(dir, 'fasm2.inc')) ? dir : undefined;
+  bundledIncludeDirCache.set(compilerPath, result);
+  return result;
 }
 
 // --- x86 preload detection ------------------------------------------------------------------

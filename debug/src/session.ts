@@ -107,6 +107,19 @@ import {
 const MAIN_THREAD_ID = 1;
 const MAIN_FRAME_ID = 1;
 const MAX_STEP_INSTRUCTIONS = 200_000;
+/** How long stepToNextLine/stepOneInstruction wait for gdb's *stopped record after a single
+ * `-exec-step-instruction`/`-exec-next-instruction` before treating gdb as stuck rather than slow.
+ * One machine instruction should always come back in low milliseconds — the loop only reaches for
+ * this when gdb itself never delivers the async stop it already acknowledged with "^running", which
+ * is not something MAX_STEP_INSTRUCTIONS guards against: that cap only fires between completed
+ * steps, and a step that never completes never reaches it. Seen in practice stepping into a Windows
+ * API call (no debug symbols, and gdb-on-Windows single-stepping through it) with GDB for MinGW-W64;
+ * without this bound that hang is permanent, since `stepping` stays true forever and every later
+ * request — Continue, further steps, even a plain register read — silently no-ops against it. */
+const STEP_STOP_TIMEOUT_MS = 15_000;
+/** How long recoverFromStuckStep waits for its own `-exec-interrupt` to actually produce a stop,
+ * once a step has already been judged stuck. Short: this is a last-resort nudge, not a normal wait. */
+const STEP_INTERRUPT_TIMEOUT_MS = 3_000;
 /** A raw console command (e.g. a typed "continue" or "run") doesn't return control to gdb's
  * command reader until the target stops again, unlike this adapter's own -exec-* commands, which
  * return immediately and report the eventual stop as a separate async event — see
@@ -637,20 +650,6 @@ export class FasmDebugSession extends DebugSession {
   private async attachInferiorTerminal(kind: ConsoleKind, cwd: string, providedEndpoint: string | undefined): Promise<void> {
     if (!this.gdb) return;
 
-    // Windows has no pty for gdb to be pointed at, and -inferior-tty-set is a no-op there. gdb's
-    // own answer is a separate console window for the inferior, which is at least a real console
-    // with a real stdin. Untested — the debugger side of this extension is verified on Linux — so
-    // it is best-effort and says what it did.
-    if (process.platform === 'win32') {
-      try {
-        await this.gdb.sendCommand('-gdb-set new-console on');
-        this.sendEvent(new OutputEvent('The program gets its own console window: Windows has no pty to hand to gdb.\n', 'console'));
-      } catch (err) {
-        this.sendEvent(new OutputEvent(`could not give the program its own console (${(err as Error).message}) — its output stays here.\n`, 'stderr'));
-      }
-      return;
-    }
-
     // A terminal the extension opened itself, before this process even started: it tells us where
     // to listen and the agent is already out there trying to connect. Preferred over asking the
     // client, because opening it that way puts no shell between us and the agent — see
@@ -664,6 +663,11 @@ export class FasmDebugSession extends DebugSession {
     }
 
     const handshake = new TerminalHandshake(providedEndpoint ?? endpointPath());
+    // Windows has no pty for -inferior-tty-set to be pointed at directly, but the command does
+    // accept an ordinary Windows named pipe path there and wires the debuggee's stdio to it just
+    // the same — see inferiorTerminal.ts's own top comment. The agent hosts that pipe itself, not
+    // this adapter, so once it exists the program talks to the terminal directly here too.
+    const ioEndpoint = process.platform === 'win32' ? endpointPath() : undefined;
     try {
       await handshake.listen();
     } catch (err) {
@@ -678,7 +682,7 @@ export class FasmDebugSession extends DebugSession {
             kind: runInTerminalKind(kind),
             title: 'FASM program',
             cwd,
-            args: agentCommand(agentModulePath(), handshake.endpoint),
+            args: agentCommand(agentModulePath(), handshake.endpoint, undefined, ioEndpoint),
             env: agentEnv(),
           },
           RUN_IN_TERMINAL_TIMEOUT_MS,
@@ -694,14 +698,20 @@ export class FasmDebugSession extends DebugSession {
     }
 
     const tty = await handshake.waitForTty();
-    if (!tty) {
+    // On Windows there is no tty to report, so `tty` is always undefined there even on success —
+    // `handshake.reported` is what actually distinguishes "the agent connected and its pipe is
+    // ready" from "nothing ever answered" (see its own doc comment).
+    const ready = ioEndpoint !== undefined ? handshake.reported : tty !== undefined;
+    if (!ready) {
       handshake.release();
-      this.sendEvent(new OutputEvent('The terminal never reported a tty — the program keeps its output here, where it has no stdin to read.\n', 'stderr'));
+      this.sendEvent(
+        new OutputEvent('The terminal never reported in — the program keeps its output here, where it has no stdin to read.\n', 'stderr'),
+      );
       return;
     }
 
     try {
-      await this.gdb.sendCommand(`-inferior-tty-set ${tty}`);
+      await this.gdb.sendCommand(`-inferior-tty-set ${ioEndpoint ?? tty}`);
       this.terminalHandshake = handshake;
     } catch (err) {
       handshake.release();
@@ -1116,7 +1126,7 @@ export class FasmDebugSession extends DebugSession {
       // for, leaving recording permanently off on a launch that asked for it.
       const firstStop = this.reverseDebugging ? this.waitForNextStop() : undefined;
       await this.gdb?.sendCommand('-exec-run');
-      if (firstStop) void firstStop.then((stopped) => (stopped ? this.enableRecording() : undefined));
+      if (firstStop) void firstStop.then((outcome) => (outcome === 'stopped' ? this.enableRecording() : undefined));
     } catch (err) {
       this.sendEvent(new OutputEvent(`failed to start program: ${(err as Error).message}\n`, 'stderr'));
     }
@@ -3063,7 +3073,7 @@ export class FasmDebugSession extends DebugSession {
       const firstStop = this.reverseDebugging ? this.waitForNextStop() : undefined;
       this.recording = false;
       await this.gdb.sendCommand('-exec-run');
-      if (firstStop) void firstStop.then((stopped) => (stopped ? this.enableRecording() : undefined));
+      if (firstStop) void firstStop.then((outcome) => (outcome === 'stopped' ? this.enableRecording() : undefined));
     } catch (err) {
       this.sendEvent(new OutputEvent(`restart failed: ${(err as Error).message}\n`, 'stderr'));
     }
@@ -3179,8 +3189,12 @@ export class FasmDebugSession extends DebugSession {
         }
         if (result.klass !== 'running') return; // program likely exited or errored; a stop/exit event will follow separately
 
-        const stoppedOnce = await this.waitForNextStop();
-        if (!stoppedOnce) return; // process exited or errored mid-step
+        const stopOutcome = await this.waitForNextStop(STEP_STOP_TIMEOUT_MS);
+        if (stopOutcome === 'exited') return; // process exited or errored mid-step
+        if (stopOutcome === 'timeout') {
+          await this.recoverFromStuckStep();
+          return;
+        }
 
         const loc = await this.currentLocation();
         if (!loc) continue; // landed on an unmapped address (e.g. inside padding/data) — keep stepping
@@ -3215,8 +3229,12 @@ export class FasmDebugSession extends DebugSession {
         return;
       }
       if (result.klass !== 'running') return;
-      const stoppedOnce = await this.waitForNextStop();
-      if (!stoppedOnce) return;
+      const stopOutcome = await this.waitForNextStop(STEP_STOP_TIMEOUT_MS);
+      if (stopOutcome === 'exited') return;
+      if (stopOutcome === 'timeout') {
+        await this.recoverFromStuckStep();
+        return;
+      }
       this.sendEvent(new StoppedEvent('step', MAIN_THREAD_ID));
     } finally {
       this.stepping = false;
@@ -3224,33 +3242,74 @@ export class FasmDebugSession extends DebugSession {
   }
 
   /**
-   * Resolves `true` for a real code stop (the caller should keep stepping/inspecting), `false`
-   * for anything that means there's no more program left to step through — the gdb *process*
-   * itself exiting (existing behavior), but also the *inferior* exiting normally while gdb stays
-   * up, which arrives as an ordinary 'stopped' event with reason "exited"/"exited-normally" (real
-   * bug found here: this used to resolve `true` unconditionally for *any* stopped event, so
-   * stepping the exact instruction that ends the program — e.g. its own "syscall" exit — made
-   * stepToNextLine's loop try to evaluate $pc against a dead inferior, fail, treat that failure as
-   * "landed on an unmapped address, keep stepping" (see its own `if (!loc) continue`), and send yet
-   * another step command to a process that no longer exists — which is exactly what surfaced as a
-   * spurious "step failed: The program is not being run." right after the real, correct
+   * Resolves `'stopped'` for a real code stop (the caller should keep stepping/inspecting),
+   * `'exited'` for anything that means there's no more program left to step through — the gdb
+   * *process* itself exiting (existing behavior), but also the *inferior* exiting normally while
+   * gdb stays up, which arrives as an ordinary 'stopped' event with reason
+   * "exited"/"exited-normally" (real bug found here: this used to resolve truthy for *any* stopped
+   * event, so stepping the exact instruction that ends the program — e.g. its own "syscall" exit —
+   * made stepToNextLine's loop try to evaluate $pc against a dead inferior, fail, treat that failure
+   * as "landed on an unmapped address, keep stepping" (see its own `if (!loc) continue`), and send
+   * yet another step command to a process that no longer exists — which is exactly what surfaced as
+   * a spurious "step failed: The program is not being run." right after the real, correct
    * TerminatedEvent had already fired from onStopped's own separate 'stopped' listener).
+   *
+   * `timeoutMs` adds a third outcome, `'timeout'`: gdb acknowledged the command that led here but
+   * never delivered the async stop it implied — see STEP_STOP_TIMEOUT_MS for why the step loops
+   * need this and the other two callers (waiting on a session's very first stop, not on one leg of
+   * a step loop) pass nothing and wait indefinitely, as before.
    */
-  private waitForNextStop(): Promise<boolean> {
-    if (!this.gdb) return Promise.resolve(false);
+  private waitForNextStop(timeoutMs?: number): Promise<'stopped' | 'exited' | 'timeout'> {
+    if (!this.gdb) return Promise.resolve('exited');
     return new Promise((resolve) => {
-      const onStop = (data: Record<string, unknown>) => {
-        this.gdb?.off('exit', onExit);
-        const reason = typeof data.reason === 'string' ? data.reason : '';
-        resolve(!reason.startsWith('exited'));
-      };
-      const onExit = () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (result: 'stopped' | 'exited' | 'timeout') => {
+        if (timer) clearTimeout(timer);
         this.gdb?.off('stopped', onStop);
-        resolve(false);
+        this.gdb?.off('exit', onExit);
+        resolve(result);
       };
+      const onStop = (data: Record<string, unknown>) => {
+        const reason = typeof data.reason === 'string' ? data.reason : '';
+        settle(reason.startsWith('exited') ? 'exited' : 'stopped');
+      };
+      const onExit = () => settle('exited');
       this.gdb!.once('stopped', onStop);
       this.gdb!.once('exit', onExit);
+      if (timeoutMs !== undefined) timer = setTimeout(() => settle('timeout'), timeoutMs);
     });
+  }
+
+  /**
+   * Recovers a step loop from a stuck `waitForNextStop` — see STEP_STOP_TIMEOUT_MS. Tries
+   * `-exec-interrupt` to reclaim gdb, the same command Pause uses, since a step that never
+   * completed has left the target genuinely still running (or gdb genuinely wedged) either way.
+   *
+   * Deliberately does not always send its own StoppedEvent: when the interrupt lands, gdb's own
+   * resulting stop reaches the client through the ordinary onStopped path — its reason is never
+   * "end-stepping-range", so onStopped's stepping-loop suppression (`this.stepping &&
+   * reasonRaw === 'end-stepping-range'`) doesn't swallow it — and sending a second one here would
+   * just duplicate it, the same class of bug the 1.27.2 event-flood fix was written to avoid. Only
+   * when the interrupt itself gets no answer either is one forced, so the client is never left
+   * waiting on a StoppedEvent that nothing will ever send.
+   */
+  private async recoverFromStuckStep(): Promise<void> {
+    this.sendEvent(
+      new OutputEvent(
+        `Step did not complete after ${STEP_STOP_TIMEOUT_MS / 1000}s — gdb acknowledged it but never reported the ` +
+          'target stopping again. Likely stepping into code with no debug symbols (a Windows API call, say); "Step ' +
+          'Over" avoids diving into it. Interrupting to keep the session usable.\n',
+        'stderr',
+      ),
+    );
+    let reclaimed = false;
+    try {
+      await this.gdb?.sendCommand('-exec-interrupt');
+      reclaimed = (await this.waitForNextStop(STEP_INTERRUPT_TIMEOUT_MS)) === 'stopped';
+    } catch {
+      // best-effort — the point below is to unstick the UI regardless of whether gdb answered
+    }
+    if (!reclaimed) this.sendEvent(new StoppedEvent('pause', MAIN_THREAD_ID));
   }
 
   protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {

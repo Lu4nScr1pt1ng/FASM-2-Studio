@@ -58,7 +58,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { URI } from 'vscode-uri';
-import { invalidateCompilerCache, resolveCompilerOnPath } from './compilerDiscovery';
+import { detectBundledIncludeDir, invalidateCompilerCache, resolveCompilerOnPath } from './compilerDiscovery';
 import { detectDialect } from './dialect';
 import { incomingCalls, outgoingCalls, prepareCallHierarchy } from './features/callHierarchy';
 import { getCodeActions } from './features/codeActions';
@@ -126,12 +126,43 @@ function currentDialect(uri: string): Dialect {
   return dialectCache.get(uri) ?? settingsStore.get(uri).defaultDialect;
 }
 
-/** Pushes the settings store's current view of include paths / preload into the workspace index.
- * Called after anything that can change either — a pushed config change, or a folder's pulled
- * values landing. */
-function syncWorkspaceIndexSettings(): void {
-  workspace.setIncludeSearchPaths(settingsStore.allIncludeSearchPaths());
-  workspace.setPreloadInclude(settingsStore.indexPreloadInclude());
+/**
+ * fasm2's own bundled `include` directory, for every fasm2 compiler path currently in play —
+ * whatever each folder configured, plus whatever a bare PATH lookup would actually run, since
+ * that's what an unconfigured folder ends up using. See detectBundledIncludeDir's own comment for
+ * why this is safe to add unconditionally: a directory only counts once it's confirmed to actually
+ * be fasm2's own.
+ *
+ * Not attempted for fasm1: unlike fasm2.inc, there is no file this extension can treat as fasm1's
+ * own signature to verify a guessed directory against (see isa.ts on why no such list is kept), so
+ * fasm1Studio.includePath stays the only way to point analysis at one, exactly as documented.
+ */
+async function autoDetectedIncludeDirs(): Promise<string[]> {
+  const candidates = new Set(settingsStore.configuredCompilerPaths('fasm2'));
+  const onPath = await resolveCompilerOnPath('fasm2');
+  if (onPath) candidates.add(onPath);
+
+  const dirs = new Set<string>();
+  for (const compilerPath of candidates) {
+    const dir = detectBundledIncludeDir(compilerPath);
+    if (dir) dirs.add(dir);
+  }
+  return [...dirs];
+}
+
+/** Pushes the settings store's current view of include paths / preload into the workspace index —
+ * plus whatever autoDetectedIncludeDirs finds on top, since a real fasm2 install's own `include`
+ * directory is exactly as valid a search path as one the user typed into fasm2Studio.includePath,
+ * just found instead of asked for. Called after anything that can change either — a pushed config
+ * change, or a folder's pulled values landing. */
+async function syncWorkspaceIndexSettings(): Promise<void> {
+  const autoDirs = await autoDetectedIncludeDirs();
+  workspace.setIncludeSearchPaths([...settingsStore.allIncludeSearchPaths(), ...autoDirs]);
+  // fasm2Preload defaults to '' (nothing configured) exactly when auto-detection also has nothing
+  // to say, so this only ever fills a gap the user left, never overrides a real choice — including
+  // an explicit choice to preload nothing at all, which is indistinguishable from "unset" here, the
+  // same limitation the setting already has on its own.
+  workspace.setPreloadInclude(settingsStore.indexPreloadInclude() || (autoDirs.length > 0 ? 'fasm2.inc' : ''));
 }
 
 /**
@@ -207,8 +238,8 @@ connection.onInitialized(() => {
   // async caller happens to warm the cache.
   void settingsStore
     .warmAll()
-    .then(() => {
-      syncWorkspaceIndexSettings();
+    .then(async () => {
+      await syncWorkspaceIndexSettings();
       for (const doc of documents.all()) scheduleDiagnostics(doc.uri);
     })
     .catch((err) => logHandlerError('initial settings resolution', err));
@@ -342,8 +373,8 @@ connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
     // on every settings edit. Dialect defaults are re-resolved lazily on the next parse.
     void settingsStore
       .warmAll()
-      .then(() => {
-        syncWorkspaceIndexSettings();
+      .then(async () => {
+        await syncWorkspaceIndexSettings();
         for (const doc of documents.all()) scheduleDiagnostics(doc.uri);
       })
       .catch((err) => logHandlerError('settings re-resolution', err));

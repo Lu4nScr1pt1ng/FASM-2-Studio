@@ -12,6 +12,16 @@
 // inferior's stdin/stdout/stderr at that tty, and from then on the program talks to the terminal
 // directly with this adapter not in the middle of it at all.
 //
+// Windows has no pty for `-inferior-tty-set` to be pointed at — but the command does accept an
+// ordinary Windows named pipe path there and wires the debuggee's stdio to it just the same
+// (confirmed against a real gdb, GDB for MinGW-W64; not documented anywhere obvious). So on
+// Windows the agent hosts a second pipe of its own — see ioEndpoint in session.ts's
+// attachInferiorTerminal and listenForInferior in terminalAgent.ts — and relays it to this
+// terminal directly, playing the same role a pty plays on POSIX. The one thing that pipe can't
+// carry is liveness the way a tty path can (there's nothing to "hold open"), which is why the
+// handshake connection below still exists on Windows too, purely to report readiness and keep
+// the session and the terminal's lifetime tied together.
+//
 // That "something" is this adapter's own binary, re-invoked as `--terminal-agent` (terminalAgent.ts)
 // — deliberately not a shell script. A shell script has to survive being *quoted for* and *typed
 // into* whichever interactive shell the user happens to run, and that is not a battle worth
@@ -68,9 +78,15 @@ export function endpointPath(): string {
  * `execPath` is the Node (or Electron-as-Node) binary already running this adapter, so the agent
  * needs no Node on PATH — and `env` carries the one variable that makes an Electron binary behave
  * as Node, since the terminal starts with the user's environment rather than this process's.
+ *
+ * `ioEndpoint`, only ever set on Windows, is where the agent should host the pipe gdb's debuggee
+ * connects its own stdio to — see this file's own top comment. Left off entirely rather than
+ * passed as an empty string so a POSIX argv looks exactly as it always has.
  */
-export function agentCommand(agentModule: string, endpoint: string, execPath: string = process.execPath): string[] {
-  return [execPath, agentModule, TERMINAL_AGENT_FLAG, endpoint];
+export function agentCommand(agentModule: string, endpoint: string, execPath: string = process.execPath, ioEndpoint?: string): string[] {
+  const args = [execPath, agentModule, TERMINAL_AGENT_FLAG, endpoint];
+  if (ioEndpoint !== undefined) args.push(ioEndpoint);
+  return args;
 }
 
 /** The file to start the agent from: this adapter's own bundle, which is what argv[1] names in the
@@ -104,6 +120,15 @@ export class TerminalHandshake {
   private tty: string | undefined;
   private waiters: Array<(tty: string | undefined) => void> = [];
   private closed = false;
+  private reportedLine = false;
+
+  /** Whether the agent actually sent its line, as opposed to `waitForTty` settling on a timeout or
+   * an early close. `waitForTty`'s own `undefined` can't tell those apart — it means the same thing
+   * for "no tty" (a legitimate report, e.g. Windows, which never has one) as for "nothing arrived
+   * at all" — so a Windows caller, which never gets a tty either way, reads this instead. */
+  get reported(): boolean {
+    return this.reportedLine;
+  }
 
   constructor(readonly endpoint: string) {}
 
@@ -139,6 +164,7 @@ export class TerminalHandshake {
       const newline = this.received.indexOf('\n');
       if (newline < 0) return;
       this.tty = parseTtyPath(this.received.slice(0, newline));
+      this.reportedLine = true;
       this.settle(this.tty);
     });
     // The terminal being closed by the user drops the connection. Nothing to do about the program's

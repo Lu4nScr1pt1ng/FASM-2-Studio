@@ -1,9 +1,10 @@
 // "FASM: Clean" — removes what Build wrote.
 //
 // A build drops its binary next to the source (or wherever fasm2Studio.buildOutputPath points),
-// and a debug build drops a .lst listing beside that. Neither has an extension on most platforms,
-// so they are easy to leave behind and easy to mistake for source when they show up in a diff.
-// Nothing in the extension removed them, which is a strange gap for a toolchain integration.
+// and a debug build drops a .lst listing beside that. The default output has no extension on most
+// platforms (Windows is the exception — see getDefaultOutputPath), so both are easy to leave
+// behind and easy to mistake for source when they show up in a diff. Nothing in the extension
+// removed them, which is a strange gap for a toolchain integration.
 //
 // Deletion goes through the trash rather than being permanent: these are derived files, but the
 // output path is user-configurable, and a mistyped fasm2Studio.buildOutputPath pointing at

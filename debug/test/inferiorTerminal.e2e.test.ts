@@ -53,6 +53,55 @@ const ECHO_SRC = [
   '',
 ].join('\n');
 
+/** The PE64 equivalent of ECHO_SRC above, for the Windows suite below: reads up to 32 bytes from
+ * stdin via ReadFile, writes "got: " followed by exactly what it read via WriteFile, then exits.
+ * Same "got: " reasoning as ECHO_SRC — a relay that just echoed the raw bytes back would pass this
+ * test without the program, or gdb's -inferior-tty-set, ever being involved. */
+const PE_ECHO_SRC = [
+  'format PE64 console',
+  'entry start',
+  // Included directly, rather than injected with fasm2's own "-i" flag the way the Linux fixture
+  // below does it: that flag's value has to survive a shell, and the official Windows fasm2 is a
+  // ".cmd" wrapper Node can only reach via one — exactly the kind of cmd.exe/PowerShell quoting
+  // mismatch the extension itself had to fix once already (CHANGELOG 1.27.1). Not worth fighting
+  // in a test when the include line can just be part of the fixture instead.
+  "include 'listing.inc'",
+  '',
+  "include 'win64a.inc'",
+  '',
+  "section '.text' code readable executable",
+  '',
+  'start:',
+  '\tsub     rsp, 40',
+  '\tinvoke  GetStdHandle, STD_INPUT_HANDLE',
+  '\tmov     [hStdin], rax',
+  '\tinvoke  GetStdHandle, STD_OUTPUT_HANDLE',
+  '\tmov     [hStdout], rax',
+  '\tinvoke  ReadFile, [hStdin], buf, 32, bytesRead, 0',
+  '\tinvoke  WriteFile, [hStdout], prefix, prefix_len, written, 0',
+  '\tmov     eax, [bytesRead]',
+  '\tmov     [writeLen], eax',
+  '\tinvoke  WriteFile, [hStdout], buf, [writeLen], written, 0',
+  '\tinvoke  ExitProcess, 0',
+  '',
+  "section '.data' data readable writeable",
+  '',
+  "prefix db 'got: '",
+  'prefix_len = $ - prefix',
+  'buf rb 32',
+  'hStdin dq ?',
+  'hStdout dq ?',
+  'bytesRead dd ?',
+  'writeLen dd ?',
+  'written dq ?',
+  '',
+  "section '.idata' import data readable writeable",
+  '',
+  "library kernel32, 'KERNEL32.DLL'",
+  "import kernel32, GetStdHandle, 'GetStdHandle', ReadFile, 'ReadFile', WriteFile, 'WriteFile', ExitProcess, 'ExitProcess'",
+  '',
+].join('\n');
+
 const TYPED_LINE = 'hello from a real terminal';
 
 function waitFor(predicate: () => boolean, timeoutMs: number, what: string): Promise<void> {
@@ -255,6 +304,150 @@ describe('console: integratedTerminal (real adapter.js, real gdb, real pty)', fu
       await waitFor(() => /cannot open a terminal/.test(client.output()), 5000, 'the fallback to be explained');
 
       // The launch still happened: degrading is not the same as failing.
+      await client.sendRequest('configurationDone');
+      await client.sendRequest('disconnect');
+    } finally {
+      proc.kill();
+    }
+  });
+});
+
+/**
+ * The Windows equivalent of the suite above: no pty, so no `script` — the "terminal" here is just
+ * an ordinary piped child process running the agent command exactly as VS Code's own `runInTerminal`
+ * would, and what makes it act as one is entirely gdb's `-inferior-tty-set` pointed at the pipe this
+ * agent hosts (session.ts's attachInferiorTerminal, terminalAgent.ts's listenForInferior) rather
+ * than anything pty-shaped about the process itself — the same property a plain pipe does not have
+ * on POSIX, and the reason that suite needs a real pty stand-in and this one does not.
+ */
+describe('console: integratedTerminal on Windows (real adapter.js, real gdb, a named pipe instead of a pty)', function () {
+  let dir: string;
+  let asmPath: string;
+  let programPath: string;
+  let listingPath: string;
+  const gdbAvailable = isAvailable('gdb');
+  // fasm2's official Windows distribution is a `.cmd` wrapper — spawnSync only resolves that
+  // through a shell, unlike gdb.exe above, which is a real executable.
+  const fasm2Available = os.platform() === 'win32' && !spawnSync('fasm2', ['--version'], { shell: true, timeout: 5000 }).error;
+
+  before(function () {
+    if (!gdbAvailable || !fasm2Available || os.platform() !== 'win32') {
+      this.skip();
+      return;
+    }
+    dir = makeTempDir('fasm2-studio-tty-e2e-win-');
+    asmPath = path.join(dir, 'prog.asm');
+    programPath = path.join(dir, 'prog.exe');
+    listingPath = path.join(dir, 'prog.lst');
+    fs.writeFileSync(asmPath, PE_ECHO_SRC, 'utf8');
+
+    const build = spawnSync('fasm2', [asmPath, programPath], { cwd: dir, shell: true, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+  });
+
+  after(async () => {
+    await removeTempDir(dir);
+  });
+
+  it('carries typed input into the program and its output back out, instead of the Debug Console', async function () {
+    this.timeout(40000);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    let terminal: ChildProcess | undefined;
+    let terminalOutput = '';
+
+    // The client's side of runInTerminal: run the given command vector in a plain child process.
+    // No pty and no shell — exactly the command vector agentCommand builds, run directly, which is
+    // also exactly what makes it safe for VS Code's real runInTerminal to type into an actual shell.
+    client.onReverseRequest('runInTerminal', (args) => {
+      const { args: argv, cwd } = args as { args: string[]; cwd: string };
+      terminal = spawn(argv[0], argv.slice(1), { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+      terminal.stdout?.on('data', (c: Buffer) => {
+        terminalOutput += c.toString('utf8');
+      });
+      return { shellProcessId: terminal.pid };
+    });
+
+    try {
+      await client.sendRequest('initialize', {
+        adapterID: 'fasm2',
+        linesStartAt1: true,
+        columnsStartAt1: true,
+        pathFormat: 'path',
+        supportsRunInTerminalRequest: true,
+      });
+      await client.waitForEvent('initialized');
+
+      await client.sendRequest('launch', {
+        program: programPath,
+        asmFile: asmPath,
+        listingFile: listingPath,
+        cwd: dir,
+        console: 'integratedTerminal',
+        stopOnEntry: false,
+      });
+
+      await waitFor(() => client.reverseRequests.length > 0, 5000, 'the adapter to ask the client for a terminal');
+      assert.deepStrictEqual(
+        client.reverseRequests.map((r) => r.command),
+        ['runInTerminal'],
+        'the adapter asked the client for something other than a terminal',
+      );
+      assert.ok(terminal, 'no terminal was started');
+
+      await client.sendRequest('configurationDone');
+
+      // The program is now blocked in ReadFile on the pipe the agent is hosting. Type at it.
+      terminal!.stdin!.write(`${TYPED_LINE}\n`);
+
+      await waitFor(() => terminalOutput.includes(`got: ${TYPED_LINE}`), 15000, 'the program to answer on the terminal');
+      await client.waitForEvent('terminated');
+
+      // The same bytes must not have gone to the Debug Console: that is the whole difference
+      // between this mode and the default one.
+      assert.ok(!client.output().includes(`got: ${TYPED_LINE}`), `the program's output also reached the Debug Console:\n${client.output()}`);
+
+      await client.sendRequest('disconnect');
+
+      // Ending the session drops the agent's handshake connection, and the agent stops holding the
+      // terminal open — after offering the keypress that keeps the program's last output on screen.
+      await waitFor(() => /press Enter/.test(terminalOutput), 10000, 'the agent to offer to close the terminal');
+      terminal!.stdin!.write('\n');
+      await waitFor(() => terminal!.exitCode !== null || terminal!.signalCode !== null, 10000, 'the terminal agent to exit');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- terminal ---\n${terminalOutput}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      terminal?.kill();
+      proc.kill();
+    }
+  });
+
+  it('falls back to the Debug Console, and says so, when the client cannot open a terminal', async function () {
+    this.timeout(40000);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+
+      await client.sendRequest('launch', {
+        program: programPath,
+        asmFile: asmPath,
+        listingFile: listingPath,
+        cwd: dir,
+        console: 'integratedTerminal',
+        stopOnEntry: false,
+      });
+
+      assert.deepStrictEqual(client.reverseRequests, [], 'a client that never declared runInTerminal support should not be asked');
+      await waitFor(() => /cannot open a terminal/.test(client.output()), 5000, 'the fallback to be explained');
+
       await client.sendRequest('configurationDone');
       await client.sendRequest('disconnect');
     } finally {

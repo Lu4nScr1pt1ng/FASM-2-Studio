@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { hasX86Preload, invalidateCompilerCache, resolveCompilerOnPath } from '../src/compilerDiscovery';
+import { detectBundledIncludeDir, hasX86Preload, invalidateCompilerCache, resolveAbsolutePath, resolveCompilerOnPath } from '../src/compilerDiscovery';
 import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('resolveCompilerOnPath (against fake tools on a controlled PATH)', () => {
@@ -211,5 +211,116 @@ describe('hasX86Preload (against fake tools that do or do not know an instructio
 
     const invocations = (await fs.readFile(counterFile, 'utf8')).trim().split('\n').length;
     assert.strictEqual(invocations, 1, 'expected concurrent callers to share a single probe');
+  });
+});
+
+describe('resolveAbsolutePath (against a controlled PATH)', () => {
+  let tmpDir: string;
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir('fasm2-studio-resolve-absolute-');
+    originalPath = process.env.PATH;
+    process.env.PATH = tmpDir;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = originalPath;
+    await removeTempDir(tmpDir);
+  });
+
+  it('returns an already-absolute path unchanged, once confirmed to exist', async () => {
+    const file = path.join(tmpDir, 'fasm2');
+    await fs.writeFile(file, '', 'utf8');
+    assert.strictEqual(resolveAbsolutePath(file), file);
+  });
+
+  it('returns undefined for an absolute path that does not exist', () => {
+    assert.strictEqual(resolveAbsolutePath(path.join(tmpDir, 'does-not-exist')), undefined);
+  });
+
+  it('finds a bare command name by searching PATH, trying PATHEXT entries on Windows', async () => {
+    const file = path.join(tmpDir, process.platform === 'win32' ? 'fasm2.exe' : 'fasm2');
+    await fs.writeFile(file, '', 'utf8');
+    // Built from PATHEXT (conventionally uppercase, ".EXE") rather than read back off disk, so the
+    // result is case-equivalent to the real file on Windows's case-insensitive filesystem without
+    // necessarily matching the exact case it was created with — a distinction that never matters to
+    // anything that goes on to open the path, only to a test asserting the literal string.
+    assert.strictEqual(resolveAbsolutePath('fasm2')?.toLowerCase(), file.toLowerCase());
+  });
+
+  it('returns undefined for a bare command name found nowhere on PATH', () => {
+    assert.strictEqual(resolveAbsolutePath('does-not-exist-anywhere'), undefined);
+  });
+});
+
+describe('detectBundledIncludeDir (against a fake fasm2 install layout)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir('fasm2-studio-bundled-include-');
+    invalidateCompilerCache();
+  });
+
+  afterEach(async () => {
+    invalidateCompilerCache();
+    await removeTempDir(tmpDir);
+  });
+
+  /** Mirrors the real fasm2 distribution's own layout: the binary sits directly beside `include/`,
+   * which holds win64a.inc alongside everything else it bundles. `withMarker` controls whether
+   * fasm2.inc — the file this detector treats as fasm2's own signature — is present, so both the
+   * "real install" and "coincidentally named folder" cases can be exercised. */
+  async function makeInstall(withMarker: boolean): Promise<string> {
+    const binPath = path.join(tmpDir, process.platform === 'win32' ? 'fasm2.cmd' : 'fasm2');
+    await fs.writeFile(binPath, '', 'utf8');
+    const includeDir = path.join(tmpDir, 'include');
+    await fs.mkdir(includeDir);
+    await fs.writeFile(path.join(includeDir, 'win64a.inc'), '', 'utf8');
+    if (withMarker) await fs.writeFile(path.join(includeDir, 'fasm2.inc'), '', 'utf8');
+    return binPath;
+  }
+
+  it("finds the include directory next to the binary, once fasm2.inc confirms it is really fasm2's own", async () => {
+    const binPath = await makeInstall(true);
+    assert.strictEqual(detectBundledIncludeDir(binPath), path.join(tmpDir, 'include'));
+  });
+
+  it('refuses a same-named "include" directory that has no fasm2.inc in it — not every "include" folder next to a binary is fasm2\'s', async () => {
+    const binPath = await makeInstall(false);
+    assert.strictEqual(detectBundledIncludeDir(binPath), undefined);
+  });
+
+  it('returns undefined for a binary that does not exist at all', () => {
+    assert.strictEqual(detectBundledIncludeDir(path.join(tmpDir, 'does-not-exist')), undefined);
+  });
+
+  it('caches per compiler path: a directory removed after the first call still answers the cached way', async () => {
+    const binPath = await makeInstall(true);
+    assert.strictEqual(detectBundledIncludeDir(binPath), path.join(tmpDir, 'include'));
+
+    await fs.rm(path.join(tmpDir, 'include'), { recursive: true, force: true });
+    assert.strictEqual(detectBundledIncludeDir(binPath), path.join(tmpDir, 'include'), 'expected the cached answer, not a fresh (now-missing) check');
+  });
+
+  it('invalidateCompilerCache clears the cache too, so a settings change can pick up a real install change', async () => {
+    const binPath = await makeInstall(true);
+    assert.strictEqual(detectBundledIncludeDir(binPath), path.join(tmpDir, 'include'));
+
+    await fs.rm(path.join(tmpDir, 'include'), { recursive: true, force: true });
+    invalidateCompilerCache();
+    assert.strictEqual(detectBundledIncludeDir(binPath), undefined);
+  });
+
+  it('resolves a bare command name via PATH before deriving the include directory', async () => {
+    const binPath = await makeInstall(true);
+    const originalPath = process.env.PATH;
+    process.env.PATH = tmpDir;
+    try {
+      const bareName = path.basename(binPath, path.extname(binPath));
+      assert.strictEqual(detectBundledIncludeDir(bareName), path.join(tmpDir, 'include'));
+    } finally {
+      process.env.PATH = originalPath;
+    }
   });
 });
