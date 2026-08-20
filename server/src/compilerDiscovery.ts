@@ -137,8 +137,11 @@ const preloadInFlight = new Map<string, Promise<boolean>>();
 /** Quotes one argument of a `shell: true` command line. Needed because spawn merely concatenates
  * arguments in shell mode: the system temp directory contains a space on any Windows account whose
  * user name has one ("C:\Users\First Last\AppData\Local\Temp"), which would otherwise split into
- * two bogus arguments and make the probe report a working compiler as preload-less. */
-function quoteArg(value: string): string {
+ * two bogus arguments and make the probe report a working compiler as preload-less.
+ *
+ * Exported for diagnostics.ts's execCompiler, which needs the same treatment on Windows and for the
+ * same reason (see its own comment). */
+export function quoteArg(value: string): string {
   return /[\s"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 

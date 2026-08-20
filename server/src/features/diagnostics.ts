@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
-import { hasX86Preload, ILLEGAL_INSTRUCTION_RE } from '../compilerDiscovery';
+import { hasX86Preload, ILLEGAL_INSTRUCTION_RE, quoteArg } from '../compilerDiscovery';
 import { ListingEntry, parseListingFile } from '../listing/listingMap';
 import { Dialect } from '../types';
 
@@ -354,6 +354,19 @@ function killProcessTree(child: ReturnType<typeof spawn>): void {
   }
 }
 
+/** cmd.exe's own wording for "no such command", in the shell's stdout/stderr rather than as a spawn
+ * failure — since shell:true on Windows (see execCompiler) means a missing compiler starts cmd.exe
+ * successfully and only fails *inside* it, unlike the POSIX branch where spawn itself reports ENOENT.
+ * Exit-code alone can't distinguish this from an ordinary failed assembly (fasmg itself also exits
+ * non-zero on a compile error), so the message text is what's checked — mirrored from
+ * compilerDiscovery.ts's own comment on why detection here can't rely on the exit code either.
+ *
+ * Two distinct phrasings, not one: a bare unresolvable name ("fasm2") gets "is not recognized as an
+ * internal or external command", while a path-shaped one that does not exist (an explicit
+ * fasm2CompilerPath, or the `/…/anywhere` shape a fake-tool test uses) gets "The system cannot find
+ * the path specified." instead — confirmed against a real cmd.exe, not just recalled. */
+const CMD_NOT_RECOGNIZED_RE = /is not recognized as an internal or external command|the system cannot find the (path|file) specified/i;
+
 function execCompiler(
   command: string,
   args: string[],
@@ -368,7 +381,19 @@ function execCompiler(
     // compiler needs, not just add INCLUDE to what's already there.
     const env = includePath ? { ...process.env, INCLUDE: includePath } : process.env;
     try {
-      child = spawn(command, args, { cwd, env, windowsHide: true, detached: process.platform !== 'win32' });
+      // Windows only: spawning `command` directly (the POSIX branch below) fails with
+      // "spawn <command> ENOENT" whenever it resolves to a .cmd/.bat wrapper — exactly how the
+      // official fasm2 distribution ships (see compilerDiscovery.ts's own probes, which already go
+      // through a shell for this reason) — because CreateProcess cannot launch a batch file without
+      // cmd.exe interpreting it. Passed as one pre-quoted command-line string rather than an args
+      // array, since spawn's shell mode does not escape array elements itself on Windows either
+      // (confirmed empirically: a space in the argument list splits into two arguments, same as the
+      // DEP0190 warning describes for POSIX) — the same reason runPreloadProbe builds its command
+      // line this way.
+      child =
+        process.platform === 'win32'
+          ? spawn([command, ...args].map(quoteArg).join(' '), { cwd, env, windowsHide: true, shell: true })
+          : spawn(command, args, { cwd, env, windowsHide: true, detached: true });
     } catch (err) {
       resolve({ stdout: '', timedOut: false, spawnError: (err as Error).message });
       return;
@@ -405,7 +430,13 @@ function execCompiler(
       if (out.length < MAX_OUTPUT_BYTES) out += chunk.toString('utf8');
     });
     child.on('error', (err) => finish({ stdout: out, timedOut: false, spawnError: err.message }));
-    child.on('close', () => finish({ stdout: out, timedOut }));
+    child.on('close', () => {
+      if (!timedOut && process.platform === 'win32' && CMD_NOT_RECOGNIZED_RE.test(out)) {
+        finish({ stdout: out, timedOut: false, spawnError: `spawn ${command} ENOENT` });
+        return;
+      }
+      finish({ stdout: out, timedOut });
+    });
   });
 }
 

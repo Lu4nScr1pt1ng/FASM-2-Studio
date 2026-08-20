@@ -88,12 +88,19 @@ describe('hintLabel', () => {
 });
 
 describe('uriToFsPath', () => {
+  // Deliberately not a literal expected string: the correct fsPath for a "/"-separated URI is
+  // itself platform-dependent (native separators, and on Windows a lowercased, backslashed drive
+  // letter) — see uriToFsPath's own doc comment for why that used to be gotten wrong. URI.parse's
+  // own .fsPath is the oracle these are checked against, since server.ts's sourceFsPath is built
+  // the exact same way; what these tests actually cover is the file://-scheme guard around it.
   it('decodes a percent-escaped path', () => {
-    assert.strictEqual(uriToFsPath('file:///home/me/my%20project/a.asm'), '/home/me/my project/a.asm');
+    const uri = 'file:///home/me/my%20project/a.asm';
+    assert.strictEqual(uriToFsPath(uri), URI.parse(uri).fsPath);
   });
 
-  it('strips the leading slash a Windows drive URI carries', () => {
-    assert.strictEqual(uriToFsPath('file:///c%3A/src/a.asm'), 'c:/src/a.asm');
+  it('resolves a Windows drive URI', () => {
+    const uri = 'file:///c%3A/src/a.asm';
+    assert.strictEqual(uriToFsPath(uri), URI.parse(uri).fsPath);
   });
 
   it('refuses a non-file scheme, which has no listing to be keyed by', () => {
@@ -135,8 +142,13 @@ describe('getInlayHints', () => {
   const SOURCE = ['format ELF64 executable', 'entry $', '        mov     eax, 60   ; exit', '        syscall'].join('\n');
 
   function fixture(): { doc: TextDocument; map: ReturnType<typeof correlateListing> } {
-    const fsPath = '/p/main.asm';
-    const doc = TextDocument.create(URI.file(fsPath).toString(), 'fasm', 1, SOURCE);
+    // Built from the URI, not a hand-picked literal: uriToFsPath (which getInlayHints looks the
+    // map up by) resolves to the OS-native fsPath — "\" and a lowercased drive letter on Windows —
+    // so a fixture that instead hardcoded a "/"-separated fsPath for its map keys would agree with
+    // it only on POSIX, by accident of both sides happening to already use the native separator.
+    const uri = URI.file('/p/main.asm').toString();
+    const fsPath = uriToFsPath(uri)!;
+    const doc = TextDocument.create(uri, 'fasm', 1, SOURCE);
     const map = {
       addressToLocation: new Map(),
       locationToAddress: new Map([
@@ -217,8 +229,15 @@ describe('inlay hints end to end (requires fasm2 on PATH)', function () {
 
   it('reports the real encoded size of each instruction', async function () {
     tmpDir = makeTempDir('fasm2-hints-');
-    const sourceFsPath = path.join(tmpDir, 'prog.asm');
-    fs.writeFileSync(sourceFsPath, PROGRAM, 'utf8');
+    // Goes through a file:// URI and back rather than using path.join's result directly, the same
+    // round trip server.ts makes for a real client (uriToFsPath(document.uri)): on Windows the two
+    // are not always the same string even for the same file (a URI's drive letter is lowercased,
+    // and mkdtempSync's is whatever the OS's own temp path casing happens to be) — a mismatch that
+    // is exactly what broke every hint here before uriToFsPath normalized separators to match.
+    const rawFsPath = path.join(tmpDir, 'prog.asm');
+    fs.writeFileSync(rawFsPath, PROGRAM, 'utf8');
+    const uri = URI.file(rawFsPath).toString();
+    const sourceFsPath = uriToFsPath(uri)!;
 
     const result = await runDiagnostics({
       compilerPath: 'fasm2',
@@ -231,7 +250,7 @@ describe('inlay hints end to end (requires fasm2 on PATH)', function () {
     assert.ok(result.listing, 'the compile should have produced a listing');
 
     const map = correlateListing(result.listing, buildCandidateSequence(sourceFsPath));
-    const doc = TextDocument.create(URI.file(sourceFsPath).toString(), 'fasm', 1, PROGRAM);
+    const doc = TextDocument.create(uri, 'fasm', 1, PROGRAM);
     const hints = getInlayHints(doc, { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } }, map, 'size');
 
     // "mov eax, 60" is 5 bytes (B8 3C 00 00 00), "xor edi, edi" and "syscall" are 2 each.

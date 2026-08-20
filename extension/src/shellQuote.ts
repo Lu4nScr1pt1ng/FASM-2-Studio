@@ -26,3 +26,29 @@ export function quoteForShell(value: string): string {
   // an explicit empty word rather than disappearing from the command line entirely.
   return `"${value.replace(/([\\"$`])/g, '\\$1')}"`;
 }
+
+/**
+ * Builds the fasm-level source text for an injected `-i` line that includes `filePath` — the string
+ * fasmg itself will parse as `include <quoted path>`. Quoted at the *fasm* syntax level here; the
+ * caller wraps the result in one more layer of quoting (`vscode.ShellQuoting.Strong`) so it survives
+ * as a single shell argument.
+ *
+ * That outer layer is a bare wrap in whatever quote character the target shell uses for "strong"
+ * quoting, with no escaping of characters already inside the value (per vscode.ShellQuoting.Strong's
+ * own documentation: `"` for cmd, `'` for bash and PowerShell). Delimiting the fasm string with the
+ * *same* character the outer wrap will use is what broke this on Windows: cmd's own `"..."` wrap
+ * around an already-`"`-quoted fasm string just toggles quoted-state on and off without ever emitting
+ * a literal `"`, so fasmg received the bare, unquoted path — `c:/Users/...` parsed as an expression
+ * (division by `Users`, `by`, ...) instead of a string, hence "symbol 'c' is undefined".
+ *
+ * `forceCmdOuter` must reflect whichever character the caller's outer Strong-quoting will actually
+ * use (see buildTask, which forces cmd.exe as the task's shell on Windows precisely so this can be
+ * known for certain rather than guessed at). The delimiter chosen here is always the *other*
+ * character, so the two layers can never collide. A literal occurrence of that delimiter inside
+ * `filePath` is escaped by doubling it, fasmg's own convention for a quote inside a same-quoted
+ * string.
+ */
+export function fasmIncludeDirective(filePath: string, forceCmdOuter: boolean): string {
+  const quote = forceCmdOuter ? "'" : '"';
+  return `include ${quote}${filePath.split(quote).join(quote + quote)}${quote}`;
+}

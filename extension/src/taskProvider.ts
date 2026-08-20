@@ -7,6 +7,7 @@ import { dialectFor, getDefaultOutputPath } from './buildPaths';
 import { resolveCompiler } from './compilerDiscovery';
 import { CONFIG_SECTION, fasmConfig, MESSAGE_PREFIX, stringArraySetting } from './config';
 import { errorMessage } from './errorMessage';
+import { fasmIncludeDirective } from './shellQuote';
 import { validateTaskDefinition } from './taskValidation';
 import { COMPILER_PATH_SETTING, Dialect, DIALECT_LABEL } from './types';
 
@@ -106,7 +107,7 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   // own built-in instruction set and no -i flag, so this never applies there.
   const preload = dialect === 'fasm2' ? fasmConfig(vscode.Uri.file(sourceFsPath)).get<string>('fasm2Preload', '').trim() : '';
   if (preload) {
-    args.push('-i', { value: `include "${preload.replace(/"/g, '""')}"`, quoting: vscode.ShellQuoting.Strong });
+    args.push('-i', { value: fasmIncludeDirective(preload, process.platform === 'win32'), quoting: vscode.ShellQuoting.Strong });
   }
   // The user's own flags sit between the preload and the listing include, and that position is the
   // whole of what the ordering rule has to say: a `-i` line of theirs may use the instruction set
@@ -117,19 +118,25 @@ export async function buildTask(def: FasmTaskDefinition, name: string, folder?: 
   // space (`-i` and `define X 1`) stays a single argument rather than being re-split by the shell.
   args.push(...(def.extraArgs ?? []), ...configuredCompilerArgs(sourceFsPath));
   if (def.debugBuild) {
-    // vscode.ShellQuoting.Strong wraps this whole value in single quotes on POSIX shells but
-    // does not escape single quotes *within* the value — so the fasm-level string must use
-    // double quotes instead, which fasm accepts equally well, to avoid colliding with the
-    // shell's own outer quoting.
-    const listingPath = bundledListingIncPath().replace(/\\/g, '/').replace(/"/g, '""');
-    args.push('-i', { value: `include "${listingPath}"`, quoting: vscode.ShellQuoting.Strong });
+    const listingPath = bundledListingIncPath().replace(/\\/g, '/');
+    args.push('-i', { value: fasmIncludeDirective(listingPath, process.platform === 'win32'), quoting: vscode.ShellQuoting.Strong });
   }
   // fasm2Studio.includePath, forwarded as INCLUDE so a bare `include 'foo.inc'` not found next to
   // the including file still resolves — many real fasmg projects need this to build at all (see
   // configuredIncludePathEnv's doc comment).
+  //
+  // The shell is pinned to cmd.exe on Windows rather than left to VS Code's own default-shell
+  // resolution (terminal.integrated.defaultProfile.windows, commonly PowerShell these days): the
+  // -i values above are quoted for a *specific* outer shell (see fasmIncludeDirective), so which
+  // shell actually runs the command has to be known for certain, not guessed at. This only picks
+  // the process used to launch the one compiler invocation — the task output still appears in
+  // whatever terminal profile the user has configured.
+  const windowsShell: Partial<vscode.ShellExecutionOptions> =
+    process.platform === 'win32' ? { executable: 'cmd.exe', shellArgs: ['/d', '/c'], shellQuoting: { strong: '"' } } : {};
   const execution = new vscode.ShellExecution(compiler.path, args, {
     cwd: path.dirname(sourceFsPath),
     env: configuredIncludePathEnv(sourceFsPath),
+    ...windowsShell,
   });
 
   const task = new vscode.Task(def, vscode.TaskScope.Workspace, name, 'fasm', execution);

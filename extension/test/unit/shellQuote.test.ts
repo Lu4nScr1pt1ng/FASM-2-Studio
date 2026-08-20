@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { quoteForShell } from '../../src/shellQuote';
+import { fasmIncludeDirective, quoteForShell } from '../../src/shellQuote';
 
 describe('quoteForShell', () => {
   it('leaves a plain path with no special characters unquoted', () => {
@@ -40,5 +40,24 @@ describe('quoteForShell', () => {
     assert.strictEqual(quoteForShell('$HOME'), '"\\$HOME"');
     assert.strictEqual(quoteForShell('`id`'), '"\\`id\\`"');
     assert.strictEqual(quoteForShell('a\\b c'), '"a\\\\b c"');
+  });
+});
+
+describe('fasmIncludeDirective', () => {
+  it('quotes with double quotes when the outer shell is not cmd (bash, PowerShell)', () => {
+    assert.strictEqual(fasmIncludeDirective('/home/user/listing.inc', false), 'include "/home/user/listing.inc"');
+  });
+
+  it('quotes with single quotes when the outer shell is forced to cmd, avoiding the collision that ' +
+    'strips both layers of quoting once cmd\'s own "..." wrap lands on an already-"..."-quoted value', () => {
+    assert.strictEqual(
+      fasmIncludeDirective('c:/Users/User/.vscode/extensions/lu4nscr1pt1ng.fasm2-studio/listing.inc', true),
+      "include 'c:/Users/User/.vscode/extensions/lu4nscr1pt1ng.fasm2-studio/listing.inc'",
+    );
+  });
+
+  it('escapes a literal occurrence of the chosen delimiter by doubling it', () => {
+    assert.strictEqual(fasmIncludeDirective('/tmp/weird"name/listing.inc', false), 'include "/tmp/weird""name/listing.inc"');
+    assert.strictEqual(fasmIncludeDirective("/tmp/weird'name/listing.inc", true), "include '/tmp/weird''name/listing.inc'");
   });
 });

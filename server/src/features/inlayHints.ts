@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { InlayHint, InlayHintKind, Range } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { URI } from 'vscode-uri';
 import { AddressLineMap } from '../listing/listingMap';
 
 /**
@@ -163,14 +164,22 @@ export function getInlayHints(doc: TextDocument, range: Range, map: AddressLineM
   return hints;
 }
 
-/** file:// URI -> filesystem path. Kept local and minimal rather than pulling in a URI library for
- * one call; the server only ever holds file:// and untitled: documents, and an untitled one has no
- * path for a listing to have been keyed by in the first place. */
+/** file:// URI -> filesystem path, matching the fsPath every map key in this module is built from
+ * (server.ts derives sourceFsPath the same way, via `URI.parse(uri).fsPath`). The server only ever
+ * holds file:// and untitled: documents, and an untitled one has no path for a listing to have been
+ * keyed by in the first place — checked explicitly, since URI.parse().fsPath does not return
+ * undefined for a non-file scheme, just a meaningless value derived from its opaque part.
+ *
+ * This used to be a hand-rolled `decodeURIComponent` + leading-slash strip, which left the path
+ * exactly as the URI encoded it: always "/"-separated, whatever the platform. On Windows every path
+ * built through this module's Map keys elsewhere (mappedLinesByFile, locationToAddress, ...) uses
+ * "\" instead, from sourceFsPath's own `.fsPath`. Two spellings of the same file never compared
+ * equal, so a lookup here always missed and inlay hints silently produced nothing — invisible on
+ * Linux/macOS, where "/" already is the native separator, which is exactly why this went unnoticed
+ * until a real Windows compile ever reached this code path. */
 export function uriToFsPath(uri: string): string | undefined {
   if (!uri.startsWith('file://')) return undefined;
-  const withoutScheme = decodeURIComponent(uri.slice('file://'.length));
-  // A Windows URI carries a leading slash before the drive letter ("/c:/src/a.asm").
-  return /^\/[a-zA-Z]:/.test(withoutScheme) ? withoutScheme.slice(1) : withoutScheme;
+  return URI.parse(uri).fsPath;
 }
 
 /**

@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.27.1
+
+### Fixed: a Windows build task failed with "symbol 'c' is undefined or out of scope"
+
+`fasm2Studio.fasm2Preload` and a debug build's listing include were injected as one shell argument,
+`-i include "<path>"`, wrapped in `vscode.ShellQuoting.Strong` so the space after `include` couldn't
+split it into two. Strong quoting wraps a value in `'` on bash and PowerShell but in `"` on cmd.exe —
+with no escaping of anything already inside it. On cmd, that outer `"..."` landed on top of the
+fasm-level `"..."` already in the string: a `""` at the boundary just toggles quoted state twice and
+cancels out, so both layers of quoting vanished before fasmg ever saw the line. It received the bare
+path, `c:/Users/...`, tried to parse it as an expression, and failed on the first token it found:
+`Error: symbol 'c' is undefined or out of scope.`
+
+The task's shell is now pinned to cmd.exe on Windows rather than left to whatever
+`terminal.integrated.defaultProfile.windows` happens to resolve to (commonly PowerShell these days),
+and the fasm-level quote character is chosen to be whichever one the shell isn't using — so the two
+can no longer collide.
+
+### Fixed: live error checking silently stopped working on Windows
+
+The official fasm2 distribution for Windows ships as a `fasm2.cmd` wrapper script, not a bare `.exe`.
+`compilerDiscovery.ts`'s own probes already knew this and ran through a shell for exactly that
+reason, but the diagnostics compile itself spawned the compiler directly — Node cannot launch a
+`.cmd` that way. Every compile failed before reaching the assembler, and diagnostics went dark with
+"spawn fasm2 ENOENT" in the output channel, easy to miss unless you went looking for it. The
+diagnostics compile now goes through a shell on Windows too, the same way the probes always have.
+
+### Fixed: inlay hints never appeared on Windows
+
+Uncovered while verifying the fix above: once compiles actually started succeeding, the
+address/size hints `fasm2Studio.inlayHints` adds inline still never showed up. The document's URI
+was decoded into a filesystem path by hand, and that path kept the URI's own `/` regardless of
+platform; every other path this feature keys its maps by comes from `.fsPath`, which uses `\` on
+Windows. Two spellings of the same file never compared equal, so the lookup always missed. The URI
+is now resolved through that same `.fsPath` machinery everywhere.
+
 ## 1.27.0
 
 ### The `${workspaceFolder}` in your launch.json
