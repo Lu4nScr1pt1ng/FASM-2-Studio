@@ -1796,3 +1796,149 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
   });
 
 });
+
+/**
+ * Windows-only: the Disassembly View equivalent of stepping into a real WinAPI call — the case
+ * disassembleAround's anchor-fallback (session.ts) exists for. A `call` here doesn't land on a
+ * mapped mid-macro address the way the Linux macro test above does; it leaves the user's own
+ * program's address range *entirely*, into a system DLL the listing has never heard of and whose
+ * address can be nowhere near it. That used to make the *whole* disassembled page come back as
+ * placeholder "(unavailable)" rows — confirmed directly against gdb: asking it to disassemble from
+ * the program's own low address up through the DLL's (necessarily spanning the unmapped gap between
+ * them) fails outright with "Cannot access memory", which is exactly the query the old anchor logic
+ * built.
+ */
+describe('Disassembly View across a step into a real Windows API call (real adapter.js, real gdb, real fasm2 PE binary)', function () {
+  let dir: string;
+  let asmPath: string;
+  let programPath: string;
+  let listingPath: string;
+  const gdbAvailable = isAvailable('gdb');
+  // fasm2's official Windows distribution is a ".cmd" wrapper — spawnSync only resolves that
+  // through a shell, unlike gdb.exe, which is a real executable.
+  const fasm2Available = os.platform() === 'win32' && !spawnSync('fasm2', ['--version'], { shell: true, timeout: 5000 }).error;
+
+  const PE_SRC = [
+    'format PE64 console',
+    'entry start',
+    // Included directly rather than via fasm2's "-i" flag — see inferiorTerminal.e2e.test.ts's own
+    // PE_ECHO_SRC for why that flag is not worth fighting cmd.exe's quoting over in a test.
+    "include 'listing.inc'",
+    '',
+    "include 'win64a.inc'",
+    '',
+    "section '.text' code readable executable",
+    '',
+    'start:',
+    '\tsub     rsp, 40',
+    '\tinvoke  GetStdHandle, STD_OUTPUT_HANDLE',
+    '\tinvoke  ExitProcess, 0',
+    '',
+    // Not left empty: an empty ".data" section produced a PE Windows itself refuses to launch
+    // (CreateProcess error 193, "not a valid Win32 application") — fasm2 assembled it without
+    // complaint, so this only ever surfaced as the debug session failing to start at all, confirmed
+    // directly. One placeholder qword is enough to avoid it.
+    "section '.data' data readable writeable",
+    '',
+    'written dq ?',
+    '',
+    "section '.idata' import data readable writeable",
+    '',
+    "library kernel32, 'KERNEL32.DLL'",
+    "import kernel32, GetStdHandle, 'GetStdHandle', ExitProcess, 'ExitProcess'",
+    '',
+  ].join('\n');
+
+  before(function () {
+    if (!gdbAvailable || !fasm2Available || os.platform() !== 'win32') {
+      this.skip();
+      return;
+    }
+    dir = makeTempDir('fasm2-studio-dap-e2e-disasm-win-');
+    asmPath = path.join(dir, 'prog.asm');
+    programPath = path.join(dir, 'prog.exe');
+    listingPath = path.join(dir, 'prog.lst');
+    fs.writeFileSync(asmPath, PE_SRC, 'utf8');
+
+    const build = spawnSync('fasm2', [asmPath, programPath], { cwd: dir, shell: true, timeout: 15000 });
+    if (build.status !== 0) throw new Error(`fasm2 build failed:\n${build.stdout}\n${build.stderr}`);
+  });
+
+  after(async () => {
+    await removeTempDir(dir);
+  });
+
+  it('decodes real instructions and names the frame, instead of "(unavailable)" rows and "<unmapped address>", once the PC leaves the program for kernel32', async function () {
+    this.timeout(30000);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    const stderrChunks: string[] = [];
+    proc.stderr.on('data', (c: Buffer) => stderrChunks.push(c.toString('utf8')));
+
+    type Insn = { address: string; instruction: string; symbol?: string; presentationHint?: string };
+
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath, asmFile: asmPath, listingFile: listingPath, cwd: dir, stopOnEntry: true });
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped');
+
+      // "sub rsp,40", then invoke's own expansion, then the call itself — four single-instruction
+      // steps from entry reaches inside GetStdHandle every time (confirmed directly against this
+      // exact program with real gdb before writing this test, not assumed). waitForEvent's own
+      // no-predicate form matches the *first* "stopped" it ever saw on every call — the entry stop
+      // above, forever — so each iteration here waits for one it hasn't already counted instead.
+      let seenStops = 1;
+      for (let i = 0; i < 4; i++) {
+        await client.sendRequest('stepIn', { threadId: 1, granularity: 'instruction' });
+        seenStops += 1;
+        await client.waitForEvent('stopped', () => client.events.filter((e) => e.event === 'stopped').length >= seenStops);
+      }
+
+      const trace = await client.sendRequest<{ stackFrames: Array<{ name: string; instructionPointerReference?: string }> }>('stackTrace', {
+        threadId: 1,
+      });
+      const pc = trace.stackFrames[0].instructionPointerReference;
+      assert.ok(pc, 'no instructionPointerReference on the frame after stepping into GetStdHandle');
+      // The Call Stack view's own version of the same fix: a frame with no FASM-mapped source line
+      // used to render as a bare "<unmapped address>" — gdb's own symbol lookup was never asked.
+      assert.match(
+        trace.stackFrames[0].name,
+        /GetStdHandle/i,
+        `expected the frame itself to carry gdb's own symbol, not "<unmapped address>": ${JSON.stringify(trace.stackFrames[0])}`,
+      );
+
+      // The same shape VS Code's own Disassembly View asks for when it opens on a stop: a page
+      // centered on the current instruction, mostly *before* it — negative instructionOffset, the
+      // exact path the old anchor logic broke on once target left the mapped program behind.
+      const page = await client.sendRequest<{ instructions: Insn[] }>('disassemble', {
+        memoryReference: pc,
+        instructionOffset: -20,
+        instructionCount: 40,
+      });
+      assert.strictEqual(page.instructions.length, 40);
+
+      const targetIdx = page.instructions.findIndex((insn) => insn.address === pc);
+      assert.notStrictEqual(targetIdx, -1, `expected the requested address itself among the decoded instructions: ${JSON.stringify(page.instructions)}`);
+
+      const target = page.instructions[targetIdx];
+      assert.notStrictEqual(target.presentationHint, 'invalid', 'the current instruction itself came back as "(unavailable)"');
+      assert.match(target.symbol ?? '', /GetStdHandle/i, `expected gdb's own symbol lookup on kernel32 code, got: ${JSON.stringify(target)}`);
+
+      // The actual regression this test exists for: not *every* row in the page is a placeholder.
+      // Some rows immediately before target failing to reach far enough back is tolerable (there is
+      // no real boundary to anchor on in foreign code) — a wall of nothing but "(unavailable)" is
+      // the bug.
+      const invalidCount = page.instructions.filter((insn) => insn.presentationHint === 'invalid').length;
+      assert.ok(invalidCount < page.instructions.length, `every single row came back "(unavailable)": ${JSON.stringify(page.instructions)}`);
+
+      await client.sendRequest('disconnect');
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\n--- adapter stderr ---\n${stderrChunks.join('')}`);
+    } finally {
+      proc.kill();
+    }
+  });
+});

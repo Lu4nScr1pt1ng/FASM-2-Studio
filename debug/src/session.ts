@@ -1433,25 +1433,48 @@ export class FasmDebugSession extends DebugSession {
       return;
     }
     this.frames = await this.unwind(pc);
-    const stackFrames = this.frames.map((frame, index) => {
-      const loc = this.addressMap?.addressToLocation.get(frame.pc);
-      const label = describeAddress(this.symbolSpans, frame.pc) ?? `0x${frame.pc.toString(16)}`;
-      const stackFrame = loc
-        ? new StackFrame(MAIN_FRAME_ID + index, label, new Source(path.basename(loc.fsPath), loc.fsPath), loc.line)
-        : new StackFrame(MAIN_FRAME_ID + index, `${label} <unmapped address>`);
-      // Needed even when `loc` resolved fine: this is what tells VS Code a Disassembly View exists
-      // for this frame at all (the "Open Disassembly View" affordance), not just what backs it once
-      // opened.
-      stackFrame.instructionPointerReference = `0x${frame.pc.toString(16)}`;
-      // A caller frame is shown at the instruction it will *return to*, which is the one after its
-      // call — so the source line highlighted for it is the line after the one that called. Saying
-      // "subtle" here would be underselling it: this is the one place the frame list can mislead,
-      // and DAP has no field that means "this frame is mid-call".
-      if (index > 0) stackFrame.presentationHint = 'subtle';
-      return stackFrame;
-    });
+    const stackFrames = await Promise.all(
+      this.frames.map(async (frame, index) => {
+        const loc = this.addressMap?.addressToLocation.get(frame.pc);
+        // describeAddress only knows the user's own listing — every frame still inside it names
+        // itself, same as always. One that isn't (a call into a Windows API, say) used to fall
+        // straight to "<unmapped address>", the Call Stack view's own version of the Disassembly
+        // View's old wall of "(unavailable)": gdb has a real answer, this just never asked it.
+        const label = describeAddress(this.symbolSpans, frame.pc) ?? (await this.foreignSymbolAt(frame.pc));
+        const stackFrame = loc
+          ? new StackFrame(MAIN_FRAME_ID + index, label ?? `0x${frame.pc.toString(16)}`, new Source(path.basename(loc.fsPath), loc.fsPath), loc.line)
+          : new StackFrame(MAIN_FRAME_ID + index, label ?? `0x${frame.pc.toString(16)} <unmapped address>`);
+        // Needed even when `loc` resolved fine: this is what tells VS Code a Disassembly View exists
+        // for this frame at all (the "Open Disassembly View" affordance), not just what backs it once
+        // opened.
+        stackFrame.instructionPointerReference = `0x${frame.pc.toString(16)}`;
+        // A caller frame is shown at the instruction it will *return to*, which is the one after its
+        // call — so the source line highlighted for it is the line after the one that called. Saying
+        // "subtle" here would be underselling it: this is the one place the frame list can mislead,
+        // and DAP has no field that means "this frame is mid-call".
+        if (index > 0) stackFrame.presentationHint = 'subtle';
+        return stackFrame;
+      }),
+    );
     response.body = { stackFrames, totalFrames: stackFrames.length };
     this.sendResponse(response);
+  }
+
+  /** gdb's own "module!function+offset" for `address`, the Call Stack equivalent of what
+   * toDisassembledInstruction already does for the Disassembly View — used only once
+   * describeAddress (this file's own listing-derived symbols) has nothing, i.e. exactly the
+   * frames that otherwise render as a bare "<unmapped address>". A 1-byte window is enough:
+   * "-data-disassemble" always decodes the *whole* instruction starting at its own start address
+   * regardless of how short a range it's asked for (see disassembleAround's own reasoning), and
+   * only that first instruction's symbol is wanted here. */
+  private async foreignSymbolAt(address: bigint): Promise<string | undefined> {
+    try {
+      const [first] = await this.disassembleRawRange(address, address + 1n);
+      if (!first?.funcName) return undefined;
+      return first.funcOffset ? `${first.funcName}+0x${first.funcOffset.toString(16)}` : first.funcName;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1549,30 +1572,90 @@ export class FasmDebugSession extends DebugSession {
   private async disassembleAround(target: bigint, instructionOffset: number, instructionCount: number): Promise<DebugProtocol.DisassembledInstruction[]> {
     if (!this.gdb) return this.placeholderRun(target, instructionOffset, instructionCount);
 
-    try {
-      const anchor = instructionOffset < 0 ? (this.nearestKnownAddressAtOrBefore(target) ?? target) : target;
-      // "-data-disassemble" always decodes whole instructions even past its own end address (an
-      // instruction straddling the boundary is still returned in full), so over-fetching a
-      // generous byte window is free and never risks a truncated instruction the way trying to
-      // compute an exact byte length up front could.
-      const instructionsPastTarget = Math.max(0, instructionOffset + instructionCount);
-      const windowBytes = Math.min((instructionsPastTarget + 8) * MAX_X86_INSTRUCTION_BYTES, MAX_DISASSEMBLE_WINDOW_BYTES);
-      const endAddr = target + BigInt(windowBytes);
+    // "-data-disassemble" always decodes whole instructions even past its own end address (an
+    // instruction straddling the boundary is still returned in full), so over-fetching a
+    // generous byte window is free and never risks a truncated instruction the way trying to
+    // compute an exact byte length up front could.
+    const instructionsPastTarget = Math.max(0, instructionOffset + instructionCount);
+    const windowBytes = Math.min((instructionsPastTarget + 8) * MAX_X86_INSTRUCTION_BYTES, MAX_DISASSEMBLE_WINDOW_BYTES);
+    const endAddr = target + BigInt(windowBytes);
 
-      const insns = await this.disassembleRawRange(anchor, endAddr);
-      const targetIdx = insns.findIndex((insn) => insn.address === target);
-      if (targetIdx === -1) return this.placeholderRun(target, instructionOffset, instructionCount);
-
-      const startIdx = targetIdx + instructionOffset;
-      const out: DebugProtocol.DisassembledInstruction[] = [];
-      for (let i = 0; i < instructionCount; i++) {
-        const insn = insns[startIdx + i];
-        out.push(insn ? this.toDisassembledInstruction(insn) : this.placeholderInstruction(target + BigInt(startIdx + i - targetIdx)));
+    if (instructionOffset < 0) {
+      const known = this.nearestKnownAddressAtOrBefore(target);
+      // A listing-derived anchor exists for every address at all, by construction — sortedAddresses
+      // holds every address fasm2's own listing ever mapped, so the binary search always returns
+      // *something* once the target is past the first one. What it does not guarantee is that the
+      // anchor is anywhere *near* target: once target leaves the user's own program entirely (a
+      // step into a Windows API call, say), "nearest mapped address <= target" degrades to "the
+      // last address the user's own program has", which can be gigabytes below a system DLL's own
+      // address range. Disassembling everything in between is exactly what failed here, confirmed
+      // against a real `invoke GetStdHandle`: gdb reported "Cannot access memory" partway through
+      // the gap, well short of ever reaching target, and the *whole* page came back as a wall of
+      // "(unavailable)" over one bad address far from anything being looked at.
+      if (known !== undefined && target - known <= BigInt(MAX_DISASSEMBLE_WINDOW_BYTES)) {
+        const insns = await this.tryDisassembleThrough(known, endAddr, target);
+        if (insns) return this.instructionsAroundTarget(insns, target, instructionOffset, instructionCount);
+      } else {
+        // No real boundary nearby — estimate one instead of giving up on "before" context
+        // entirely. Backing up `|instructionOffset|` instructions' worth of the longest possible
+        // x86 encoding overshoots the real distance in the ordinary case (average instruction
+        // length is well under half of that), so the decode almost always has several real
+        // instructions of margin before it ever needs to reach target — and even where the
+        // estimated start doesn't land exactly on a boundary, x86 decoding resynchronizes quickly
+        // (a misaligned start reliably hits an invalid opcode within a few bytes and gets skipped),
+        // so everything from a handful of instructions before target onward still comes out
+        // correct. Shrinks and retries on failure (unmapped memory just past a module's own base
+        // address is a real possibility an estimate can walk into), down to no backward context at
+        // all rather than ever falling through to a page of placeholders target itself doesn't need.
+        for (let backBytes = Math.abs(instructionOffset) * MAX_X86_INSTRUCTION_BYTES; backBytes > 0; backBytes = Math.floor(backBytes / 2)) {
+          const insns = await this.tryDisassembleThrough(target - BigInt(backBytes), endAddr, target);
+          if (insns) return this.instructionsAroundTarget(insns, target, instructionOffset, instructionCount);
+        }
       }
-      return out;
-    } catch {
-      return this.placeholderRun(target, instructionOffset, instructionCount);
     }
+
+    // instructionOffset >= 0 (no "before" context asked for at all), or every attempt above failed
+    // to even reach target — which is, itself, always safe to start from: it's where the program
+    // actually is right now, so it is by definition mapped, executable memory.
+    const insns = await this.tryDisassembleThrough(target, endAddr, target);
+    return insns ? this.instructionsAroundTarget(insns, target, instructionOffset, instructionCount) : this.placeholderRun(target, instructionOffset, instructionCount);
+  }
+
+  /** Disassembles `anchor`..`endAddr` and hands it back only if `target` actually turned up in it —
+   * gdb hitting unmapped/unreadable memory partway through a range throws, and a range that never
+   * reaches target at all (an anchor estimate that undershot) is just as useless to a caller that
+   * only ever wants instructions located *relative to target*. Either way, undefined rather than a
+   * thrown error: every caller here has a fallback of its own to move on to. */
+  private async tryDisassembleThrough(
+    anchor: bigint,
+    endAddr: bigint,
+    target: bigint,
+  ): Promise<Array<{ address: bigint; opcodes?: string; inst?: string; funcName?: string; funcOffset?: number }> | undefined> {
+    try {
+      const insns = await this.disassembleRawRange(anchor, endAddr);
+      return insns.some((insn) => insn.address === target) ? insns : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Slices `instructionCount` instructions starting `instructionOffset` away from wherever `target`
+   * actually landed in `insns` — the shared second half of every disassembleAround path once it has
+   * a decoded window that actually contains target. */
+  private instructionsAroundTarget(
+    insns: Array<{ address: bigint; opcodes?: string; inst?: string; funcName?: string; funcOffset?: number }>,
+    target: bigint,
+    instructionOffset: number,
+    instructionCount: number,
+  ): DebugProtocol.DisassembledInstruction[] {
+    const targetIdx = insns.findIndex((insn) => insn.address === target);
+    const startIdx = targetIdx + instructionOffset;
+    const out: DebugProtocol.DisassembledInstruction[] = [];
+    for (let i = 0; i < instructionCount; i++) {
+      const insn = insns[startIdx + i];
+      out.push(insn ? this.toDisassembledInstruction(insn) : this.placeholderInstruction(target + BigInt(startIdx + i - targetIdx)));
+    }
+    return out;
   }
 
   /** Binary search over `sortedAddresses` for the greatest address <= `target` — see
@@ -1596,15 +1679,20 @@ export class FasmDebugSession extends DebugSession {
 
   /** Raw "-data-disassemble" over an address range, mode 2 (opcodes shown, no source correlation
    * asked of gdb — this file already has its own, listing-derived source mapping, applied in
-   * toDisassembledInstruction). Never throws on a malformed individual entry; skips it instead, the
-   * same defensive posture as every other MI-result parser in this file. */
-  private async disassembleRawRange(startAddr: bigint, endAddr: bigint): Promise<Array<{ address: bigint; opcodes?: string; inst?: string }>> {
+   * toDisassembledInstruction). "func-name"/"offset" are gdb's own symbol lookup, used the same way
+   * — the Disassembly View's only source of *any* context for code the listing never mapped, e.g. a
+   * step into a Windows API call. Never throws on a malformed individual entry; skips it instead,
+   * the same defensive posture as every other MI-result parser in this file. */
+  private async disassembleRawRange(
+    startAddr: bigint,
+    endAddr: bigint,
+  ): Promise<Array<{ address: bigint; opcodes?: string; inst?: string; funcName?: string; funcOffset?: number }>> {
     if (!this.gdb) return [];
     const result = await this.gdb.sendCommand(`-data-disassemble -s 0x${startAddr.toString(16)} -e 0x${endAddr.toString(16)} -- 2`);
     const raw = miData(result)?.['asm_insns'];
     if (!Array.isArray(raw)) return [];
 
-    const out: Array<{ address: bigint; opcodes?: string; inst?: string }> = [];
+    const out: Array<{ address: bigint; opcodes?: string; inst?: string; funcName?: string; funcOffset?: number }> = [];
     for (const entry of raw) {
       if (typeof entry !== 'object' || entry === null) continue;
       const rec = entry as Record<string, unknown>;
@@ -1615,10 +1703,15 @@ export class FasmDebugSession extends DebugSession {
       } catch {
         continue;
       }
+      // gdb reports offset as a decimal string ("0", "7", …) — /^\d+$/ rather than a bare Number()
+      // check so a malformed or hex-looking value never silently becomes NaN-as-0.
+      const offsetStr = rec.offset;
       out.push({
         address,
         opcodes: typeof rec.opcodes === 'string' ? rec.opcodes : undefined,
         inst: typeof rec.inst === 'string' ? rec.inst : undefined,
+        funcName: typeof rec['func-name'] === 'string' ? rec['func-name'] : undefined,
+        funcOffset: typeof offsetStr === 'string' && /^\d+$/.test(offsetStr) ? Number(offsetStr) : undefined,
       });
     }
     return out;
@@ -1627,8 +1720,11 @@ export class FasmDebugSession extends DebugSession {
   /** A real, gdb-decoded instruction — annotated with this file's own listing-derived source
    * location when one exists at that exact address (the first instruction of a mapped line or
    * macro invocation), so the Disassembly View shows which FASM source line each instruction
-   * belongs to, not just raw bytes. */
-  private toDisassembledInstruction(insn: { address: bigint; opcodes?: string; inst?: string }): DebugProtocol.DisassembledInstruction {
+   * belongs to, not just raw bytes. Falls back to gdb's own symbol lookup (module!function, +offset
+   * past its first instruction) when there is no such location — code the listing never emitted,
+   * same case disassembleAround's own fallback anchor exists for — so a step into a Windows API
+   * call reads as "KERNEL32!GetStdHandle+0x7" instead of a bare, contextless address. */
+  private toDisassembledInstruction(insn: { address: bigint; opcodes?: string; inst?: string; funcName?: string; funcOffset?: number }): DebugProtocol.DisassembledInstruction {
     const loc = this.addressMap?.addressToLocation.get(insn.address);
     const out: DebugProtocol.DisassembledInstruction = {
       address: `0x${insn.address.toString(16)}`,
@@ -1638,6 +1734,8 @@ export class FasmDebugSession extends DebugSession {
     if (loc) {
       out.location = new Source(path.basename(loc.fsPath), loc.fsPath);
       out.line = loc.line;
+    } else if (insn.funcName) {
+      out.symbol = insn.funcOffset ? `${insn.funcName}+0x${insn.funcOffset.toString(16)}` : insn.funcName;
     }
     return out;
   }

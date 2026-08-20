@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.28.2
+
+### Fixed: stepping into a library call filled the Disassembly View with "(unavailable)" and left the Call Stack saying "<unmapped address>"
+
+The Disassembly View always asks for a page centered on the current instruction, mostly *before*
+it. Finding a real instruction boundary to decode backward from means anchoring on the nearest
+address the program's own listing actually knows about — which works perfectly inside the user's
+own code, and degrades badly the moment the PC leaves it: stepping into a library call (a Windows
+API, libc, anything with no listing of its own) left "nearest known address" pointing at wherever
+the user's own program last was, which can be nowhere near where execution actually went. Asking
+gdb to disassemble the entire gap in between is what actually failed — confirmed directly against a
+real `invoke GetStdHandle`: gdb reported "Cannot access memory" partway through, and the *whole*
+page came back as a wall of placeholders over one bad request nowhere near what was being looked at.
+
+The anchor is now only trusted when it's actually close to the target. Off in genuinely foreign
+code, an estimated backward start takes its place instead — x86 decoding resynchronizes quickly
+even from a slightly-off starting point, and the estimate shrinks and retries if it wanders into
+unmapped memory, down to no "before" context at all rather than ever giving up entirely.
+
+Along the way: gdb already reports which function foreign code belongs to, and this file was
+throwing that away. A step into a library call now shows real disassembled instructions labeled
+`KERNEL32!GetStdHandle+0x7` instead of a bare address — in the Disassembly View, and, since the
+Call Stack panel had the identical "no source line, nothing to say" gap, there too.
+
+Verified against a real build, real gdb, a real step into a real Windows API call — not just read
+off the code. Nothing here is platform-specific: the same fallback applies equally to stepping into
+a shared library on Linux.
+
 ## 1.28.1
 
 ### Fixed: "FASM: Run" showed nothing at all on Windows — an empty terminal tab, not even the echoed command
