@@ -237,6 +237,35 @@ export function describeAddress(spans: readonly SymbolSpan[], address: bigint): 
   return undefined;
 }
 
+/** Names every operand address gdb's own disassembly left bare with the FASM label it falls
+ * inside — the same "which label is this" translation describeAddress already gives register
+ * values (README's "→ msg+0x8"), applied to a disassembled instruction's own text. fasm emits no
+ * symbol table at all, so gdb has nothing of its own to draw from for a *user* label: a jump back
+ * to a loop head, or a load of a data label's address, renders as a bare, unexplained hex literal
+ * without this. Foreign code is unaffected either way — gdb already resolves *its* own known
+ * symbols (a KERNEL32 import, say) inline, in the same "<name>" style this mirrors, and this only
+ * ever adds an annotation gdb left out, never replaces one gdb already gave (detected by the ` <`
+ * gdb itself would have already appended right after the same literal).
+ *
+ * Address-shaped literals only ("0x..." — the sole form gdb's Intel-syntax output ever uses for
+ * one), each checked against `spans`, which already only names an address that falls inside a
+ * label's own declared or inferred extent (see buildSymbolSpans); a plain immediate that happens to
+ * share a small numeral with a real label's address is exactly as unlikely to collide here as it is
+ * in any other disassembler that does this (objdump, IDA, gdb's own symbolic output). */
+export function annotateOperandAddresses(inst: string, spans: readonly SymbolSpan[]): string {
+  return inst.replace(/0x[0-9a-fA-F]+/g, (hex: string, offset: number, full: string) => {
+    if (/^\s*</.test(full.slice(offset + hex.length))) return hex; // gdb already annotated this one
+    let address: bigint;
+    try {
+      address = BigInt(hex);
+    } catch {
+      return hex;
+    }
+    const name = describeAddress(spans, address);
+    return name ? `${hex} <${name}>` : hex;
+  });
+}
+
 export interface ConstantSymbol {
   name: string;
   /** Parsed value, when the definition's right-hand side is a single, directly-parseable numeric

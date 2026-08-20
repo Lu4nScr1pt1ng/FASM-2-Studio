@@ -1,6 +1,14 @@
 import * as assert from 'assert';
 import { ListingEntry } from '@fasm2-studio/server/src/listing/listingMap';
-import { buildConstantMap, buildSymbolAddressMap, buildSymbolSpans, describeAddress, formatConstantCompact, formatConstantDetailed } from '../src/symbols';
+import {
+  annotateOperandAddresses,
+  buildConstantMap,
+  buildSymbolAddressMap,
+  buildSymbolSpans,
+  describeAddress,
+  formatConstantCompact,
+  formatConstantDetailed,
+} from '../src/symbols';
 
 function entry(address: number, text: string): ListingEntry {
   return { address: BigInt(address), text };
@@ -247,6 +255,46 @@ describe('buildSymbolSpans / describeAddress', () => {
     const trailing = buildSymbolSpans(buildSymbolAddressMap([entry(0x401000, 'only:')]));
     assert.strictEqual(describeAddress(trailing, 0x401fffn), 'only+0xfff');
     assert.strictEqual(describeAddress(trailing, 0x402000n), undefined);
+  });
+});
+
+describe('annotateOperandAddresses', () => {
+  const spans = buildSymbolSpans(
+    buildSymbolAddressMap([
+      entry(0x401000, 'start:'),
+      entry(0x401000, 'mov eax, 1'),
+      entry(0x402000, "msg db 'Hello',0"),
+    ]),
+  );
+
+  it('names a jump back to a label the way gdb never can, fasm having emitted no symbol table for it', () => {
+    assert.strictEqual(annotateOperandAddresses('jmp    0x401000', spans), 'jmp    0x401000 <start>');
+  });
+
+  it('names a data label loaded by absolute address, offset included', () => {
+    assert.strictEqual(annotateOperandAddresses('mov    eax,0x402003', spans), 'mov    eax,0x402003 <msg+0x3>');
+  });
+
+  it('annotates every resolvable literal on the line, not just the first', () => {
+    assert.strictEqual(
+      annotateOperandAddresses('cmp    DWORD PTR [0x402000],0x401000', spans),
+      'cmp    DWORD PTR [0x402000 <msg>],0x401000 <start>',
+    );
+  });
+
+  it('leaves a literal gdb already annotated untouched rather than appending a second name', () => {
+    assert.strictEqual(
+      annotateOperandAddresses('call   0x7ffabcd01230 <KERNEL32!GetStdHandle>', spans),
+      'call   0x7ffabcd01230 <KERNEL32!GetStdHandle>',
+    );
+  });
+
+  it('leaves a plain immediate with no matching label untouched', () => {
+    assert.strictEqual(annotateOperandAddresses('mov    eax,0x2a', spans), 'mov    eax,0x2a');
+  });
+
+  it('passes through an instruction with no hex literal at all unchanged', () => {
+    assert.strictEqual(annotateOperandAddresses('ret', spans), 'ret');
   });
 });
 

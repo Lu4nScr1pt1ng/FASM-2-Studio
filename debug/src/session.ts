@@ -81,6 +81,7 @@ import { SYSCALL_ARGUMENT_REGISTERS, SyscallAbi, syscallName } from './syscalls'
 import { collectReturnSites, unwindStack, UnwoundFrame } from './unwind';
 import { defaultEnabledSignals, signalHandlingCommands, SIGNAL_FILTERS } from './signalFilters';
 import {
+  annotateOperandAddresses,
   buildConstantMap,
   buildSymbolAddressMap,
   buildSymbolSpans,
@@ -1728,7 +1729,7 @@ export class FasmDebugSession extends DebugSession {
     const loc = this.addressMap?.addressToLocation.get(insn.address);
     const out: DebugProtocol.DisassembledInstruction = {
       address: `0x${insn.address.toString(16)}`,
-      instruction: insn.inst ?? '(unknown)',
+      instruction: insn.inst ? annotateOperandAddresses(insn.inst, this.symbolSpans) : '(unknown)',
     };
     if (insn.opcodes) out.instructionBytes = insn.opcodes.trim().replace(/\s+/g, ' ');
     if (loc) {

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.28.3
+
+### Jump and call targets, and data loads, now read as a label in the Disassembly View
+
+fasm2 emits no symbol table at all — every register value the debugger already resolves against the
+listing's own labels (`describeAddress`, behind the Registers panel's `→ msg+0x8`) is something gdb
+itself has no way to answer on its own. The Disassembly View inherited exactly that gap for one thing
+it never got covered: a `jmp` back to a loop head, or a `mov eax, msg` loading a data label's own
+address, rendered as nothing but a bare hex literal, forcing a manual look-up against the listing for
+something the extension already knew the answer to.
+
+Every instruction's own text is now checked against the same listing-derived symbol spans already
+built for the Registers and Stack views, and any resolvable address literal gets `<name>` (or
+`<name+0xN>`) appended — `jmp 0x401050` reads as `jmp 0x401050 <loop_start>`, `mov eax,0x402003` as
+`mov eax,0x402003 <msg+0x3>`. Anything gdb has already annotated itself — a known KERNEL32 import, say
+— is left untouched rather than getting a second, redundant name; only what gdb had no way to resolve
+gains one.
+
+This is pure post-processing of the instruction text gdb already returns, with no platform-specific
+path of its own — the same annotation applies on Windows and Linux alike, whichever program produced
+the address in the first place.
+
 ## 1.28.2
 
 ### Fixed: stepping into a library call filled the Disassembly View with "(unavailable)" and left the Call Stack saying "<unmapped address>"
