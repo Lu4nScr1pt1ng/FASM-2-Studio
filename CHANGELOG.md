@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.27.3
+
+### Fixed: "FASM: Debug" on Windows failed with "the expected listing file was not found"
+
+A regression from 1.27.2's own fix for "FASM: Run" producing no output: the default build output
+on Windows now ends in ".exe", but the debug adapter still located the listing by blindly
+appending ".lst" to that path — "hello.exe" + ".lst" = "hello.exe.lst". fasm2's own bundled
+listing macro does not append; `virtual as 'lst'` *replaces* the output's extension, so the file it
+actually writes is "hello.lst". Appending only ever produced the right name by accident, back when
+the output path this was called with never had an extension to replace in the first place.
+getListingPath now replaces the extension the same way the macro does, confirmed against a real
+build's own output on disk rather than just read out of listing.inc.
+
 ## 1.27.2
 
 ### Fixed: debugging a Windows PE build couldn't stop on entry

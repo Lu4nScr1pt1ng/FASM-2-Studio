@@ -35,8 +35,20 @@ export function getDefaultOutputPath(sourceFsPath: string): string {
   return configuredOutputFor(sourceFsPath) ?? defaultOutputFor(sourceFsPath);
 }
 
+/**
+ * Where fasm2's own bundled listing macro actually writes: `virtual as 'lst'` *replaces* the
+ * output's extension rather than appending to it, so "hello.exe" produces "hello.lst", not
+ * "hello.exe.lst" — confirmed against a real build, not just read out of listing.inc. Simply
+ * appending happened to still land on the right file as long as the output itself had no
+ * extension (replacing and appending coincide when there is nothing to replace), which was true
+ * of every output path this function was ever called with — until getDefaultOutputPath started
+ * adding ".exe" on Windows, at which point "the expected listing file was not found" started
+ * showing up for every Windows debug launch even though the build had just written one, one
+ * extension short of where this was looking.
+ */
 export function getListingPath(outputFsPath: string): string {
-  return `${outputFsPath}.lst`;
+  const { dir, name } = path.parse(outputFsPath);
+  return path.join(dir, `${name}.lst`);
 }
 
 export async function dialectFor(sourceFsPath: string, override?: Dialect): Promise<Dialect> {
