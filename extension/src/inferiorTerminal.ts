@@ -59,7 +59,10 @@ export function openInferiorTerminal(context: vscode.ExtensionContext, console: 
     // no Node installed on the user's machine, same as the debug adapter itself.
     shellPath: process.execPath,
     shellArgs: [adapterPath, TERMINAL_AGENT_FLAG, endpoint],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
+    // The full environment, not just the one variable that matters here — see runCommand.ts's own
+    // openRunTerminal for why a bare partial object here is not safe to assume gets merged with the
+    // rest of the terminal's environment on every platform.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     iconPath: new vscode.ThemeIcon('debug-console'),
     isTransient: true,
   });

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.28.1
+
+### Fixed: "FASM: Run" showed nothing at all on Windows — an empty terminal tab, not even the echoed command
+
+Both "FASM: Run" and the debug terminal run a script as the terminal's own process by pointing
+`shellPath` at VS Code's own binary and setting `ELECTRON_RUN_AS_NODE=1` in `env`, so neither needs
+Node installed on the user's machine. That `env` was a bare `{ ELECTRON_RUN_AS_NODE: '1' }` — nothing
+else — trusting `TerminalOptions.env` to merge it into the terminal's own environment, which is how
+VS Code documents it and how it behaves on Linux and macOS. Running the exact same `shellPath`
+invocation directly against a real Code.exe confirmed the mechanism itself is sound — it printed the
+program's output correctly — which narrows the fault to that merge specifically not happening on
+Windows: a terminal created this way there got only `ELECTRON_RUN_AS_NODE`, missing `SystemRoot` in
+particular, which is what lets a Windows process load its own runtime at all. The failure is total
+and silent before a single byte is written, which is exactly the shape this took.
+
+`env` now spreads `process.env` explicitly rather than relying on the merge, in both places that use
+this trick. Diagnosed from a real install, not reproduced against VS Code's own terminal UI directly
+— worth a second look if "FASM: Run" is still silent after this.
+
 ## 1.28.0
 
 ### fasm2's own includes — `win64a.inc`, `invoke`, `library`, `import` and everything else it ships — are now found automatically

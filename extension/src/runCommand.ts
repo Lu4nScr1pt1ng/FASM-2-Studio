@@ -55,7 +55,15 @@ function openRunTerminal(cwd: string, argv: string[]): vscode.Terminal {
     // no Node installed on the user's machine, same as the debug adapter itself.
     shellPath: process.execPath,
     shellArgs: [runnerModulePath(), ...argv],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
+    // The full environment, not just the one variable that matters here: TerminalOptions.env is
+    // documented as being merged into the terminal's environment, but on Windows specifically that
+    // merge silently did not happen — a terminal created this way got only ELECTRON_RUN_AS_NODE and
+    // nothing else, missing SystemRoot in particular, which is what a Windows process needs to load
+    // kernel32 and the rest of its own runtime at all. The failure is total and silent: Code.exe
+    // launched that way never gets far enough to run runner.js, so the terminal just sits there
+    // empty — no echoed command, no output, nothing, exactly the shape this surfaced as. Spreading
+    // process.env here first removes the dependency on that merge happening at all.
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     iconPath: new vscode.ThemeIcon('play'),
     isTransient: true,
   });
