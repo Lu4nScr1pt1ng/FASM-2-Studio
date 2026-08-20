@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getDefaultOutputPath } from '../../src/buildPaths';
 import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
@@ -56,8 +57,11 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
 
       await vscode.commands.executeCommand('fasm2Studio.build');
 
-      assert.ok(fs.existsSync(path.join(dir, 'cc')), 'expected the entry point\'s own output ("cc"), built via the fragment\'s resolved entry point');
-      assert.ok(!fs.existsSync(path.join(dir, 'lexer')), 'must not have tried to compile the fragment standalone');
+      assert.ok(
+        fs.existsSync(getDefaultOutputPath(entryPath)),
+        'expected the entry point\'s own output ("cc"), built via the fragment\'s resolved entry point',
+      );
+      assert.ok(!fs.existsSync(getDefaultOutputPath(fragmentPath)), 'must not have tried to compile the fragment standalone');
     } finally {
       await removeTempDir(dir);
     }
@@ -84,7 +88,7 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
 
       await vscode.commands.executeCommand('fasm2Studio.build');
 
-      assert.ok(!fs.existsSync(path.join(dir, 'orphan')), 'must not have tried to compile the orphaned fragment standalone');
+      assert.ok(!fs.existsSync(getDefaultOutputPath(orphanPath)), 'must not have tried to compile the orphaned fragment standalone');
     } finally {
       await removeTempDir(dir);
     }
@@ -121,8 +125,8 @@ describe('Build/Run/Debug resolve the real entry point for a fragment file', () 
       await vscode.commands.executeCommand('fasm2Studio.build');
 
       assert.deepStrictEqual(offeredLabels.sort(), ['projectA.asm', 'projectB.asm'], 'expected to be offered both unrelated projects that include this fragment');
-      assert.ok(fs.existsSync(path.join(dir, 'projectB')), 'expected the picked project (projectB) to have been built');
-      assert.ok(!fs.existsSync(path.join(dir, 'projectA')), 'the unpicked project must not have been built');
+      assert.ok(fs.existsSync(getDefaultOutputPath(entryBPath)), 'expected the picked project (projectB) to have been built');
+      assert.ok(!fs.existsSync(getDefaultOutputPath(entryAPath)), 'the unpicked project must not have been built');
     } finally {
       await removeTempDir(dir);
     }

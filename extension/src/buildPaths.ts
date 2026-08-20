@@ -7,9 +7,18 @@ import { fasmConfig } from './config';
 import { detectDialect } from './dialect';
 import { Dialect } from './types';
 
+/** On Windows, a program with no file extension at all cannot be launched by name-and-full-path
+ * the way Run and Debug both need to: cmd.exe's PATHEXT search only appends an extension to a bare
+ * command name typed without a path, never to an already-fully-qualified one, so even
+ * `spawn('C:\...\prog', ..., { shell: true })` answers "'C:\...\prog' is not recognized as an
+ * internal or external command" for a real, existing, perfectly valid PE — confirmed directly, the
+ * same way as every other Windows-specific fix in this codebase. gdb is unaffected (it launches the
+ * process itself via the Win32 debugging API, not through cmd.exe), which is why this only ever
+ * showed up as "Run" silently doing nothing, never as a debug launch failing to start. */
 function defaultOutputFor(sourceFsPath: string): string {
   const { dir, name } = path.parse(sourceFsPath);
-  return path.join(dir, name);
+  const stem = path.join(dir, name);
+  return process.platform === 'win32' ? `${stem}.exe` : stem;
 }
 
 /** fasm2Studio.buildOutputPath, resolved against the source file's own directory (as documented),

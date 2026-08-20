@@ -4,8 +4,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getDefaultOutputPath } from '../../src/buildPaths';
 import { makeTempDir, removeTempDir } from '../tempDir';
 
+// "fasm2" on Windows is a fasm2.cmd wrapper script (the official distribution's own shape), which
+// spawnSync cannot even attempt to run without a shell — see the same reasoning in
+// server/src/features/diagnostics.ts's execCompiler.
 function fasm2Available(): boolean {
   const result = spawnSync('fasm2', [], { shell: true, timeout: 3000, encoding: 'utf8' });
   return `${result.stdout ?? ''}${result.stderr ?? ''}`.toLowerCase().includes('flat assembler');
@@ -18,7 +22,7 @@ const MARKER = 'ran.txt';
 
 // sys_creat(MARKER, 0644) then exit(0). Linux x86-64: this test asserts that a program runs at all,
 // so it has to be one whose running leaves something behind.
-const PROGRAM_SRC = [
+const LINUX_PROGRAM_SRC = [
   'format ELF64 executable 3',
   'entry start',
   '',
@@ -35,6 +39,41 @@ const PROGRAM_SRC = [
   '',
 ].join('\n');
 
+// CreateFileA(MARKER, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0) then
+// ExitProcess(0). Windows PE64: the same "leaves something behind" property as the Linux program
+// above, needed for exactly the same reason — this is also the regression test for runner.ts
+// having used spawnSync, which never returns at all when this process is VS Code's own binary run
+// as Node (ELECTRON_RUN_AS_NODE) on Windows, confirmed directly against the built runner.js. Never
+// reaching CreateFileA (marker absent) is indistinguishable on its own from "the terminal opened
+// but the program itself failed to start" — it's the *terminal* this test goes on to check for
+// (see below) that pins the failure down to "hung before running anything" specifically.
+const WINDOWS_PROGRAM_SRC = [
+  'format PE64 console',
+  'entry start',
+  '',
+  "include 'win64a.inc'",
+  '',
+  "section '.text' code readable executable",
+  '',
+  'start:',
+  '\tsub\trsp, 8*5',
+  '\tinvoke\tCreateFileA, marker, 40000000h, 0, 0, 2, 80h, 0',
+  '\tinvoke\tCloseHandle, rax',
+  '\tinvoke\tExitProcess, 0',
+  '',
+  "section '.data' data readable writeable",
+  '',
+  `marker db '${MARKER}', 0`,
+  '',
+  "section '.idata' import data readable writeable",
+  '',
+  "library kernel32, 'KERNEL32.DLL'",
+  "import kernel32, CreateFileA, 'CreateFileA', CloseHandle, 'CloseHandle', ExitProcess, 'ExitProcess'",
+  '',
+].join('\n');
+
+const PROGRAM_SRC = os.platform() === 'win32' ? WINDOWS_PROGRAM_SRC : LINUX_PROGRAM_SRC;
+
 async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean> {
   const start = Date.now();
   while (!fs.existsSync(filePath)) {
@@ -44,15 +83,26 @@ async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean
   return true;
 }
 
+// Named "FASM" (see runCommand.ts's TERMINAL_NAME) everywhere the extension itself is asked — but
+// on Windows, VS Code overrides that with the tab title of whatever process the shellPath actually
+// launches, which for this terminal is VS Code's own binary run as Node ("Code"), not "FASM" —
+// confirmed directly against a real run, not a guess. shellPath is what's actually distinctive
+// about this terminal (a real shell, however it got named, never runs as process.execPath), so it
+// is what both finding and cleaning these terminals up key on, rather than a name Windows may have
+// already renamed out from under the extension by the time either runs.
+function isRunTerminal(terminal: vscode.Terminal): boolean {
+  return (terminal.creationOptions as vscode.TerminalOptions | undefined)?.shellPath === process.execPath;
+}
+
 function disposeRunTerminals(): void {
   for (const terminal of vscode.window.terminals) {
-    if (terminal.name === 'FASM') terminal.dispose();
+    if (isRunTerminal(terminal)) terminal.dispose();
   }
 }
 
 describe('FASM: Build and Run', () => {
   it('runs the program it just built, on a terminal that is the program rather than a shell', async function () {
-    if (!fasm2Available() || os.platform() !== 'linux') {
+    if (!fasm2Available() || !['linux', 'win32'].includes(os.platform())) {
       this.skip();
       return;
     }
@@ -78,12 +128,32 @@ describe('FASM: Build and Run', () => {
       const marker = path.join(dir, MARKER);
       assert.ok(await waitForFile(marker, 20000), `the built program never ran: no ${marker}, directory holds ${fs.readdirSync(dir).join(', ')}`);
 
-      const terminal = vscode.window.terminals.find((t) => t.name === 'FASM');
-      assert.ok(terminal, `no terminal was opened for the program; terminals: ${vscode.window.terminals.map((t) => t.name).join(', ')}`);
+      // Regression test for the default build output having no file extension at all: cmd.exe's
+      // PATHEXT search only ever appends one to a bare command name, never to an already-qualified
+      // path, so a fully-valid PE at "prog" (rather than "prog.exe") could not be launched at all —
+      // "'...\prog' is not recognized as an internal or external command" — confirmed directly, not
+      // just reasoned about. Silent on its own (no error was visible without the runner.ts fix
+      // above too — spawnSync never returned to report it), which is why the marker check alone
+      // would not have caught a regression here even though it *would* have caught this bug itself.
+      if (os.platform() === 'win32') {
+        assert.ok(getDefaultOutputPath(asmPath).endsWith('.exe'), 'the default Windows build output must end in ".exe" to be launchable at all');
+      }
+
+      const terminal = vscode.window.terminals.find(isRunTerminal);
+      assert.ok(
+        terminal,
+        `no terminal was opened for the program; terminals: ${vscode.window.terminals
+          .map((t) => `${t.name} shellPath=${(t.creationOptions as vscode.TerminalOptions)?.shellPath}`)
+          .join(' | ')}`,
+      );
       // The program's terminal runs a process of the extension's own choosing. A terminal opened
       // with the user's shell instead is the shape of the bug above, whether or not it happened to
-      // work on the machine running this test.
+      // work on the machine running this test. (isRunTerminal above already establishes this for
+      // every platform; asserted again explicitly here as the one thing this whole test is about.)
       assert.strictEqual((terminal.creationOptions as vscode.TerminalOptions).shellPath, process.execPath);
+      // The "FASM" name itself is only checked where Windows doesn't override it — see
+      // isRunTerminal's own comment.
+      if (os.platform() !== 'win32') assert.strictEqual(terminal.name, 'FASM');
     } finally {
       disposeRunTerminals();
       await removeTempDir(dir);
@@ -91,7 +161,7 @@ describe('FASM: Build and Run', () => {
   });
 
   it('offers to build first when FASM: Run is asked for something that was never built', async function () {
-    if (!fasm2Available() || os.platform() !== 'linux') {
+    if (!fasm2Available() || !['linux', 'win32'].includes(os.platform())) {
       this.skip();
       return;
     }

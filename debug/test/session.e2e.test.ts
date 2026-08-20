@@ -953,6 +953,92 @@ describe('FasmDebugSession end-to-end (real adapter.js process, real gdb, real f
     }
   });
 
+  it('stepping into a call that returns many instructions later sends exactly one "stopped" event, not one per internal instruction', async function () {
+    this.timeout(30000);
+
+    // Regression test for onStopped forwarding every intermediate stop of stepToNextLine's own
+    // internal single-instruction loop to the client. That loop calls -exec-step-instruction
+    // repeatedly until the PC reaches a line the listing maps, and gdb reports each of those as an
+    // ordinary "end-stepping-range" stop — real, and onStopped used to treat every one of them as a
+    // stop worth telling the client about, on top of the one the loop itself sends once it actually
+    // decides the step is over. A straight-line program (every other test here) never surfaces
+    // this: the very next instruction is almost always already on a new mapped line, so the loop
+    // runs once and there is only ever one stop to report regardless. Reported by a real user whose
+    // program stepped into a Win32 API call — dozens of instructions with no line of this project's
+    // own to land on until the call actually returns — where the flood of spurious StoppedEvents
+    // left the Registers view blank and every debug action disabled.
+    //
+    // "call multi+1" (not "call multi") is what actually reproduces it: multi's own address is
+    // itself a mapped line (the db statement that emits the NOPs), so jumping there directly would
+    // land on a mapped line after a single step — same as any ordinary call. Landing one byte in
+    // finds nothing the listing knows about for every one of the NOPs that follow, exactly as
+    // foreign, unmapped code would.
+    const dir2 = makeTempDir('fasm2-studio-dap-e2e-manystep-');
+    const asmPath2 = path.join(dir2, 'many.asm');
+    const programPath2 = path.join(dir2, 'many');
+    const listingPath2 = path.join(dir2, 'many.lst');
+    const NOP_COUNT = 40;
+    const MANY_SRC = [
+      'format ELF64 executable 3', // 1
+      'entry start', // 2
+      '', // 3
+      'segment readable executable', // 4
+      '', // 5
+      'start:', // 6
+      '\tmov eax, 1', // 7
+      '\tcall multi+1', // 8
+      '\tmov edi, 0', // 9
+      '\tmov eax, 60', // 10
+      '\tsyscall', // 11
+      '', // 12
+      'multi:', // 13
+      `\tdb ${Array(NOP_COUNT).fill('90h').join(',')}`, // 14
+      '\tmov ecx, 3', // 15
+      '\tret', // 16
+      '', // 17
+    ].join('\n');
+    fs.writeFileSync(asmPath2, MANY_SRC, 'utf8');
+    const build2 = spawnSync('fasm2', ['-i', "include 'listing.inc'", asmPath2, programPath2], { cwd: dir2, timeout: 15000 });
+    if (build2.status !== 0) throw new Error(`fasm2 build failed:\n${build2.stdout}\n${build2.stderr}`);
+    fs.chmodSync(programPath2, 0o755);
+
+    const proc = spawn(process.execPath, [path.join(__dirname, '..', 'dist', 'adapter.js')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const client = new DapClient(proc);
+    try {
+      await client.sendRequest('initialize', { adapterID: 'fasm2', linesStartAt1: true, columnsStartAt1: true, pathFormat: 'path' });
+      await client.waitForEvent('initialized');
+      await client.sendRequest('launch', { program: programPath2, asmFile: asmPath2, listingFile: listingPath2, cwd: dir2 });
+      await client.sendRequest('setBreakpoints', { source: { path: asmPath2 }, breakpoints: [{ line: 8 }] }); // "call multi+1"
+      await client.sendRequest('configurationDone');
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'breakpoint');
+
+      const stoppedBefore = client.events.filter((e) => e.event === 'stopped').length;
+      await client.sendRequest('stepIn', { threadId: 1 });
+      await client.waitForEvent('stopped', (b) => (b as { reason?: string }).reason === 'step');
+      // Any extra, spurious stops would already have arrived alongside the real one — gdb's stops
+      // for one gdb.sendCommand('-exec-step-instruction') are not spread out in time — but give the
+      // event loop a moment regardless, so a flood arriving in a second burst isn't missed.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const stoppedAfter = client.events.filter((e) => e.event === 'stopped').length;
+
+      assert.strictEqual(
+        stoppedAfter - stoppedBefore,
+        1,
+        'one stepIn request must produce exactly one "stopped" event, however many instructions it took internally',
+      );
+
+      const stackTrace = await client.sendRequest<{ stackFrames: Array<{ line: number }> }>('stackTrace', { threadId: 1 });
+      assert.strictEqual(stackTrace.stackFrames[0].line, 15, 'must still land correctly on "mov ecx, 3", past every unmapped NOP');
+
+      await client.sendRequest('continue', { threadId: 1 });
+      await client.waitForEvent('terminated');
+      await client.sendRequest('disconnect');
+    } finally {
+      proc.kill();
+      await removeTempDir(dir2);
+    }
+  });
+
   it('a second "next" fired before the first has finished stepping is dropped, not a race that corrupts where the first one lands', async function () {
     this.timeout(30000);
 

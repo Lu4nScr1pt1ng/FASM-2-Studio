@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.27.2
+
+### Fixed: debugging a Windows PE build couldn't stop on entry
+
+`stopOnEntry` reads the entry point straight out of the executable header, since these binaries
+have no symbol table for gdb's own `start` command to resolve against. That reader only ever
+understood ELF, so a `format PE64 console` build — Windows — always failed with "Could not
+determine the entry point (not a recognized ELF file)" and quietly ran with `stopOnEntry` off. A
+PE reader now sits alongside the ELF one: DOS header → PE header → Optional Header, `ImageBase` +
+`AddressOfEntryPoint`. Confirmed against a real launch, not just the file on disk — a temporary
+breakpoint set at the computed address is exactly where the process stops.
+
+### Fixed: stepping into a Windows API call froze the Registers view and disabled every action
+
+Line-granularity stepping single-steps one machine instruction at a time internally until the PC
+reaches a line the listing maps — invisible on Linux, where the very next instruction is almost
+always already mapped, so that loop runs once. Stepping into `invoke SomeWin32Api` dives into a
+real `call`, and returning from it can take dozens of instructions with nothing of this project's
+own to land on. Every one of those intermediate stops was being reported to the client as its own
+`stopped` event — one "Step Into" could flood VS Code with dozens of them while another step was
+already in flight, which is exactly what left the Registers view blank and every action disabled.
+Measured directly: 23 stray events for a single step before the fix, exactly 1 after, with the
+correct line reached either way.
+
+### Fixed: "FASM: Run" produced no output on Windows at all
+
+Two bugs stacked on each other. `runner.ts` — the process behind the "FASM" terminal — waited for
+the program synchronously (`spawnSync`); on Windows specifically, when the calling process is VS
+Code's own binary running as Node (exactly how that terminal works), `spawnSync` never returns at
+all, confirmed in isolation from everything else. Switched to the asynchronous form. That alone
+only traded silence for a visible failure: the default build output has no file extension at all
+(`hello`, not `hello.exe`), and cmd.exe's own extension search only ever applies to a bare command
+name, never an already-qualified path — so a perfectly valid PE could not be launched by its exact
+location either. The default output path (not an explicitly configured one, left exactly as
+written) now gets `.exe` appended on Windows.
+
 ## 1.27.1
 
 ### Fixed: a Windows build task failed with "symbol 'c' is undefined or out of scope"

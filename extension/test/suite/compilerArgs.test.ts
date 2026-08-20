@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getDefaultOutputPath } from '../../src/buildPaths';
 import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
@@ -28,7 +29,7 @@ describe('FASM: Build honors fasm2Studio.compilerArgs', () => {
     const dir = makeTempDir('fasm2-studio-compilerargs-test-');
     const asmPath = path.join(dir, 'gated.asm');
     fs.writeFileSync(asmPath, GATED_SRC, 'utf8');
-    const outputPath = path.join(dir, 'gated');
+    const outputPath = getDefaultOutputPath(asmPath);
 
     const config = vscode.workspace.getConfiguration('fasm2Studio');
     const original = config.get<string[]>('compilerArgs');

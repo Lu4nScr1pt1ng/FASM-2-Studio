@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getDefaultOutputPath } from '../../src/buildPaths';
 import { makeTempDir, removeTempDir } from '../tempDir';
 
 function fasm2Available(): boolean {
@@ -32,6 +33,10 @@ describe('FASM: Build honors fasm2Studio.buildOutputPath', () => {
 
     const config = vscode.workspace.getConfiguration('fasm2Studio');
     const original = config.get<string>('buildOutputPath');
+    // Captured before buildOutputPath is set below: getDefaultOutputPath resolves *through*
+    // whatever that setting currently holds, so calling it afterwards would name the very path
+    // this test just redirected output to, not the default the redirect is supposed to leave empty.
+    const defaultOutput = getDefaultOutputPath(asmPath);
 
     try {
       const doc = await vscode.workspace.openTextDocument(asmPath);
@@ -43,7 +48,7 @@ describe('FASM: Build honors fasm2Studio.buildOutputPath', () => {
 
       const redirectedOutput = path.join(dir, 'out', 'prog');
       assert.ok(fs.existsSync(redirectedOutput), `expected the build output at ${redirectedOutput}, got top-level entries: ${fs.readdirSync(dir).join(', ')}`);
-      assert.ok(!fs.existsSync(path.join(srcDir, 'prog')), 'expected no output left next to the source once buildOutputPath redirects it elsewhere');
+      assert.ok(!fs.existsSync(defaultOutput), 'expected no output left next to the source once buildOutputPath redirects it elsewhere');
     } finally {
       await config.update('buildOutputPath', original, vscode.ConfigurationTarget.Global);
       await removeTempDir(dir);

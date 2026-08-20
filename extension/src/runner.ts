@@ -16,8 +16,17 @@
 // program runs as a child with the terminal's tty inherited — it reads and writes the terminal
 // directly, this process is not in the middle of its I/O — and the terminal is held open afterwards
 // until a key is pressed.
+//
+// The wait for that child is asynchronous (spawn, not spawnSync) — the synchronous form hangs
+// forever here and nowhere else, confirmed directly: this process is VS Code's own binary run as
+// plain Node (see runCommand.ts, ELECTRON_RUN_AS_NODE), and on Windows specifically, Electron's
+// Node build never returns from spawnSync at all, with any stdio option, while the very same
+// spawn() called asynchronously in the very same process returns normally. A run that reached this
+// point printed the echoed command line and then nothing else, forever — no output, no exit
+// summary, no prompt to close the terminal, because the process was not stuck running the program;
+// it was stuck inside the call meant to wait for it.
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
@@ -28,6 +37,32 @@ export function exitSummary(program: string, status: number | null, signal: Node
   // faults exits on SIGSEGV, and "exited with code null" would say nothing about why.
   if (signal) return `${program} was killed by ${signal}`;
   return `${program} exited with code ${status ?? 0}`;
+}
+
+/** spawnSync's own result shape, minus the parts this never used — kept so exitSummary and its
+ * caller don't need to change just because the wait for the child became asynchronous. */
+interface RunResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}
+
+/** Runs `program` with the terminal's own stdio, resolving once it exits (or fails to start) —
+ * spawn()'s asynchronous form; see the top of this file for why spawnSync cannot be used here. */
+function runInherited(program: string, args: string[], env: NodeJS.ProcessEnv): Promise<RunResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(program, args, { stdio: 'inherit', env });
+    } catch (error) {
+      resolve({ status: null, signal: null, error: error as Error });
+      return;
+    }
+    // At most one of these fires for a given run: 'error' is spawn failing outright (e.g. the
+    // program does not exist), which never reaches a real 'exit'.
+    child.once('error', (error) => resolve({ status: null, signal: null, error }));
+    child.once('exit', (status, signal) => resolve({ status, signal }));
+  });
 }
 
 /**
@@ -64,7 +99,7 @@ async function main(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE;
 
   process.stdout.write(`${DIM}${[program, ...args].join(' ')}${RESET}\r\n`);
-  const result = spawnSync(program, args, { stdio: 'inherit', env });
+  const result = await runInherited(program, args, env);
 
   if (result.error) {
     process.stdout.write(`\r\n${DIM}could not run ${program}: ${result.error.message}${RESET}\r\n`);

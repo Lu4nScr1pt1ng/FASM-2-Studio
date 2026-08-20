@@ -25,6 +25,7 @@ import { DebugProtocol } from '@vscode/debugprotocol';
 import * as path from 'path';
 import { AttachTarget, parseTerminationSignal, resolveAttachTarget } from './attachTarget';
 import { readElfEntryPoint } from './elfEntry';
+import { readPeEntryPoint } from './peEntry';
 import { GdbDriver } from './gdbDriver';
 import { agentCommand, agentEnv, agentModulePath, ConsoleKind, endpointPath, isTerminalConsole, runInTerminalKind, TerminalHandshake } from './inferiorTerminal';
 import { AddressLineMap, buildAddressLineMap, nextMappedLineAtOrAfter } from '@fasm2-studio/server/src/listing/listingMap';
@@ -603,15 +604,20 @@ export class FasmDebugSession extends DebugSession {
           );
         }
         // gdb's own `start` command needs a symbol table to resolve "main", which these binaries
-        // don't have — read the entry point straight out of the ELF header instead (stable,
+        // don't have — read the entry point straight out of the executable header instead (stable,
         // well-known layout, no symbols required). The "lowest address in the listing" isn't a
-        // safe stand-in: format-directive lines (e.g. the ELF header bytes themselves) can sit at
+        // safe stand-in: format-directive lines (e.g. the header bytes themselves) can sit at
         // address 0, which isn't a valid breakpoint location and made gdb reject the launch.
-        const entryAddress = readElfEntryPoint(path.resolve(args.program));
+        // ELF is tried first since it's the common case; a fasm2 "format PE" build only ever
+        // matches the PE reader, so trying both costs nothing a real ELF launch would notice.
+        const resolvedProgram = path.resolve(args.program);
+        const entryAddress = readElfEntryPoint(resolvedProgram) ?? readPeEntryPoint(resolvedProgram);
         if (entryAddress !== undefined) {
           await this.gdb!.sendCommand(`-break-insert -t *0x${entryAddress.toString(16)}`);
         } else {
-          this.sendEvent(new OutputEvent('Could not determine the entry point (not a recognized ELF file) — stopOnEntry is disabled for this run.\n', 'stderr'));
+          this.sendEvent(
+            new OutputEvent('Could not determine the entry point (not a recognized ELF or PE file) — stopOnEntry is disabled for this run.\n', 'stderr'),
+          );
         }
       }
 
@@ -973,6 +979,25 @@ export class FasmDebugSession extends DebugSession {
       this.sendEvent(new TerminatedEvent());
       return;
     }
+
+    // stepToNextLine's line-granularity loop single-steps the target one machine instruction at a
+    // time internally, and each of those is a real gdb stop — gdb reports it exactly the way it
+    // reports any other completed step, reason "end-stepping-range" — before the loop decides for
+    // itself whether the PC has reached a new mapped line yet or it needs to keep going. Left
+    // unfiltered, every one of those intermediate stops reached here too and became its own
+    // StoppedEvent, telling the client the program had stopped — and inviting it to re-fetch the
+    // call stack, registers and so on — while the loop was already about to send the *next*
+    // -exec-step-instruction. Only a program that never calls into anything outside its own listing
+    // exercises this: stepping over straight-line syscalls (the Linux templates) almost always
+    // reaches a new mapped line on the very first internal step, so the loop runs once and this
+    // never came up. Stepping into `invoke SomeWin32Api` dives into a real CALL, and returning from
+    // one can take dozens of instructions before the PC is back on a mapped line — dozens of these
+    // firing in a burst while another step was already in flight is what left the Registers view
+    // blank and every action disabled. stepToNextLine (and stepOneInstruction, for the same reason)
+    // sends its own single StoppedEvent once it has actually decided the step is over; this handler
+    // only needs to cover stops those loops did not ask for and have no way to notice on their own,
+    // so an ordinary step completion is skipped here for exactly as long as one of them is running.
+    if (this.stepping && reasonRaw === 'end-stepping-range') return;
 
     // A logpoint is a breakpoint whose whole purpose is to *not* stop: report and resume.
     if (reasonRaw === 'breakpoint-hit' && this.handleLogPoint(data)) return;
