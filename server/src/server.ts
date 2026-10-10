@@ -366,6 +366,9 @@ connection.onRequest(
 // absorbed the batch, the open documents are diagnosed again. Changes to open documents themselves
 // are skipped: their buffer, not the disk, is what every compile already uses.
 connection.onDidChangeWatchedFiles((params) => {
+  // Before anything else: a compile that started before this moment read the old disk, and must not
+  // be joined by the requests this event is about to make (see programCompileKey).
+  diskEpoch++;
   const reindexing: Promise<void>[] = [];
   let diskChanged = false;
   for (const change of params.changes) {
@@ -848,15 +851,24 @@ interface CompiledProgram {
 /** Compiles in progress, keyed by everything their result depends on (see programCompileKey). */
 const compilesInFlight = new Map<string, Promise<CompiledProgram>>();
 
-/** The inputs a program's compile result depends on: the program, how it is compiled, and the
- * text of every open document (any of which it may include). Files that are not open are read
- * from disk and are not part of the key; this is why only compiles *in flight* are shared. */
+/** Bumped by every batch of file events: the version of "what is on disk" a compile started from. */
+let diskEpoch = 0;
+
+/**
+ * The inputs a program's compile result depends on: the program, how it is compiled, the text of
+ * every open document (any of which it may include), and the disk the files that are not open are
+ * read from — `diskEpoch`, since their contents are not part of the key.
+ *
+ * Without the epoch, a compile that was still running when a closed file changed on disk was
+ * joined by the very request that change caused, and handed back the old disk's result. Nothing
+ * then asked again, so the stale errors stayed until the next edit.
+ */
 function programCompileKey(entryFsPath: string, options: ProgramCompileOptions): string {
   const buffers = documents
     .all()
     .map((doc) => `${doc.uri}@${doc.version}`)
     .sort();
-  return JSON.stringify([entryFsPath, options, buffers]);
+  return JSON.stringify([entryFsPath, options, buffers, diskEpoch]);
 }
 
 /**

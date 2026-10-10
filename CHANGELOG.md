@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.29.1
+
+### Fixed: errors from a file's previous contents could stay on screen
+
+1.29.0 shares one compile between all the open files of a program: a request arriving while a
+compile with the same inputs is still running joins it instead of starting another. The inputs
+covered every open buffer, but not the files read from disk. So when a file that is not open changed
+on disk while a compile was running — a build script, git, or another tool rewriting it — the
+re-check that change triggered joined the compile already in progress, and got back the result for
+the disk as it was *before* the change. Nothing asked again, so those errors stayed until the next
+edit. Every batch of file events now starts a new "disk version", and a compile is only shared
+between requests made against the same one.
+
 ## 1.29.0
 
 ### Fixed: files changed outside VS Code were never re-checked
