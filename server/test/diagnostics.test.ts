@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
-import { abandonRunningCompilers, FASM1_FIRST_ERROR_NOTE, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
+import { abandonRunningCompilers, assemblesCleanly, FASM1_FIRST_ERROR_NOTE, interpretCompilerRun, noteFirstErrorOnly, parseDiagnostics, runDiagnostics } from '../src/features/diagnostics';
 import { bundledListingIncPath } from '../src/features/inlayHints';
 import { parseListingFile } from '../src/listing/listingMap';
 import { makeTempDir, removeTempDir } from './tempDir';
@@ -826,5 +826,74 @@ describe('noteFirstErrorOnly', () => {
     const diagnostics: Diagnostic[] = [];
     noteFirstErrorOnly(uri, 'fasm1', diagnostics);
     assert.deepStrictEqual(diagnostics, []);
+  });
+});
+
+describe('assemblesCleanly', () => {
+  const error: Diagnostic = {
+    severity: DiagnosticSeverity.Error,
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+    message: 'unexpected characters.',
+  };
+
+  it('is true only when nothing is wrong anywhere in the program', () => {
+    assert.strictEqual(assemblesCleanly({ diagnostics: [] }), true);
+    assert.strictEqual(assemblesCleanly({ diagnostics: [error] }), false);
+    assert.strictEqual(assemblesCleanly({ diagnostics: [], toolError: 'Compiler timed out' }), false);
+  });
+
+  it('is false when the only errors are in other files of the program', () => {
+    assert.strictEqual(assemblesCleanly({ diagnostics: [], foreignDiagnostics: new Map([['/p/macros.inc', [error]]]) }), false);
+  });
+
+  // The wrong-dialect hint: a fasm2 project was told it was probably fasm1, because fasm1 stopped at
+  // the fasm2-only macro file and the fragment being diagnosed was never reached, so it looked clean.
+  it('does not take a fragment fasm1 never reached as proof the program assembles as fasm1', async function () {
+    if (spawnSync('fasm', [], { timeout: 5000 }).error) this.skip();
+    const dir = makeTempDir('fasm2-studio-dialect-');
+    try {
+      fs.writeFileSync(path.join(dir, 'macros.inc'), 'macro string name, text&\n    name db text\nend macro\n');
+      fs.writeFileSync(path.join(dir, 'frag.asm'), 'nop\n');
+      fs.writeFileSync(path.join(dir, 'main.asm'), "format ELF64 executable 3\ninclude 'macros.inc'\ninclude 'frag.asm'\n");
+      const result = await runDiagnostics({
+        compilerPath: 'fasm',
+        dialect: 'fasm1',
+        sourceFsPath: path.join(dir, 'main.asm'),
+        reportForFsPath: path.join(dir, 'frag.asm'),
+        cwd: dir,
+        workspaceFolders: [dir],
+      });
+      assert.deepStrictEqual(result.diagnostics, [], 'precondition: the error is not in the fragment itself');
+      assert.strictEqual(assemblesCleanly(result), false);
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});
+
+describe('interpretCompilerRun', () => {
+  const output = (file: string) => `main.asm [3] ${file} [2]:\n\tmov eax, rbx\nmov? [38]\nCustom error: operand sizes do not match.\n`;
+
+  // Comparing file names alone handed a file the errors of any other file of the program with the
+  // same name: x86/emit.asm and arm/emit.asm showed each other's mistakes.
+  it('attributes an error to the file at that path, not to another file with the same name', async () => {
+    const dir = makeTempDir('fasm2-studio-samename-');
+    try {
+      for (const sub of ['x86', 'arm']) {
+        fs.mkdirSync(path.join(dir, sub));
+        fs.writeFileSync(path.join(dir, sub, 'emit.asm'), 'nop\nnop\n');
+      }
+      const opts = { compilerPath: 'fasm2', sourceFsPath: path.join(dir, 'main.asm'), cwd: dir, workspaceFolders: [dir] };
+      const run = { stdout: output('x86/emit.asm'), timedOut: false };
+
+      const forX86 = await interpretCompilerRun(run, { ...opts, reportForFsPath: path.join(dir, 'x86', 'emit.asm') });
+      assert.strictEqual(forX86.diagnostics.length, 1);
+
+      const forArm = await interpretCompilerRun(run, { ...opts, reportForFsPath: path.join(dir, 'arm', 'emit.asm') });
+      assert.deepStrictEqual(forArm.diagnostics, [], 'arm/emit.asm must not get x86/emit.asm\'s error');
+      assert.deepStrictEqual([...(forArm.foreignDiagnostics?.keys() ?? [])], [path.join(dir, 'x86', 'emit.asm')]);
+    } finally {
+      removeTempDir(dir);
+    }
   });
 });

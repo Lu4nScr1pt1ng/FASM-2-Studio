@@ -35,23 +35,43 @@ export function refreshStatusBar(): void {
 }
 
 /**
- * Set when the language server reports it cannot run the compiler at all for the active file
- * (see the 'fasm2Studio/diagnosticsUnavailable' notification). Held here rather than shown as a
- * popup: a compiler that times out on a large project would otherwise nag on every keystroke,
- * while the status bar can state it permanently and quietly.
+ * Why live error checking is not producing diagnostics for a file. `failure`: the compiler could
+ * not be run or could not finish. `notIncluded`: nothing is wrong — the file is a fragment no
+ * program includes yet, so it is checked once one does.
  */
-let diagnosticsIssue: { uri: string; reason: string } | undefined;
+export interface DiagnosticsIssue {
+  reason: string;
+  kind: 'failure' | 'notIncluded';
+}
 
-export function setDiagnosticsIssue(issue: { uri: string; reason: string } | undefined): void {
-  diagnosticsIssue = issue;
+/**
+ * What the language server last said about each file (see the 'fasm2Studio/diagnosticsUnavailable'
+ * notification). Held here rather than shown as a popup: a compiler that times out on a large
+ * project would otherwise nag on every keystroke, while the status bar can state it quietly.
+ *
+ * One entry per file rather than a single slot: the server diagnoses every open file of a program
+ * together, so a report about one file routinely arrives right after a report about another, and a
+ * single slot let "this file is fine" for one erase "the compiler timed out" for the file on screen.
+ */
+const diagnosticsIssues = new Map<string, DiagnosticsIssue>();
+
+export function setDiagnosticsIssue(uri: string, issue: DiagnosticsIssue | undefined): void {
+  if (issue) diagnosticsIssues.set(uri, issue);
+  else diagnosticsIssues.delete(uri);
   refreshStatusBar();
 }
 
+/** Forgets what was said about a file that is no longer open. */
+export function forgetDiagnosticsIssue(uri: string): void {
+  if (diagnosticsIssues.delete(uri)) refreshStatusBar();
+}
+
 /** The standing diagnostics problem for the file the user is looking at, if there is one — read by
- * the status bar menu so it can lead with it. */
+ * the status bar menu so it can lead with it. A fragment waiting to be included is not a problem. */
 export function activeDiagnosticsIssue(): string | undefined {
   const active = vscode.window.activeTextEditor?.document.uri.toString();
-  return diagnosticsIssue && diagnosticsIssue.uri === active ? diagnosticsIssue.reason : undefined;
+  const issue = active === undefined ? undefined : diagnosticsIssues.get(active);
+  return issue?.kind === 'failure' ? issue.reason : undefined;
 }
 
 /**
@@ -94,7 +114,7 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
       const compiler = await resolveCompiler(dialect, editor.document.uri);
       if (mine !== generation) return;
 
-      const issue = diagnosticsIssue?.uri === editor.document.uri.toString() ? diagnosticsIssue : undefined;
+      const issue = diagnosticsIssues.get(editor.document.uri.toString());
       // Checked before the compiler, because in an untrusted workspace the compiler is beside the
       // point: nothing is going to be run either way, and the generic "click to change the
       // compiler" affordance below would send the user to fix something that isn't broken.
@@ -113,6 +133,10 @@ export function createStatusBarItem(context: vscode.ExtensionContext): vscode.St
         // finished search that found no assembler. It shows at most once per machine of its own
         // accord (missingCompilerNotice.ts), so putting it on a path that runs often is safe.
         void showMissingCompilerNoticeOnce(context.globalState);
+      } else if (issue?.kind === 'notIncluded') {
+        item.text = `$(info) ${dialect}: not in a program yet`;
+        item.tooltip = `FASM2 Studio — using ${compiler.path}. Errors in this file are not checked on their own: ${issue.reason}.`;
+        item.command = STATUS_BAR_MENU_COMMAND;
       } else if (issue) {
         item.text = `$(warning) ${dialect}: diagnostics unavailable`;
         item.tooltip = `FASM2 Studio — using ${compiler.path}, but live error checking is not running: ${issue.reason}. Click for options.`;

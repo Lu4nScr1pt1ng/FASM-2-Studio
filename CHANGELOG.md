@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.29.0
+
+### Fixed: files changed outside VS Code were never re-checked
+
+A terminal, git, another editor, or an AI agent writing to the project changed what every program
+including those files assembles to — but only the include index was updated. The open files went on
+showing the errors of the previous disk state: a deleted, renamed or broken include stayed unreported,
+and a fixed one stayed red, until the open file itself was edited. Every open document is now
+diagnosed again once the index has absorbed a batch of file events. Atomic writes (temp file plus
+rename), files deleted and recreated, new directories, and bursts of writes across several files all
+settle on the right result; changes to files that are not fasm sources trigger nothing.
+
+### Fixed: one file's unsaved edits were invisible to the other files of its program
+
+Each open file compiled its program with only its own buffer substituted, and every other file read as
+last saved. An unsaved `include` added to the entry point, or an include path rewritten by a rename in
+a buffer nobody had saved yet, left the other open files reporting errors from a program that did not
+exist — and an edit to one file never re-diagnosed the others at all. A compile now sees every open
+buffer, and an edit re-diagnoses every open file of the programs it can affect (taking the include
+graph both before and after the edit, so files an edit moves into or out of a program are included).
+
+These open files share one compile: a compile already running for exactly the same inputs is joined
+rather than started again. Ten open files of one program cost one compile per pause in typing, not
+ten; a file written thirty times in a row by an external tool costs about three.
+
+### Fixed: a new file showed false errors until VS Code was restarted
+
+A file with no `format` directive that nothing includes yet — the normal state of a module just
+created — was assembled on its own: 16-bit mode, none of the project's symbols, so every 64-bit
+instruction and every shared label came back as an error ("bits64 or higher required", "symbol is
+undefined"). Including it did not clear them, because nothing re-diagnosed it. Such a file is now
+checked as part of the program that includes it, once one does, and the status bar says so with an
+information icon ("not in a program yet") rather than a warning.
+
+### Fixed: "this project is probably fasm1" on fasm2 projects
+
+The wrong-dialect suggestion took "the file being edited has no errors under the other assembler" as
+proof the project was written for it. fasm1 stops at the first fasm2-only construct it meets —
+typically in a shared macro file — so the fragment being edited was never reached and looked clean.
+The suggestion now requires the whole program to assemble cleanly under the other dialect.
+
+### Fixed: an error could be shown on a different file with the same name
+
+Errors were matched to the file being diagnosed by file name alone, so `x86/emit.asm` and
+`arm/emit.asm` showed each other's mistakes. Paths the compiler prints are now resolved against the
+directory it ran in and compared exactly.
+
+### Fixed: stepping could freeze for fifteen seconds at random
+
+A single-instruction step completes in microseconds, and gdb often writes its `^running` result and the
+`*stopped` record that follows in one chunk of output. The step loops started waiting for the stop only
+after the command's result came back — after the stop had already been delivered — and then sat out
+the full step timeout before "recovering" a step that had long finished. Under load this hit about one
+step in three. The wait is now armed before the command is sent (Step Over, Step Into, instruction
+steps, and the interrupt used to recover a genuinely stuck step).
+
+### The status bar keeps one state per file
+
+"Live error checking is not running for this file" was a single slot for the whole window, so a report
+that one file was fine erased a standing problem reported for the file on screen. It is now tracked
+per file and forgotten when the file is closed.
+
 ## 1.28.3
 
 ### Jump and call targets, and data loads, now read as a label in the Disassembly View

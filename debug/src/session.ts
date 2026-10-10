@@ -3279,16 +3279,22 @@ export class FasmDebugSession extends DebugSession {
       const startLoc = await this.currentLocation();
 
       for (let i = 0; i < MAX_STEP_INSTRUCTIONS; i++) {
+        // Armed before the command is sent — see armNextStop.
+        const nextStop = this.armNextStop(STEP_STOP_TIMEOUT_MS);
         let result;
         try {
           result = await this.gdb.sendCommand(miCommand);
         } catch (err) {
+          nextStop.cancel();
           this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
           return;
         }
-        if (result.klass !== 'running') return; // program likely exited or errored; a stop/exit event will follow separately
+        if (result.klass !== 'running') {
+          nextStop.cancel();
+          return; // program likely exited or errored; a stop/exit event will follow separately
+        }
 
-        const stopOutcome = await this.waitForNextStop(STEP_STOP_TIMEOUT_MS);
+        const stopOutcome = await nextStop.stop;
         if (stopOutcome === 'exited') return; // process exited or errored mid-step
         if (stopOutcome === 'timeout') {
           await this.recoverFromStuckStep();
@@ -3320,15 +3326,21 @@ export class FasmDebugSession extends DebugSession {
     if (this.stepping) return; // a step is already in flight — see `stepping`'s own doc comment
     this.stepping = true;
     try {
+      // Armed before the command is sent — see armNextStop.
+      const nextStop = this.armNextStop(STEP_STOP_TIMEOUT_MS);
       let result;
       try {
         result = await this.gdb.sendCommand(miCommand);
       } catch (err) {
+        nextStop.cancel();
         this.sendEvent(new OutputEvent(`step failed: ${(err as Error).message}\n`, 'stderr'));
         return;
       }
-      if (result.klass !== 'running') return;
-      const stopOutcome = await this.waitForNextStop(STEP_STOP_TIMEOUT_MS);
+      if (result.klass !== 'running') {
+        nextStop.cancel();
+        return;
+      }
+      const stopOutcome = await nextStop.stop;
       if (stopOutcome === 'exited') return;
       if (stopOutcome === 'timeout') {
         await this.recoverFromStuckStep();
@@ -3359,13 +3371,34 @@ export class FasmDebugSession extends DebugSession {
    * a step loop) pass nothing and wait indefinitely, as before.
    */
   private waitForNextStop(timeoutMs?: number): Promise<'stopped' | 'exited' | 'timeout'> {
-    if (!this.gdb) return Promise.resolve('exited');
-    return new Promise((resolve) => {
+    return this.armNextStop(timeoutMs).stop;
+  }
+
+  /**
+   * waitForNextStop, split so the wait can start *before* the command that causes the stop is sent.
+   *
+   * A single instruction step finishes in microseconds, and gdb routinely writes its `^running`
+   * result and the `*stopped` record that follows in one chunk of output. The driver emits both while
+   * parsing that chunk, so a caller that sent the command, awaited its result, and only then began
+   * waiting subscribed after the stop had already gone by — and sat for the whole of
+   * STEP_STOP_TIMEOUT_MS before "recovering" a step that had completed long before. Under load this
+   * happened on roughly one step in three: a debugger freezing for fifteen seconds at random.
+   *
+   * `cancel` stands the waiter down when the command turns out not to resume the target at all.
+   */
+  private armNextStop(timeoutMs?: number): { stop: Promise<'stopped' | 'exited' | 'timeout'>; cancel: () => void } {
+    const gdb = this.gdb;
+    if (!gdb) return { stop: Promise.resolve('exited'), cancel: () => undefined };
+    let cancel: () => void = () => undefined;
+    const stop = new Promise<'stopped' | 'exited' | 'timeout'>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (result: 'stopped' | 'exited' | 'timeout') => {
+      const detach = () => {
         if (timer) clearTimeout(timer);
-        this.gdb?.off('stopped', onStop);
-        this.gdb?.off('exit', onExit);
+        gdb.off('stopped', onStop);
+        gdb.off('exit', onExit);
+      };
+      const settle = (result: 'stopped' | 'exited' | 'timeout') => {
+        detach();
         resolve(result);
       };
       const onStop = (data: Record<string, unknown>) => {
@@ -3373,10 +3406,12 @@ export class FasmDebugSession extends DebugSession {
         settle(reason.startsWith('exited') ? 'exited' : 'stopped');
       };
       const onExit = () => settle('exited');
-      this.gdb!.once('stopped', onStop);
-      this.gdb!.once('exit', onExit);
+      gdb.once('stopped', onStop);
+      gdb.once('exit', onExit);
       if (timeoutMs !== undefined) timer = setTimeout(() => settle('timeout'), timeoutMs);
+      cancel = detach;
     });
+    return { stop, cancel };
   }
 
   /**
@@ -3402,10 +3437,12 @@ export class FasmDebugSession extends DebugSession {
       ),
     );
     let reclaimed = false;
+    const nextStop = this.armNextStop(STEP_INTERRUPT_TIMEOUT_MS);
     try {
       await this.gdb?.sendCommand('-exec-interrupt');
-      reclaimed = (await this.waitForNextStop(STEP_INTERRUPT_TIMEOUT_MS)) === 'stopped';
+      reclaimed = (await nextStop.stop) === 'stopped';
     } catch {
+      nextStop.cancel();
       // best-effort — the point below is to unstick the UI regardless of whether gdb answered
     }
     if (!reclaimed) this.sendEvent(new StoppedEvent('pause', MAIN_THREAD_ID));

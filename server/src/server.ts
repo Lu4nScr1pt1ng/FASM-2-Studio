@@ -67,7 +67,17 @@ import { getDefinitions } from './features/definition';
 import { getDocumentHighlights } from './features/documentHighlight';
 import { getDocumentLinks } from './features/documentLink';
 import { getDocumentSymbols } from './features/documentSymbols';
-import { abandonRunningCompilers, CompileResult, noteFirstErrorOnly, runDiagnostics } from './features/diagnostics';
+import {
+  abandonRunningCompilers,
+  assemblesCleanly,
+  CompileResult,
+  CompilerRun,
+  interpretCompilerRun,
+  noteFirstErrorOnly,
+  runCompiler,
+  RunCompilerOptions,
+  runDiagnostics,
+} from './features/diagnostics';
 import { detectEol, FormatOptions, formatLines } from './features/format';
 import { getFoldingRanges } from './features/foldingRange';
 import { bundledListingIncPath, getInlayHints, ListingMapStore, uriToFsPath } from './features/inlayHints';
@@ -75,7 +85,7 @@ import { getHover } from './features/hover';
 import { getIncludePathCompletions, includePathContext, stringContext } from './features/includePathCompletion';
 import { FileRename, includeRenameEdits, IncludeRenameEdits } from './features/includeRename';
 import { detectIsa } from './isa';
-import { buildLiveShadowRoot } from './features/liveShadow';
+import { buildShadowRoot } from './features/liveShadow';
 import { getReferences } from './features/references';
 import { getRenameEdit, isRenameable } from './features/rename';
 import { getSelectionRanges } from './features/selectionRange';
@@ -347,18 +357,33 @@ connection.onRequest(
 // Standard LSP file-watcher notification, forwarded automatically by vscode-languageclient from
 // the client's vscode.workspace.createFileSystemWatcher (see clientOptions.synchronize.fileEvents
 // in extension.ts) — keeps the index in sync with files nobody has opened as an editor tab.
+//
+// A file changing on disk changes every program that includes it, and the open documents of those
+// programs are compiled from the disk for every file that is not open. Re-indexing alone kept the
+// include graph right while every open file went on showing the errors of the previous disk state:
+// an include deleted, renamed or broken from a terminal, by git, or by another editor stayed
+// unreported (and a fixed one stayed red) until the open file was edited. Once the index has
+// absorbed the batch, the open documents are diagnosed again. Changes to open documents themselves
+// are skipped: their buffer, not the disk, is what every compile already uses.
 connection.onDidChangeWatchedFiles((params) => {
+  const reindexing: Promise<void>[] = [];
+  let diskChanged = false;
   for (const change of params.changes) {
     try {
       if (change.type === FileChangeType.Deleted) {
         workspace.removeIndexedFile(change.uri);
       } else {
-        void workspace.reindexFile(change.uri, resolveDialect).catch((err) => logHandlerError('reindexFile', err));
+        reindexing.push(workspace.reindexFile(change.uri, resolveDialect).catch((err) => logHandlerError('reindexFile', err)));
       }
+      if (!documents.get(change.uri)) diskChanged = true;
     } catch (err) {
       logHandlerError('onDidChangeWatchedFiles', err);
     }
   }
+  if (!diskChanged) return;
+  void Promise.all(reindexing).then(() => {
+    for (const doc of documents.all()) scheduleDiagnostics(doc.uri);
+  });
 });
 
 connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
@@ -443,6 +468,62 @@ function scheduleDiagnostics(uri: string): void {
 }
 
 /**
+ * The programs `uri` is assembled as part of: every entry point reachable from it through the
+ * files that include it, or `uri` itself when it is an entry point or reaches none.
+ */
+function programsOf(uri: string): string[] {
+  const entries = workspace.findReachableEntryPoints(uri);
+  return entries.length > 0 ? entries : [uri];
+}
+
+/** The open documents assembled as part of any of `programs`. */
+function openDocumentsIn(programs: ReadonlySet<string>): string[] {
+  return documents
+    .all()
+    .map((doc) => doc.uri)
+    .filter((uri) => programsOf(uri).some((program) => programs.has(program)));
+}
+
+/**
+ * Re-parses `doc` and re-diagnoses every open document whose result its new text can change.
+ *
+ * Each open document is compiled as its whole program, with every open buffer in place (see
+ * runDiagnosticsFor). So an edit to one file changes the result of every other open file of the
+ * same program — an unsaved `include` added to the entry point, a label renamed in one fragment
+ * and still used in another — and diagnosing only the edited file left the others showing errors
+ * from a version of the program that no longer exists, until each happened to be edited too.
+ *
+ * Membership is taken both before and after the re-parse: an edit can move files into a program
+ * (a new `include`) or out of one (a removed one), and the files it moved out are exactly the ones
+ * whose diagnostics were computed as part of the program and are now stale.
+ */
+function reparseAndRediagnose(doc: TextDocument): void {
+  const programs = new Set(programsOf(doc.uri));
+  const affected = new Set(openDocumentsIn(programs));
+  reparse(doc);
+  for (const program of programsOf(doc.uri)) programs.add(program);
+  for (const uri of openDocumentsIn(programs)) affected.add(uri);
+  affected.add(doc.uri);
+  for (const uri of affected) scheduleDiagnostics(uri);
+}
+
+/** The unsaved text of every open file-backed document (except `exceptUri`, if given), keyed by
+ * real path — the buffers a compile must see instead of what is on disk. */
+function openBuffersExcept(exceptUri: string | undefined): Map<string, string> {
+  const buffers = new Map<string, string>();
+  for (const doc of documents.all()) {
+    if (doc.uri === exceptUri) continue;
+    try {
+      const parsed = URI.parse(doc.uri);
+      if (parsed.scheme === 'file') buffers.set(parsed.fsPath, doc.getText());
+    } catch {
+      // A document whose uri cannot be parsed has no path to stand in for.
+    }
+  }
+  return buffers;
+}
+
+/**
  * Whether the wrong-dialect hint has already been raised. A misconfigured `defaultDialect` is a
  * property of the project, not of one file, so saying it once is help and repeating it is nagging.
  */
@@ -492,7 +573,7 @@ async function suggestDialectIfMisconfigured(
     // flags simply gets no unsolicited suggestion, which is the harmless direction to be wrong in.
     dialect: other,
   });
-  if (asOther.toolError || asOther.diagnostics.length > 0) return;
+  if (!assemblesCleanly(asOther)) return;
 
   dialectSuggested = true;
   connection.sendNotification('fasm2Studio/suggestDialect', { uri, dialect: other });
@@ -518,11 +599,23 @@ const listingMaps = new ListingMapStore();
  * The client renders this in the status bar rather than as a popup: it is a standing condition,
  * and a notification that reappears on every edit would be intolerable.
  */
-function reportDiagnosticsAvailability(uri: string, reason: string | undefined): void {
-  if (diagnosticsUnavailableReason.get(uri) === reason) return;
-  diagnosticsUnavailableReason.set(uri, reason);
-  connection.sendNotification('fasm2Studio/diagnosticsUnavailable', { uri, reason });
+function reportDiagnosticsAvailability(uri: string, reason: string | undefined, kind: DiagnosticsUnavailableKind = 'failure'): void {
+  const key = reason === undefined ? undefined : `${kind}:${reason}`;
+  if (diagnosticsUnavailableReason.get(uri) === key) return;
+  diagnosticsUnavailableReason.set(uri, key);
+  connection.sendNotification('fasm2Studio/diagnosticsUnavailable', { uri, reason, kind });
 }
+
+/**
+ * Why a file has no diagnostics. `failure`: the compiler could not be run or could not finish, so
+ * errors may be going unreported. `notIncluded`: nothing is wrong — the file is a fragment no
+ * program includes yet, so there is nothing meaningful to assemble it as (see runDiagnosticsFor).
+ */
+type DiagnosticsUnavailableKind = 'failure' | 'notIncluded';
+
+const NOT_INCLUDED_REASON =
+  'this file has no `format` directive and no program includes it yet, so it is checked as part of ' +
+  'the program that includes it, once one does';
 
 /**
  * Which *other* files each document's last compile reported errors in, so a fixed error can be
@@ -608,19 +701,9 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     return;
   }
 
-  // Unsaved buffers (untitled:, and any other non-file scheme) have no real filesystem path —
-  // URI.parse(...).fsPath on those returns a bogus value that would make every compile attempt
-  // fail with ENOENT. Compile a temp-file snapshot instead so diagnostics still work pre-save;
-  // the only cost is that any "include" in the buffer resolves relative to the temp dir rather
-  // than the file's eventual real location.
   const isRealFile = parsedUri.scheme === 'file';
   const fsPath = isRealFile ? parsedUri.fsPath : undefined;
-  let tempDir: string | undefined;
-  let shadowCleanup: (() => Promise<void>) | undefined;
-  let compileFsPath = fsPath;
-  let cwd = fsPath ? path.dirname(fsPath) : undefined;
   let reportForFsPath: string | undefined;
-  let toRealPath: ((p: string) => string | undefined) | undefined;
   /** The real (non-shadow) path of the program actually being compiled — the key the listing map
    * is stored under, since a listing describes an entry point rather than any one of its files. */
   let entryFsPath: string | undefined;
@@ -644,81 +727,82 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
       if (diagnosticGenerations.get(uri) !== generation) return;
       entryUri = workspace.findEntryFile(uri);
     }
-    if (entryUri && entryUri !== uri) {
+    if (!entryUri) {
+      // A fragment no program includes (yet): the usual moment is a file just created that the
+      // user has not included anywhere. Assembled on its own it is a program that does not exist —
+      // no `format`, so 16-bit mode and no project symbols — and every 64-bit instruction and
+      // every shared label in it came back as an error ("bits64 or higher required", "symbol is
+      // undefined"), none of them real. Those errors then outlived the file being included, since
+      // nothing re-diagnosed it. It is checked as part of its program instead, once it has one:
+      // the edit that adds the `include` re-diagnoses it (see reparseAndRediagnose).
+      connection.sendDiagnostics({ uri, diagnostics: [] });
+      publishForeignDiagnostics(uri, undefined);
+      reportDiagnosticsAvailability(uri, NOT_INCLUDED_REASON, 'notIncluded');
+      return;
+    }
+    if (entryUri !== uri) {
       try {
         targetFsPath = URI.parse(entryUri).fsPath;
-        compileFsPath = targetFsPath;
-        cwd = path.dirname(targetFsPath);
       } catch {
         // Fall back to compiling the file itself.
       }
     }
     reportForFsPath = fsPath;
     entryFsPath = targetFsPath;
-
-    // Compile the live buffer, not whatever's last saved to disk: build a shadow directory shaped
-    // like the target's, with every sibling symlinked back to the real file except this document's
-    // own position, which gets its current text instead — see liveShadow.ts.
-    const shadow = await buildLiveShadowRoot(targetFsPath, fsPath!, doc.getText()).catch(() => undefined);
-    if (shadow) {
-      compileFsPath = shadow.compileFsPath;
-      cwd = shadow.cwd;
-      shadowCleanup = shadow.cleanup;
-      toRealPath = shadow.toRealPath;
-    }
-  }
-
-  if (!isRealFile) {
-    try {
-      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-'));
-      compileFsPath = path.join(tempDir, 'untitled.asm');
-      await fs.writeFile(compileFsPath, doc.getText(), 'utf8');
-      cwd = tempDir;
-    } catch (err) {
-      logHandlerError('runDiagnosticsFor (temp snapshot)', err);
-      return;
-    }
   }
 
   // Only when hints are actually switched on, and only for fasm2: the macro is fasmg source, and
   // fasm1 would reject both it and the -i flag carrying it. Costs one extra flag on a compile that
   // is happening regardless, so a workspace with hints off pays nothing at all for this feature.
   const wantsListing = settings.inlayHints !== 'off' && dialect === 'fasm2' && entryFsPath !== undefined;
-  const listingInclude = wantsListing ? bundledListingIncPath() : undefined;
+  const options: ProgramCompileOptions = {
+    compilerPath,
+    includePath: settings.includePath || undefined,
+    // fasm1 has its own built-in instruction set and no -i flag, so a preload is meaningless
+    // (and would be rejected) there.
+    preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
+    extraArgs: settings.compilerArgs,
+    listingInclude: wantsListing ? bundledListingIncPath() : undefined,
+    dialect,
+    workspaceFolders: workspaceFolderPaths(),
+  };
 
+  let tempDir: string | undefined;
   try {
-    const result = await runDiagnostics({
-      compilerPath,
-      sourceFsPath: compileFsPath!,
-      cwd: cwd!,
-      reportForFsPath,
-      includePath: settings.includePath || undefined,
-      // fasm1 has its own built-in instruction set and no -i flag, so a preload is meaningless
-      // (and would be rejected) there.
-      preload: (dialect === 'fasm2' && settings.fasm2Preload) || undefined,
-      extraArgs: settings.compilerArgs,
-      listingInclude,
-      dialect,
-      toRealPath,
-      workspaceFolders: workspaceFolderPaths(),
-    });
+    let compiled: CompiledProgram;
+    if (entryFsPath !== undefined) {
+      compiled = await compileProgram(entryFsPath, options);
+    } else {
+      // Unsaved buffers (untitled:, and any other non-file scheme) have no real filesystem path —
+      // URI.parse(...).fsPath on those returns a bogus value that would make every compile attempt
+      // fail with ENOENT. Compile a temp-file snapshot instead so diagnostics still work pre-save;
+      // the only cost is that any "include" in the buffer resolves relative to the temp dir rather
+      // than the file's eventual real location.
+      try {
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-'));
+        const snapshot = path.join(tempDir, 'untitled.asm');
+        await fs.writeFile(snapshot, doc.getText(), 'utf8');
+        compiled = { run: await runCompiler({ ...options, sourceFsPath: snapshot, cwd: tempDir }), compileFsPath: snapshot, cwd: tempDir };
+      } catch (err) {
+        logHandlerError('runDiagnosticsFor (temp snapshot)', err);
+        return;
+      }
+    }
 
     // A newer edit (or diagnostics being disabled) arrived while the compiler was running; drop
     // this stale result instead of overwriting fresher-but-not-yet-ready diagnostics with old ones.
     if (diagnosticGenerations.get(uri) !== generation) return;
     if (!documents.get(uri)) return;
 
-    // Correlated against the tree that was actually compiled (the shadow, when there is one), with
-    // every candidate translated back to its real path so the map is keyed by paths the editor
-    // knows. Done here rather than inside runDiagnostics because it needs the source walk, which
-    // is the language server's side of the job, not the compiler runner's.
-    if (result.listing && entryFsPath) {
-      const candidates = buildCandidateSequence(compileFsPath!, undefined, toRealPath);
-      listingMaps.set(entryFsPath, correlateListing(result.listing, candidates));
-      // The hints the client is currently showing were built from the previous compile, so it has
-      // to be told to ask again — nothing else would prompt it.
-      void connection.languages.inlayHint.refresh().catch(() => undefined);
-    }
+    const result = await interpretCompilerRun(compiled.run, {
+      ...options,
+      sourceFsPath: compiled.compileFsPath,
+      cwd: compiled.cwd,
+      reportForFsPath,
+      toRealPath: compiled.toRealPath,
+    });
+    if (diagnosticGenerations.get(uri) !== generation) return;
+    if (!documents.get(uri)) return;
 
     // Published before the toolError branch below returns: a build that failed entirely inside an
     // include still located that error precisely, and that is the case this exists for.
@@ -736,16 +820,87 @@ async function runDiagnosticsFor(uri: string, generation: number): Promise<void>
     reportDiagnosticsAvailability(uri, undefined);
 
     if (result.diagnostics.length > 0) {
+      // Asked of the program as saved: the shadow tree the live compile ran in is gone by now, and
+      // whether a project is written in the other dialect does not hinge on an unsaved edit.
       await suggestDialectIfMisconfigured(uri, dialect, {
-        sourceFsPath: compileFsPath!,
-        cwd: cwd!,
+        sourceFsPath: entryFsPath ?? compiled.compileFsPath,
+        cwd: entryFsPath ? path.dirname(entryFsPath) : compiled.cwd,
         reportForFsPath,
       });
     }
   } finally {
     if (tempDir) void fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-    if (shadowCleanup) void shadowCleanup();
   }
+}
+
+/** Everything about a compile except which program it assembles. */
+type ProgramCompileOptions = Omit<RunCompilerOptions, 'sourceFsPath' | 'cwd' | 'reportForFsPath' | 'toRealPath'>;
+
+/** One run of the compiler over a program, and how to read the paths it printed. */
+interface CompiledProgram {
+  run: CompilerRun;
+  /** The file the compiler was given (a shadow path when buffers were substituted). */
+  compileFsPath: string;
+  cwd: string;
+  toRealPath?: (fsPath: string) => string | undefined;
+}
+
+/** Compiles in progress, keyed by everything their result depends on (see programCompileKey). */
+const compilesInFlight = new Map<string, Promise<CompiledProgram>>();
+
+/** The inputs a program's compile result depends on: the program, how it is compiled, and the
+ * text of every open document (any of which it may include). Files that are not open are read
+ * from disk and are not part of the key; this is why only compiles *in flight* are shared. */
+function programCompileKey(entryFsPath: string, options: ProgramCompileOptions): string {
+  const buffers = documents
+    .all()
+    .map((doc) => `${doc.uri}@${doc.version}`)
+    .sort();
+  return JSON.stringify([entryFsPath, options, buffers]);
+}
+
+/**
+ * Assembles `entryFsPath` with every open buffer in place of its file on disk.
+ *
+ * Every open file of a program is diagnosed from the same compile of that program: a change to one
+ * of them re-diagnoses all of them (see reparseAndRediagnose), and they are all asking the same
+ * question of the same inputs. A compile already running for exactly those inputs is joined
+ * instead of started again, so ten open files of one program cost one compile per pause in typing,
+ * not ten.
+ */
+function compileProgram(entryFsPath: string, options: ProgramCompileOptions): Promise<CompiledProgram> {
+  const key = programCompileKey(entryFsPath, options);
+  const running = compilesInFlight.get(key);
+  if (running) return running;
+
+  const compile = (async (): Promise<CompiledProgram> => {
+    // Compile the live buffers, not whatever is last saved to disk: a shadow directory shaped like
+    // the entry point's, with every file symlinked back to the real one except the open documents,
+    // which get their current text instead — see liveShadow.ts.
+    const shadow = await buildShadowRoot(entryFsPath, openBuffersExcept(undefined)).catch(() => undefined);
+    try {
+      const compileFsPath = shadow?.compileFsPath ?? entryFsPath;
+      const cwd = shadow?.cwd ?? path.dirname(entryFsPath);
+      const run = await runCompiler({ ...options, sourceFsPath: compileFsPath, cwd });
+      // Correlated here, while the tree that was actually compiled still exists, with every
+      // candidate translated back to its real path so the map is keyed by paths the editor knows.
+      if (run.listing) {
+        listingMaps.set(entryFsPath, correlateListing(run.listing.entries, buildCandidateSequence(compileFsPath, undefined, shadow?.toRealPath)));
+        // The hints the client is currently showing were built from the previous compile, so it
+        // has to be told to ask again — nothing else would prompt it.
+        void connection.languages.inlayHint.refresh().catch(() => undefined);
+      }
+      return { run, compileFsPath, cwd, toRealPath: shadow?.toRealPath };
+    } finally {
+      await shadow?.cleanup();
+    }
+  })();
+  compilesInFlight.set(key, compile);
+  const forget = () => {
+    if (compilesInFlight.get(key) === compile) compilesInFlight.delete(key);
+  };
+  compile.then(forget, forget);
+  return compile;
 }
 
 /**
@@ -976,8 +1131,7 @@ documents.onDidOpen((e: TextDocumentChangeEvent<TextDocument>) => {
 
 documents.onDidChangeContent((e: TextDocumentChangeEvent<TextDocument>) => {
   try {
-    reparse(e.document);
-    scheduleDiagnostics(e.document.uri);
+    reparseAndRediagnose(e.document);
   } catch (err) {
     logHandlerError('onDidChangeContent', err);
   }
@@ -994,6 +1148,9 @@ documents.onDidSave((e: TextDocumentChangeEvent<TextDocument>) => {
 documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
   try {
     const uri = e.document.uri;
+    // Closing a document takes its buffer out of every compile, and a buffer closed without saving
+    // (a revert, "Don't Save") differed from the disk the others will now read instead.
+    const affected = openDocumentsIn(new Set(programsOf(uri))).filter((other) => other !== uri);
     workspace.removeDocument(uri);
     // indexWorkspace skips a uri that's already open, trusting the live buffer as the
     // authoritative copy instead of also keeping a disk-read one in indexedDocuments — so closing
@@ -1015,6 +1172,7 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     // Those marks describe the file on disk and are not the open editor's to retract: closing a tab
     // says nothing about whether the errors a project-wide check found in it are still there.
     connection.sendDiagnostics({ uri, diagnostics: checkAllResults.get(uri) ?? [] });
+    for (const other of affected) scheduleDiagnostics(other);
   } catch (err) {
     logHandlerError('onDidClose', err);
   }

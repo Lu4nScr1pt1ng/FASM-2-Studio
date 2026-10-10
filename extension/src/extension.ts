@@ -29,7 +29,7 @@ import { FasmInlineValuesProvider } from './inlineValues';
 import { registerPickProcess } from './pickProcess';
 import { registerReportIssue } from './reportIssue';
 import { disposeRunTerminal, runOutputBinary } from './runCommand';
-import { activeDiagnosticsIssue, activeIndexingIssue, createStatusBarItem, refreshStatusBar, setDiagnosticsIssue, setIndexingIssue } from './statusBar';
+import { activeDiagnosticsIssue, activeIndexingIssue, createStatusBarItem, DiagnosticsIssue, forgetDiagnosticsIssue, refreshStatusBar, setDiagnosticsIssue, setIndexingIssue } from './statusBar';
 import { registerStatusBarMenu } from './statusBarMenu';
 import { FASM_TASK_TYPE, FasmTaskProvider, runBuildTask } from './taskProvider';
 import { registerTerminalLinks } from './terminalLinks';
@@ -348,9 +348,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // status bar rather than as a popup: it describes a standing condition (a missing compiler, a
     // compile that times out on a large project), and a notification that came back on every
     // keystroke would be worse than the silence it replaces.
-    client.onNotification('fasm2Studio/diagnosticsUnavailable', (params: { uri: string; reason?: string }) => {
-      setDiagnosticsIssue(params.reason ? { uri: params.uri, reason: params.reason } : undefined);
+    client.onNotification('fasm2Studio/diagnosticsUnavailable', (params: { uri: string; reason?: string; kind?: DiagnosticsIssue['kind'] }) => {
+      setDiagnosticsIssue(params.uri, params.reason ? { reason: params.reason, kind: params.kind ?? 'failure' } : undefined);
     }),
+    vscode.workspace.onDidCloseTextDocument((doc) => forgetDiagnosticsIssue(doc.uri.toString())),
   );
   // Granting trust mid-session has to reach the server too, or live error checking stays off
   // until the window is reloaded — the one state change here that a settings sync can't carry,

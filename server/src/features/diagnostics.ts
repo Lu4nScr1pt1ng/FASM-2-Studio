@@ -162,7 +162,40 @@ function looksLikeMissingInstructionSet(diagnostics: Diagnostic[]): boolean {
   return illegal.length >= MIN_MISSING_INSTRUCTION_SET_ERRORS;
 }
 
+/**
+ * Whether a compile found nothing wrong anywhere in the program — not just in the file it was run
+ * on behalf of.
+ *
+ * `diagnostics` holds only the errors of the file being diagnosed; a fragment's program fails just
+ * as surely through an error in one of its siblings. Reading an empty `diagnostics` as "assembles"
+ * made the wrong-dialect check tell fasm2 projects they were probably fasm1: fasm1 rejects fasm2's
+ * own syntax in the shared macro file (`macro name, text&`), stops right there, and the fragment
+ * being edited — never reached — looked clean.
+ */
+export function assemblesCleanly(result: CompileResult): boolean {
+  if (result.toolError || result.diagnostics.length > 0) return false;
+  for (const [, diagnostics] of result.foreignDiagnostics ?? []) if (diagnostics.length > 0) return false;
+  return true;
+}
+
+/** What one run of the compiler produced, before it is read on behalf of any particular file. */
+export interface CompilerRun {
+  stdout: string;
+  timedOut: boolean;
+  spawnError?: string;
+  listing?: { entries: ListingEntry[]; text: string };
+}
+
 export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileResult> {
+  return interpretCompilerRun(await runCompiler(opts), opts);
+}
+
+/**
+ * Runs the compiler once over `opts.sourceFsPath`. The output describes the whole program, so one
+ * run can be read for any number of its files with interpretCompilerRun — the language server
+ * relies on that to assemble a program once for all of its open files rather than once per file.
+ */
+export async function runCompiler(opts: RunCompilerOptions): Promise<CompilerRun> {
   const tmpStem = path.join(os.tmpdir(), `fasm2-studio-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const tmpOut = `${tmpStem}.out`;
   // The listing macro writes with `virtual as 'lst'`, which *replaces* the output file's extension
@@ -183,7 +216,7 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
     // is what defines the instruction set it is assembled alongside. Same ordering the build task
     // uses for a debug build.
     const listingArgs = isFasm1 || !opts.listingInclude ? [] : ['-i', `include '${opts.listingInclude}'`];
-    const { stdout, timedOut, spawnError } = await execCompiler(
+    const run = await execCompiler(
       opts.compilerPath,
       // The user's flags sit between the preload and the listing macro, matching the build task
       // exactly — a compile whose arguments differ from the build's is a compile whose errors are
@@ -195,53 +228,58 @@ export async function runDiagnostics(opts: RunCompilerOptions): Promise<CompileR
       opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       opts.includePath,
     );
+    if (run.spawnError || run.timedOut) return run;
 
-    if (spawnError) {
-      return { diagnostics: [], toolError: spawnError };
-    }
-    if (timedOut) {
-      return { diagnostics: [], toolError: 'Compiler timed out' };
-    }
-
-    // Read before any of the early returns below: a listing is produced by the *assembly*, so a
-    // compile that also raised warnings (or errors elsewhere in the project) still wrote a usable
-    // one for the parts that did assemble.
+    // Read before the output is interpreted: a listing is produced by the *assembly*, so a compile
+    // that also raised warnings (or errors elsewhere in the project) still wrote a usable one for
+    // the parts that did assemble.
     const listing = opts.listingInclude ? await readListing(tmpListing) : undefined;
-
-    const { diagnostics, foreignErrors } = parseOutput(stdout, opts.reportForFsPath ?? opts.sourceFsPath);
-    // Two independent signals must agree before blaming the compiler. The flood on its own is
-    // ambiguous — a foreign-ISA project assembled with the right compiler produces the identical
-    // symptom if its own mnemonics are misspelled — so it only decides anything once the compiler
-    // is separately confirmed to have no instruction set. The probe runs only here, on an already
-    // failing build, and is cached per compiler path.
-    if (looksLikeMissingInstructionSet(diagnostics) && !(await hasX86Preload(opts.compilerPath))) {
-      return { diagnostics: [], toolError: PRELOAD_MISSING_MESSAGE };
-    }
-    // The build failed somewhere else entirely — typically a bad `include`, which stops the
-    // assembler before it ever reaches a line belonging to this document. Reporting nothing here
-    // would show a clean file for a project that does not build, with no hint of why; validating
-    // against real projects, this was every single case where the compiler and the editor
-    // disagreed (a missing include in kbdasm, in bitRAKE's playground, in microcaml).
-    //
-    // Whichever of those errors can be pinned to a file that exists on disk becomes a real
-    // diagnostic on that file, so the broken line is marked where it actually is. The rest — a
-    // path that resolves to nothing, which is exactly what a *missing* include reports — have
-    // nowhere to be shown, and still need the summary below to avoid vanishing.
-    const { foreignDiagnostics, unplaceable } = placeForeignErrors(foreignErrors, opts);
-    if (diagnostics.length === 0 && unplaceable.length > 0) {
-      const first = unplaceable[0];
-      const more = unplaceable.length > 1 ? ` (+${unplaceable.length - 1} more)` : '';
-      return {
-        diagnostics: [],
-        foreignDiagnostics,
-        toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}`,
-      };
-    }
-    return { diagnostics, foreignDiagnostics, listing: listing?.entries, listingText: listing?.text };
+    return { ...run, listing };
   } finally {
     activeTempStems.delete(tmpStem);
     await removeTempArtifacts(tmpStem);
   }
+}
+
+/** Reads one compiler run on behalf of `opts.reportForFsPath` (or the compiled file itself). */
+export async function interpretCompilerRun(run: CompilerRun, opts: RunCompilerOptions): Promise<CompileResult> {
+  if (run.spawnError) {
+    return { diagnostics: [], toolError: run.spawnError };
+  }
+  if (run.timedOut) {
+    return { diagnostics: [], toolError: 'Compiler timed out' };
+  }
+
+  const { diagnostics, foreignErrors } = parseOutput(run.stdout, opts.reportForFsPath ?? opts.sourceFsPath, opts.toRealPath, opts.cwd);
+  // Two independent signals must agree before blaming the compiler. The flood on its own is
+  // ambiguous — a foreign-ISA project assembled with the right compiler produces the identical
+  // symptom if its own mnemonics are misspelled — so it only decides anything once the compiler
+  // is separately confirmed to have no instruction set. The probe runs only here, on an already
+  // failing build, and is cached per compiler path.
+  if (looksLikeMissingInstructionSet(diagnostics) && !(await hasX86Preload(opts.compilerPath))) {
+    return { diagnostics: [], toolError: PRELOAD_MISSING_MESSAGE };
+  }
+  // The build failed somewhere else entirely — typically a bad `include`, which stops the
+  // assembler before it ever reaches a line belonging to this document. Reporting nothing here
+  // would show a clean file for a project that does not build, with no hint of why; validating
+  // against real projects, this was every single case where the compiler and the editor
+  // disagreed (a missing include in kbdasm, in bitRAKE's playground, in microcaml).
+  //
+  // Whichever of those errors can be pinned to a file that exists on disk becomes a real
+  // diagnostic on that file, so the broken line is marked where it actually is. The rest — a
+  // path that resolves to nothing, which is exactly what a *missing* include reports — have
+  // nowhere to be shown, and still need the summary below to avoid vanishing.
+  const { foreignDiagnostics, unplaceable } = placeForeignErrors(foreignErrors, opts);
+  if (diagnostics.length === 0 && unplaceable.length > 0) {
+    const first = unplaceable[0];
+    const more = unplaceable.length > 1 ? ` (+${unplaceable.length - 1} more)` : '';
+    return {
+      diagnostics: [],
+      foreignDiagnostics,
+      toolError: `Build failed in ${path.basename(first.file)} line ${first.line}: ${first.message}${more}`,
+    };
+  }
+  return { diagnostics, foreignDiagnostics, listing: run.listing?.entries, listingText: run.listing?.text };
 }
 
 /** The temp stems of the compiles currently running, so a server process on its way out can take
@@ -499,11 +537,26 @@ interface ParsedOutput {
   foreignErrors: ForeignError[];
 }
 
-function parseOutput(output: string, sourceFsPath: string): ParsedOutput {
+/**
+ * Whether a path the compiler printed is `sourceFsPath`.
+ *
+ * fasmg prints every file relative to the directory it ran in (or absolute, if it was given an
+ * absolute path), so with that directory known the comparison is exact, after translating a shadow
+ * path back to the real file. Comparing file names alone, as before, handed one file the errors of
+ * any other file of the program with the same name: `x86/emit.asm` and `arm/emit.asm` showed each
+ * other's mistakes. Without the directory (parseDiagnostics' callers) the name is all there is.
+ */
+function isSameFile(reported: string, sourceFsPath: string, cwd: string | undefined, toRealPath?: (fsPath: string) => string | undefined): boolean {
+  if (reported === sourceFsPath) return true;
+  if (cwd === undefined) return path.basename(reported) === path.basename(sourceFsPath);
+  const absolute = path.resolve(cwd, reported);
+  return path.resolve(toRealPath?.(absolute) ?? absolute) === path.resolve(sourceFsPath);
+}
+
+function parseOutput(output: string, sourceFsPath: string, toRealPath?: (fsPath: string) => string | undefined, cwd?: string): ParsedOutput {
   const diagnostics: Diagnostic[] = [];
   const foreignErrors: ForeignError[] = [];
   const lines = output.split(/\r\n|\r|\n/);
-  const sourceBase = path.basename(sourceFsPath);
 
   let pendingLine: number | undefined;
   let pendingFile = '';
@@ -527,7 +580,7 @@ function parseOutput(output: string, sourceFsPath: string): ParsedOutput {
       const innermost = chain[chain.length - 1];
       pendingFile = innermost ? innermost[1].trim() : header[1].trim();
       pendingLine = parseInt(innermost ? innermost[2] : header[2], 10) - 1; // fasm reports 1-based lines
-      pendingIsCurrentFile = pendingFile === sourceFsPath || path.basename(pendingFile) === sourceBase;
+      pendingIsCurrentFile = isSameFile(pendingFile, sourceFsPath, cwd, toRealPath);
       continue;
     }
 

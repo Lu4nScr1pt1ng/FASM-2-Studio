@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildLiveShadowRoot } from '../src/features/liveShadow';
+import { buildLiveShadowRoot, buildShadowRoot } from '../src/features/liveShadow';
 import { makeTempDir, removeTempDir } from './tempDir';
 
 describe('buildLiveShadowRoot', () => {
@@ -142,5 +142,62 @@ describe('buildLiveShadowRoot', () => {
 
       await shadow!.cleanup();
     });
+  });
+});
+
+describe('buildShadowRoot', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = makeTempDir('fasm2-studio-shadow-test-');
+  });
+
+  afterEach(async () => {
+    await removeTempDir(dir);
+  });
+
+  // A program is a whole include tree: compiling it with one file's buffer and the rest as saved
+  // assembled a program that does not exist (an unsaved include added to the entry point was
+  // invisible to every other file's compile).
+  it('puts every open buffer inside the target directory in place of its file', async () => {
+    const main = path.join(dir, 'main.asm');
+    const lib = path.join(dir, 'lib', 'util.inc');
+    fs.mkdirSync(path.dirname(lib));
+    fs.writeFileSync(main, 'format binary\n');
+    fs.writeFileSync(lib, 'db 1\n');
+    fs.writeFileSync(path.join(dir, 'untouched.inc'), 'db 3\n');
+
+    const shadow = await buildShadowRoot(main, new Map([[main, "format binary\ninclude 'lib/util.inc'\n"], [lib, 'db 2\n']]));
+    assert.ok(shadow);
+    try {
+      assert.strictEqual(fs.readFileSync(shadow.compileFsPath, 'utf8'), "format binary\ninclude 'lib/util.inc'\n");
+      assert.strictEqual(fs.readFileSync(path.join(shadow.cwd, 'lib', 'util.inc'), 'utf8'), 'db 2\n');
+      assert.ok(fs.lstatSync(path.join(shadow.cwd, 'untouched.inc')).isSymbolicLink(), 'files without a buffer stay links to the real ones');
+      assert.strictEqual(shadow.toRealPath(path.join(shadow.cwd, 'lib', 'util.inc')), lib);
+      assert.strictEqual(fs.readFileSync(lib, 'utf8'), 'db 1\n', 'the real file on disk must be untouched');
+    } finally {
+      await shadow.cleanup();
+    }
+  });
+
+  it('keeps the buffer of a file deleted on disk while still open', async () => {
+    const main = path.join(dir, 'main.asm');
+    fs.writeFileSync(main, 'format binary\n');
+    const gone = path.join(dir, 'gone', 'mod.inc');
+
+    const shadow = await buildShadowRoot(main, new Map([[gone, 'db 7\n']]));
+    assert.ok(shadow);
+    try {
+      assert.strictEqual(fs.readFileSync(path.join(shadow.cwd, 'gone', 'mod.inc'), 'utf8'), 'db 7\n');
+    } finally {
+      await shadow.cleanup();
+    }
+  });
+
+  it('returns undefined when no buffer lies inside the target directory (the real file is compiled)', async () => {
+    const main = path.join(dir, 'project', 'main.asm');
+    fs.mkdirSync(path.dirname(main));
+    fs.writeFileSync(main, 'format binary\n');
+    assert.strictEqual(await buildShadowRoot(main, new Map([[path.join(dir, 'elsewhere.asm'), 'db 1\n']])), undefined);
   });
 });
