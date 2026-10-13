@@ -286,6 +286,26 @@ connection.onNotification('fasm2Studio/workspaceTrust', (params: { isTrusted: bo
   }
 });
 
+/**
+ * The open documents with unsaved changes, as the client last reported them — or undefined until it
+ * does (a client other than ours never will), in which case every open buffer counts as one.
+ *
+ * Only these buffers stand in for their files when a program is assembled. Any other open buffer is
+ * a copy of the disk that can lag behind it: VS Code reloads an editor a moment after its file
+ * changes outside it, and never reloads one opened through a symlink whose real file changed. Used
+ * in place of the disk, that copy showed the errors of a version that no longer exists.
+ */
+let dirtyDocuments: ReadonlySet<string> | undefined;
+
+connection.onNotification('fasm2Studio/dirtyDocuments', (params: { uris?: string[] }) => {
+  const before = dirtyDocuments;
+  dirtyDocuments = new Set(params.uris ?? []);
+  // Whatever stopped or started counting changes the programs it belongs to.
+  const changed = documents.all().filter((doc) => (before?.has(doc.uri) ?? true) !== dirtyDocuments!.has(doc.uri));
+  const programs = new Set(changed.flatMap((doc) => programsOf(doc.uri)));
+  for (const uri of openDocumentsIn(programs)) scheduleDiagnostics(uri);
+});
+
 connection.onNotification('fasm2Studio/indexWorkspaceFiles', (params: { uris: string[] }) => {
   const scan = workspace
     .indexWorkspace(params.uris ?? [], resolveDialect)
@@ -510,12 +530,17 @@ function reparseAndRediagnose(doc: TextDocument): void {
   for (const uri of affected) scheduleDiagnostics(uri);
 }
 
+/** Whether `doc`'s buffer, rather than its file, is what a compile must read (see dirtyDocuments). */
+function bufferCounts(doc: TextDocument): boolean {
+  return dirtyDocuments?.has(doc.uri) ?? true;
+}
+
 /** The unsaved text of every open file-backed document (except `exceptUri`, if given), keyed by
  * real path — the buffers a compile must see instead of what is on disk. */
 function openBuffersExcept(exceptUri: string | undefined): Map<string, string> {
   const buffers = new Map<string, string>();
   for (const doc of documents.all()) {
-    if (doc.uri === exceptUri) continue;
+    if (doc.uri === exceptUri || !bufferCounts(doc)) continue;
     try {
       const parsed = URI.parse(doc.uri);
       if (parsed.scheme === 'file') buffers.set(parsed.fsPath, doc.getText());
@@ -856,7 +881,7 @@ let diskEpoch = 0;
 
 /**
  * The inputs a program's compile result depends on: the program, how it is compiled, the text of
- * every open document (any of which it may include), and the disk the files that are not open are
+ * every unsaved document (any of which it may include), and the disk the files that are not open are
  * read from — `diskEpoch`, since their contents are not part of the key.
  *
  * Without the epoch, a compile that was still running when a closed file changed on disk was
@@ -866,6 +891,7 @@ let diskEpoch = 0;
 function programCompileKey(entryFsPath: string, options: ProgramCompileOptions): string {
   const buffers = documents
     .all()
+    .filter(bufferCounts)
     .map((doc) => `${doc.uri}@${doc.version}`)
     .sort();
   return JSON.stringify([entryFsPath, options, buffers, diskEpoch]);

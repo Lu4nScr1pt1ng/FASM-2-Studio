@@ -8,6 +8,7 @@ import { cleanBuildOutputs } from './clean';
 import { invalidateCompilerCache } from './compilerDiscovery';
 import { CONFIG_SECTION, MESSAGE_PREFIX } from './config';
 import { registerDialectSuggestion } from './dialectSuggestion';
+import { registerDirtyDocuments } from './dirtyDocuments';
 import { registerNewFile } from './newFile';
 import { registerEntryPointsView } from './entryPointsView';
 import { registerOpenBuildOutput } from './openBuildOutput';
@@ -343,6 +344,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await client.start();
   // Registered after start(), since onNotification needs a running connection.
   registerDialectSuggestion(context, (method, handler) => client!.onNotification(method, handler));
+  registerDirtyDocuments(context, client);
   context.subscriptions.push(
     // "Live error checking is not actually running for this file, and here is why." Shown in the
     // status bar rather than as a popup: it describes a standing condition (a missing compiler, a

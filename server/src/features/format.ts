@@ -681,10 +681,51 @@ export function formatLines(text: string, options: FormatOptions = DEFAULT_FORMA
     const text = shape.soleBrace
       ? indentText(placement.depth, options) + shape.soleBrace.text
       : renderCode(shape, placement.depth, options, placement.flat);
+    if (!keepsMeaning(line, text)) {
+      return { text: line.trimEnd(), comment: undefined, sourceColumn, breaks: true, note: false };
+    }
     return { text, comment: shape.comment, sourceColumn, breaks: false, note: false };
   });
 
   return alignComments(placed, options);
+}
+
+/** Punctuation that reads the same with or without spaces around it, wherever it appears. */
+const FREELY_SPACED = new Set(['=', ':', ',']);
+
+/**
+ * Whether `formatted` (code only, without the trailing comment) is the code of `original` with only
+ * the spacing between tokens changed, and changed only where spacing carries no meaning.
+ *
+ * In fasmg, whether two tokens touch is itself syntax: `name#_len` concatenates two names into one
+ * where `name #_len` does not, `.done` is a local label where `. done` is not, and `mov?` names the
+ * case-insensitive instruction. Splitting the first of these turned every `name#_len = $ - name`
+ * line of a `string` macro into `name    #_len = ...`, so the length symbols stopped existing and
+ * a project that built became one that did not. Rather than enumerate such constructs, a line is
+ * only reshaped when its tokens stay the same and every pair that touched still touches (and every
+ * pair that did not still does not); `=`, `:` and `,` alone may gain or lose spaces next to a
+ * name, number or string. Anything else keeps its original text.
+ */
+/** Whether the space between two adjacent tokens can change without changing what they mean. Two
+ * punctuation tokens never qualify: `:=`, `=:` and `::` are single operators spelled with two. */
+function spacingIsFree(left: Token, right: Token): boolean {
+  if (left.type === TokenType.Punct && right.type === TokenType.Punct) return false;
+  return FREELY_SPACED.has(left.text) || FREELY_SPACED.has(right.text);
+}
+
+function keepsMeaning(original: string, formatted: string): boolean {
+  const code = (text: string): Token[] => tokenizeLine(text, 0).filter((token) => token.type !== TokenType.Comment);
+  const before = code(original);
+  const after = code(formatted);
+  if (before.length !== after.length) return false;
+  for (let i = 0; i < before.length; i++) {
+    if (before[i].text !== after[i].text) return false;
+    if (i === 0) continue;
+    const touchedBefore = before[i].startChar === before[i - 1].endChar;
+    const touchedAfter = after[i].startChar === after[i - 1].endChar;
+    if (touchedBefore !== touchedAfter && !spacingIsFree(before[i - 1], before[i])) return false;
+  }
+  return true;
 }
 
 /** Where each line sits in the file's block structure, or undefined for one that is passed through. */

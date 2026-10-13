@@ -305,6 +305,24 @@ describe('runDiagnostics (reliability, against fake tools — no real fasm2 requ
     }
   });
 
+  // `make clean` deleting the folder of a generated program still open in an editor: Node words a
+  // missing working directory exactly like a missing program, and the message blamed the compiler.
+  it('says the folder is gone, not the compiler, when the working folder no longer exists', async function () {
+    if (os.platform() === 'win32') {
+      this.skip();
+      return;
+    }
+    this.timeout(10000);
+    const dir = makeTempDir('fasm2-studio-test-');
+    const gone = path.join(dir, 'build');
+    try {
+      const result = await runDiagnostics({ compilerPath: process.execPath, sourceFsPath: path.join(gone, 'prog.asm'), cwd: gone });
+      assert.strictEqual(result.toolError, `the folder ${gone} no longer exists`);
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
   it('kills a hanging compiler after the timeout and reports it, rather than waiting forever', async function () {
     if (os.platform() === 'win32') {
       this.skip();

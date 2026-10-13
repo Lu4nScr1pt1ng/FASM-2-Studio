@@ -82,15 +82,46 @@ describe('buildLiveShadowRoot', () => {
     await shadow!.cleanup();
   });
 
-  it('returns undefined when the live document lives outside the target directory', async () => {
-    const main = path.join(dir, 'sub', 'main.asm');
-    fs.mkdirSync(path.join(dir, 'sub'));
-    fs.writeFileSync(main, 'format binary\n');
-    const outsider = path.join(dir, 'outsider.inc');
-    fs.writeFileSync(outsider, 'db 1\n');
+  // `src/main.asm` + `include '../lib/x.inc'`: the library's unsaved text was ignored, so its
+  // program showed the errors of the last saved version.
+  it('overrides a live document beside an ancestor of the target directory', async () => {
+    const main = path.join(dir, 'src', 'main.asm');
+    const lib = path.join(dir, 'lib', 'x.inc');
+    fs.mkdirSync(path.dirname(main));
+    fs.mkdirSync(path.dirname(lib));
+    fs.writeFileSync(main, "format binary\ninclude '../lib/x.inc'\n");
+    fs.writeFileSync(lib, 'db 1\n');
 
-    const shadow = await buildLiveShadowRoot(main, outsider, 'db 2\n');
-    assert.strictEqual(shadow, undefined);
+    const shadow = await buildLiveShadowRoot(main, lib, 'db 2\n');
+    assert.ok(shadow);
+    try {
+      assert.strictEqual(fs.readFileSync(path.resolve(shadow!.cwd, '../lib/x.inc'), 'utf8'), 'db 2\n');
+      assert.ok(fs.lstatSync(shadow!.compileFsPath).isSymbolicLink(), 'the entry file stays a link to the real one');
+      assert.strictEqual(shadow!.toRealPath(path.resolve(shadow!.cwd, '../lib/x.inc')), lib);
+      assert.strictEqual(fs.readFileSync(lib, 'utf8'), 'db 1\n', 'the real file on disk must be untouched');
+    } finally {
+      await shadow!.cleanup();
+    }
+  });
+
+  it('overrides a live document opened through a symlinked directory', async () => {
+    const main = path.join(dir, 'src', 'main.asm');
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.mkdirSync(path.join(dir, 'shared'));
+    fs.writeFileSync(path.join(dir, 'shared', 'x.inc'), 'db 1\n');
+    fs.writeFileSync(path.join(dir, 'shared', 'y.inc'), 'db 3\n');
+    fs.symlinkSync('../shared', path.join(dir, 'src', 'linked'));
+    fs.writeFileSync(main, "format binary\ninclude 'linked/x.inc'\n");
+
+    const shadow = await buildLiveShadowRoot(main, path.join(dir, 'src', 'linked', 'x.inc'), 'db 2\n');
+    assert.ok(shadow);
+    try {
+      assert.strictEqual(fs.readFileSync(path.join(shadow!.cwd, 'linked', 'x.inc'), 'utf8'), 'db 2\n');
+      assert.strictEqual(fs.readFileSync(path.join(shadow!.cwd, 'linked', 'y.inc'), 'utf8'), 'db 3\n', 'its siblings are still reachable');
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'shared', 'x.inc'), 'utf8'), 'db 1\n', 'the real file on disk must be untouched');
+    } finally {
+      await shadow!.cleanup();
+    }
   });
 
   it('returns undefined instead of throwing when the target directory does not exist', async () => {
@@ -194,10 +225,10 @@ describe('buildShadowRoot', () => {
     }
   });
 
-  it('returns undefined when no buffer lies inside the target directory (the real file is compiled)', async () => {
+  it('returns undefined when there are no buffers at all (the real file is compiled)', async () => {
     const main = path.join(dir, 'project', 'main.asm');
     fs.mkdirSync(path.dirname(main));
     fs.writeFileSync(main, 'format binary\n');
-    assert.strictEqual(await buildShadowRoot(main, new Map([[path.join(dir, 'elsewhere.asm'), 'db 1\n']])), undefined);
+    assert.strictEqual(await buildShadowRoot(main, new Map()), undefined);
   });
 });

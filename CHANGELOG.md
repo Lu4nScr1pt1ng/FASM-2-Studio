@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.29.2
+
+### Fixed: Format Document could break a program that built
+
+The formatter put a space between a statement's first word and the rest of the line even when the
+two touched — and in fasmg, whether two tokens touch is syntax. `name#_len = $ - name`, the usual
+way a macro defines a length symbol, became `name    #_len = ...`, which no longer joins the two
+names, so every such symbol stopped existing; `GLOBSTR.reuse := 1` became `GLOBSTR.reuse: = 1`. A
+line is now only reshaped when its tokens stay the same and every pair that touched still touches;
+`=`, `:` and `,` alone may gain or lose spaces next to a name, number or string. Formatting the whole
+fasmg source tree and fasm2's own macro library now changes over a hundred thousand lines and every
+program still assembles to the identical binary.
+
+### Fixed: unsaved edits outside the program's own folder were ignored
+
+Only files in the entry point's directory (and below it) could have their unsaved text stand in
+for the disk. In a project laid out as `src/main.asm` plus `lib/*.inc`, or with a folder reached
+through a symlink, an unsaved edit to a library file was invisible to its program: the errors shown
+were those of the last saved version, and an error fixed in the editor stayed red until saved.
+
+### Fixed: an editor behind the disk could hide or invent errors
+
+Every open editor stood in for its file, including ones with nothing unsaved. When git, a build
+script or an AI agent rewrote a file, VS Code reloads its editor a moment later — and never reloads
+one opened through a symlink whose real file changed — and in the meantime the old text was what got
+assembled. Now only editors with unsaved changes stand in for their files; every other file is read
+from disk, which is never older.
+
+### Fixed: a deleted folder was reported as a missing compiler
+
+When the folder of a file still open in an editor was deleted (`make clean` removing generated
+sources, a branch switch), checking it failed with "spawn fasm2 ENOENT", which reads as the compiler
+having disappeared. It now says that the folder no longer exists.
+
 ## 1.29.1
 
 ### Fixed: errors from a file's previous contents could stay on screen

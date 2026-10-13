@@ -405,6 +405,19 @@ function killProcessTree(child: ReturnType<typeof spawn>): void {
  * the path specified." instead — confirmed against a real cmd.exe, not just recalled. */
 const CMD_NOT_RECOGNIZED_RE = /is not recognized as an internal or external command|the system cannot find the (path|file) specified/i;
 
+/**
+ * A spawn failure, worded for what actually went wrong. Node reports a working directory that does
+ * not exist exactly as it reports a missing program — "spawn <compiler> ENOENT" — so a program
+ * whose folder was deleted while one of its files was still open (`make clean` removing generated
+ * sources, a branch switch) read as the compiler having vanished.
+ */
+function describeSpawnError(err: Error, cwd: string): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !fs.existsSync(cwd)) {
+    return `the folder ${cwd} no longer exists`;
+  }
+  return err.message;
+}
+
 function execCompiler(
   command: string,
   args: string[],
@@ -467,7 +480,7 @@ function execCompiler(
     child.stderr?.on('data', (chunk: Buffer) => {
       if (out.length < MAX_OUTPUT_BYTES) out += chunk.toString('utf8');
     });
-    child.on('error', (err) => finish({ stdout: out, timedOut: false, spawnError: err.message }));
+    child.on('error', (err) => finish({ stdout: out, timedOut: false, spawnError: describeSpawnError(err, cwd) }));
     child.on('close', () => {
       if (!timedOut && process.platform === 'win32' && CMD_NOT_RECOGNIZED_RE.test(out)) {
         finish({ stdout: out, timedOut: false, spawnError: `spawn ${command} ENOENT` });

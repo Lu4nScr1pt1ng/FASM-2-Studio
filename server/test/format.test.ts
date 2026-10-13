@@ -286,6 +286,25 @@ describe('formatLines', () => {
     assert.strictEqual(format(once), once, 'second pass changed the output');
   });
 
+  it('never separates tokens that touch: "#" concatenation stays one name', () => {
+    // The `string` macro of a real project: splitting "name#_len" into "name    #_len" stopped the
+    // length symbol from being defined, and the whole program stopped assembling.
+    const input = ['macro string name, text', '    name db text', '    name#_len = $ - name', 'end macro'].join('\n');
+    const lines = format(input).split('\n');
+    assert.strictEqual(lines[2], '    name#_len = $ - name');
+  });
+
+  it('keeps ":=" and "=:" whole even after a dotted name', () => {
+    assert.strictEqual(format('GLOBSTR.reuse := 1'), 'GLOBSTR.reuse := 1');
+    assert.strictEqual(format('value =: 2'), format(format('value =: 2')));
+    assert.ok(format('value =: 2').includes('=:'));
+  });
+
+  it('may still space out "=", ":" and "," next to names', () => {
+    assert.match(format('COUNT=3'), /^COUNT +=  +3$/);
+    assert.match(format('start:mov eax,1'), /^start: +mov +eax,1$/);
+  });
+
   it('does not indent past zero when a file starts with a block terminator', () => {
     // A fragment meant to be `include`d mid-construct: it must not end up with negative indent.
     assert.strictEqual(format(['end if', 'nop'].join('\n')), ['end if', '        nop'].join('\n'));

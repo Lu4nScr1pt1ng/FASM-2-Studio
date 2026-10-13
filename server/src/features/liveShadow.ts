@@ -26,7 +26,7 @@ export interface LiveShadowRoot {
   cleanup: () => Promise<void>;
 }
 
-// How many ancestor levels of targetDir get mirrored (see mirrorAncestorChain) before falling back
+// How many ancestor levels of targetDir get mirrored (see mirroredRootOf) before falling back
 // to a real, unmirrored directory. Bounded rather than walking to the filesystem root: cheap, and
 // generously covers any realistic relative-include depth (the real bug this fixes needed only 2 —
 // fasm2's own source/windows/dll/fasmg.asm: "include '../../version.inc'").
@@ -34,18 +34,10 @@ const ANCESTOR_LEVELS = 12;
 
 /**
  * Builds a shadow compile root for `targetFsPath` (the file that would normally be handed to the
- * compiler) with `liveFsPath`'s on-disk position replaced by `liveContent`. Returns undefined if
- * `liveFsPath` isn't inside `targetFsPath`'s directory (nothing to safely override) or if the
- * shadow tree can't be built (e.g. no symlink permission on Windows without Developer Mode) —
- * callers should fall back to compiling the real file from disk in either case.
- *
- * `otherBuffers` are the unsaved texts of every other open document, keyed by real path. A program
- * is a whole include tree, so compiling it with only one file's buffer and every other file as last
- * saved assembles a program that does not exist: an unsaved `include` added to the entry point, or
- * an include path a rename rewrote in a buffer nobody has saved yet, was invisible to every other
- * file's compile, which then reported errors the user's actual code does not have. Buffers outside
- * the target's directory are left to the disk, exactly as before (their positions are symlinked
- * ancestors, not mirrored directories).
+ * compiler) with `liveFsPath`'s on-disk position replaced by `liveContent`, and every other open
+ * document's position by its unsaved text (`otherBuffers`, keyed by real path). Returns undefined
+ * if the shadow tree can't be built (e.g. no symlink permission on Windows without Developer Mode)
+ * — callers should fall back to compiling the real file from disk. See buildShadowRoot.
  */
 export async function buildLiveShadowRoot(
   targetFsPath: string,
@@ -53,47 +45,57 @@ export async function buildLiveShadowRoot(
   liveContent: string,
   otherBuffers: ReadonlyMap<string, string> = new Map(),
 ): Promise<LiveShadowRoot | undefined> {
-  if (!relativeInside(path.dirname(targetFsPath), liveFsPath)) return undefined;
   // The live document last, so its own text wins over any stale entry for the same path.
   return buildShadowRoot(targetFsPath, new Map([...otherBuffers, [liveFsPath, liveContent]]));
 }
 
 /**
  * Builds a shadow compile root for `targetFsPath` with every buffer in `buffers` (real path → text)
- * that lies inside the target's directory in place of its file on disk. Returns undefined when no
- * buffer lies there — the real file compiles to exactly the same result, without a temp tree — and
- * when the tree cannot be built; either way the caller compiles the real file.
+ * in place of its file on disk, wherever the buffer lies in the mirrored tree: next to the target,
+ * below it, or in a directory beside one of its ancestors — where `include '../lib/x.inc'` finds
+ * it. Returns undefined when no buffer lies in that tree — the real file compiles to exactly the
+ * same result, without a temp tree — and when the tree cannot be built; either way the caller
+ * compiles the real file.
+ *
+ * Only the target's own directory used to be overridable. Every other buffer was left to the disk,
+ * so in a project laid out as `src/main.asm` + `lib/*.inc` an unsaved edit to a library file was
+ * invisible to its program: the errors shown were those of the last saved version until it was
+ * saved, and an error fixed in the buffer stayed on screen.
  */
 export async function buildShadowRoot(targetFsPath: string, buffers: ReadonlyMap<string, string>): Promise<LiveShadowRoot | undefined> {
   const targetDir = path.dirname(targetFsPath);
+  const realRoot = mirroredRootOf(targetDir);
   const overrides: OverrideTree = new Map();
   for (const [fsPath, content] of buffers) {
-    const rel = relativeInside(targetDir, fsPath);
+    const rel = relativeInside(realRoot, fsPath);
     if (rel) addOverride(overrides, rel.split(path.sep), content);
   }
   if (overrides.size === 0) return undefined;
+  // The chain down to the target is always mirrored as real directories, buffers or not: the
+  // compiler runs inside it, and every `..` it resolves must stay inside the shadow tree.
+  const chain = relativeInside(realRoot, targetDir);
+  if (chain) addDirectory(overrides, chain.split(path.sep));
 
   const shadowRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fasm2-studio-shadow-'));
-  let mirrored: MirroredChain;
   try {
     // The target itself must exist: only directories *below* it may be missing (see readDirIfExists).
     await fs.promises.access(targetDir);
-    mirrored = await mirrorAncestorChain(targetDir, shadowRoot);
-    await mirrorWithOverrides(targetDir, mirrored.shadowTargetDir, overrides);
+    await mirrorWithOverrides(realRoot, shadowRoot, overrides);
   } catch {
     await fs.promises.rm(shadowRoot, { recursive: true, force: true }).catch(() => undefined);
     return undefined;
   }
+  const shadowTargetDir = chain ? path.join(shadowRoot, chain) : shadowRoot;
 
   return {
-    compileFsPath: path.join(mirrored.shadowTargetDir, path.basename(targetFsPath)),
-    cwd: mirrored.shadowTargetDir,
+    compileFsPath: path.join(shadowTargetDir, path.basename(targetFsPath)),
+    cwd: shadowTargetDir,
     // The shadow tree is a positional copy of the real one — same directory names, same depth,
     // rooted at shadowRoot instead of realRoot — so the translation is just a swap of that prefix.
     toRealPath: (fsPath: string) => {
       const relToRoot = path.relative(shadowRoot, fsPath);
       if (!relToRoot || relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) return undefined;
-      return path.join(mirrored.realRoot, relToRoot);
+      return path.join(realRoot, relToRoot);
     },
     cleanup: () => fs.promises.rm(shadowRoot, { recursive: true, force: true }).then(
       () => undefined,
@@ -102,49 +104,17 @@ export async function buildShadowRoot(targetFsPath: string, buffers: ReadonlyMap
   };
 }
 
-interface MirroredChain {
-  /** Shadow path corresponding to the real `targetDir`. */
-  shadowTargetDir: string;
-  /** Real directory that `shadowRoot` itself stands for — the base of the positional copy. */
-  realRoot: string;
-}
-
 /**
- * Mirrors up to ANCESTOR_LEVELS real ancestor directories of `targetDir` into `shadowRoot`, so a
- * relative `include` that climbs above targetDir's own directory with ".." (a real, common pattern
- * in multi-directory projects, e.g. fasm2's own source tree) still resolves correctly instead of
- * escaping into the shadow temp dir's real, unrelated parent. At every level of the walk, every
- * sibling of the real ancestor other than the one continuing the chain is symlinked back to its
- * real path — exactly what mirrorWithOverride already does for targetDir's own siblings, just
- * repeated one level at a time on the way down. Returns the shadow path corresponding to targetDir.
+ * The real directory the shadow tree stands for: `targetDir`'s ancestor ANCESTOR_LEVELS up (or the
+ * filesystem root, if that comes first). Mirroring from there means a relative `include` that
+ * climbs above the target's own directory with ".." (a real, common pattern in multi-directory
+ * projects, e.g. fasm2's own source tree) still resolves inside the shadow tree instead of
+ * escaping into the temp directory's real, unrelated parent.
  */
-async function mirrorAncestorChain(targetDir: string, shadowRoot: string): Promise<MirroredChain> {
+function mirroredRootOf(targetDir: string): string {
   const root = path.parse(targetDir).root;
-  const allSegments = targetDir.slice(root.length).split(path.sep).filter(Boolean);
-  const segments = allSegments.slice(-ANCESTOR_LEVELS);
-
-  const realRoot = path.join(root, ...allSegments.slice(0, allSegments.length - segments.length));
-  let realDir = realRoot;
-  let shadowDir = shadowRoot;
-  for (const segment of segments) {
-    await fs.promises.mkdir(shadowDir, { recursive: true });
-    const entries = await fs.promises.readdir(realDir, { withFileTypes: true });
-    // Symlinks within one directory are independent — created concurrently, since this runs on
-    // every debounced diagnostics pass and an ancestor directory can easily hold hundreds of
-    // entries (each level mirrors all of that ancestor's siblings).
-    await Promise.all(
-      entries
-        .filter((entry) => entry.name !== segment)
-        .map((entry) =>
-          fs.promises
-            .symlink(path.join(realDir, entry.name), path.join(shadowDir, entry.name), entry.isDirectory() ? 'dir' : 'file')
-            .catch(() => undefined),
-        ),
-    );
-    realDir = path.join(realDir, segment);
-    shadowDir = path.join(shadowDir, segment);
-  }
-  return { shadowTargetDir: shadowDir, realRoot };
+  const segments = targetDir.slice(root.length).split(path.sep).filter(Boolean);
+  return path.join(root, ...segments.slice(0, Math.max(0, segments.length - ANCESTOR_LEVELS)));
 }
 
 /** Files to replace in the shadow tree, as a directory tree: a string is a file's content, a map
@@ -172,6 +142,19 @@ function addOverride(tree: OverrideTree, parts: string[], content: string): void
   addOverride(sub, rest, content);
 }
 
+/** Marks `parts` as a directory to mirror, without replacing any file in it. */
+function addDirectory(tree: OverrideTree, parts: string[]): void {
+  let level = tree;
+  for (const part of parts) {
+    let sub = level.get(part);
+    if (typeof sub !== 'object') {
+      sub = new Map();
+      level.set(part, sub);
+    }
+    level = sub;
+  }
+}
+
 async function readDirIfExists(dir: string): Promise<fs.Dirent[]> {
   try {
     return await fs.promises.readdir(dir, { withFileTypes: true });
@@ -183,22 +166,42 @@ async function readDirIfExists(dir: string): Promise<fs.Dirent[]> {
   }
 }
 
+async function isDirectory(entry: fs.Dirent, fsPath: string): Promise<boolean> {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  return fs.promises.stat(fsPath).then(
+    (stat) => stat.isDirectory(),
+    () => false,
+  );
+}
+
+function linkBack(realDir: string, entry: fs.Dirent, shadowPath: string): Promise<void> {
+  return fs.promises.symlink(path.join(realDir, entry.name), shadowPath, entry.isDirectory() ? 'dir' : 'file');
+}
+
 async function mirrorWithOverrides(realDir: string, shadowDir: string, overrides: OverrideTree): Promise<void> {
   await fs.promises.mkdir(shadowDir, { recursive: true });
   const entries = await readDirIfExists(realDir);
   const onDisk = new Set(entries.map((entry) => entry.name));
 
   // Every entry is written to a distinct shadow path, so they can all proceed concurrently.
-  // A symlink failure still rejects the whole mirror (unlike mirrorAncestorChain's best-effort
-  // links) — a missing sibling here could silently change which file an `include` resolves to,
-  // so the caller's fall-back-to-real-file path is the safe answer.
+  // A symlink failure rejects the whole mirror — a missing sibling could silently change which
+  // file an `include` resolves to, so the caller's fall-back-to-real-file path is the safe answer.
   await Promise.all([
     ...entries.map((entry) => {
       const shadowPath = path.join(shadowDir, entry.name);
       const override = overrides.get(entry.name);
       if (typeof override === 'string') return fs.promises.writeFile(shadowPath, override, 'utf8');
-      if (override && entry.isDirectory()) return mirrorWithOverrides(path.join(realDir, entry.name), shadowPath, override);
-      return fs.promises.symlink(path.join(realDir, entry.name), shadowPath, entry.isDirectory() ? 'dir' : 'file');
+      if (override) {
+        // A directory holding a buffer is mirrored rather than linked, so the buffer can replace
+        // its file. That includes a symlink to a directory (`src/lib -> ../shared/lib`): linking it
+        // would hand the compiler the real directory, and the buffer of a file opened through the
+        // link would be silently ignored.
+        return isDirectory(entry, path.join(realDir, entry.name)).then((dir) =>
+          dir ? mirrorWithOverrides(path.join(realDir, entry.name), shadowPath, override) : linkBack(realDir, entry, shadowPath),
+        );
+      }
+      return linkBack(realDir, entry, shadowPath);
     }),
     // Open buffers whose file is not on disk (deleted, or renamed away, while still open).
     ...[...overrides]
